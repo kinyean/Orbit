@@ -12,8 +12,8 @@ deviating — the alternatives here have already been weighed.
 > [Superseded decisions](#superseded-decisions-pre-srs-pivot) for the record.
 > Keystone choices from the pivot: backend required (Java + Spring Boot),
 > Orekit propagation engine, dual-viewport client (Cesium + three.js),
-> scenario-based data model, and a "build professional-grade from the start"
-> posture.
+> scenario-based data model with a first-class catalog browser, and a
+> "build professional-grade from the start" posture.
 
 Format per decision: **Context**, **Decision**, **Why**, **Alternatives
 considered**, **Consequences**.
@@ -37,14 +37,15 @@ considered**, **Consequences**.
 10. [State-streaming contract: REST + WebSocket + CZML](#10-state-streaming-contract-rest--websocket--czml)
 11. [Single authoritative simulation clock](#11-single-authoritative-simulation-clock)
 12. [Frame management: canonical utility, frame-tagged states](#12-frame-management-canonical-utility-frame-tagged-states)
+13. [Two propagation/streaming modes: shared catalog + per-user scenarios](#13-two-propagationstreaming-modes-shared-catalog--per-user-scenarios)
 
 **Data**
-13. [Scenario data model: chief + deputies](#13-scenario-data-model-chief--deputies)
-14. [Data formats: TLE, CCSDS, Keplerian, CZML](#14-data-formats-tle-ccsds-keplerian-czml)
+14. [Scenario data model: chief + deputies](#14-scenario-data-model-chief--deputies)
+15. [Data formats: TLE, CCSDS, Keplerian, CZML](#15-data-formats-tle-ccsds-keplerian-czml)
 
 **Cross-cutting / enterprise**
-15. [Enterprise posture: professional-grade from the start](#15-enterprise-posture-professional-grade-from-the-start)
-16. [Deployment: containerized, cloud + on-prem](#16-deployment-containerized-cloud--on-prem)
+16. [Enterprise posture: professional-grade from the start](#16-enterprise-posture-professional-grade-from-the-start)
+17. [Deployment: containerized, cloud + on-prem](#17-deployment-containerized-cloud--on-prem)
 
 [Superseded decisions (pre-SRS pivot)](#superseded-decisions-pre-srs-pivot)
 ·
@@ -166,7 +167,7 @@ propagation engine is Orekit — a Java library (Decision 7).
 performance. Spring Boot brings batteries-included REST, WebSocket (STOMP),
 Spring Security (OIDC/SAML/RBAC for §5.5), dependency injection, and a mature
 ops ecosystem — directly serving the "build professional-grade from the start"
-posture (Decision 15).
+posture (Decision 16).
 
 **Alternatives considered.**
 - *Python + Orekit via JPype.* Friendlier app code and easy NumPy-based Monte
@@ -176,7 +177,7 @@ posture (Decision 15).
 - *Custom propagator in TS/Node.* Cannot meet the validated-accuracy bar
   (§5.2); rejected with Decision 7.
 
-**Consequences.** Backend is JVM; containerized (Decision 16). Monte Carlo and
+**Consequences.** Backend is JVM; containerized (Decision 17). Monte Carlo and
 numerical analysis (SRS §3.12) are implemented in Java/Orekit or delegated to a
 worker pool — to be detailed when that phase arrives.
 
@@ -211,9 +212,11 @@ effort that still wouldn't clear the validation bar.
 **Consequences.**
 - satellite.js is dropped — Orekit handles SGP4 (supersedes old Decision 5).
 - The frontend never propagates; it consumes streamed state (Decision 10).
-- Fidelity selection is part of the scenario model (Decision 13).
+- Fidelity selection is part of the scenario model (Decision 14).
 - A validation test suite against reference solutions is required for §5.2
   (deferred but architected for).
+- The same engine serves both load profiles (Decision 13): SGP4 for the shared
+  catalog, selected fidelity per scenario.
 
 ## 8. Scenario store: PostgreSQL
 
@@ -237,7 +240,7 @@ relational structure (versioning, ownership, audit) and flexible `jsonb`
 
 **Consequences.** Backend gains a database dependency and migrations
 (Flyway/Liquibase). Scenario ownership column exists from day one as the RBAC
-seam (Decision 15).
+seam (Decision 16).
 
 ---
 
@@ -270,7 +273,7 @@ and the rendering can grow without engine changes. The contract is the seam.
 
 **Consequences.** A network hop sits between compute and render; the streaming
 contract must be efficient and well-specified (Decision 10). Local dev runs all
-components via Docker Compose (Decision 16).
+components via Docker Compose (Decision 17).
 
 ## 10. State-streaming contract: REST + WebSocket + CZML
 
@@ -286,10 +289,13 @@ CZML). Both views must stay synchronized (§3.11.4).
 - A compact **relative-state stream** (positions/velocities in LVLH + events)
   for the proximity view.
 
-This contract is the decoupling seam of Decision 9.
+This contract is the decoupling seam of Decision 9 and carries both streaming
+modes of Decision 13 (shared catalog feed; per-user scenario feed).
 
 **Why.** REST/WebSocket/OpenAPI/CZML are all spec-named. CZML is Cesium's
-native time-dynamic format. The relative-state stream keeps the proximity view
+native time-dynamic format; its `SampledPositionProperty` model fits both
+load profiles — backend ships sample chunks, Cesium interpolates client-side
+between samples at 60fps. The relative-state stream keeps the proximity view
 independent of CZML and of Cesium specifics.
 
 **Alternatives considered.**
@@ -356,11 +362,66 @@ required precision.
 one utility. The frontend receives pre-tagged state and converts for display
 via a thin client mirror of the same conventions.
 
+## 13. Two propagation/streaming modes: shared catalog + per-user scenarios
+
+**Context.** The system serves two very different load profiles:
+- **Catalog browse** — all ~14,500 active satellites in real time, the same
+  view for every viewer ("the sky right now"). Used for discovery and as the
+  composition path for scenarios (click a real satellite → add to the
+  scenario being built).
+- **Scenario analysis** — per-user, ≤10 spacecraft (SRS §5.1.1), high-fidelity
+  propagation over a custom time range with hypothetical maneuvers.
+
+Doing both with per-user propagation wastes compute (every user re-computing
+the same global catalog). Treating them with one streaming model is also wrong
+(catalog can't be expressed as one user's scenario).
+
+**Decision.** The backend serves two propagation/streaming modes:
+
+| Mode | Spacecraft | Engine | Stream | Cached? |
+|---|---|---|---|---|
+| **Catalog** | All ~14,500 active | SGP4 (Orekit) | One shared CZML feed | Yes — computed once per refresh cycle, broadcast to every viewer |
+| **Scenario** | Chief + ≤10 deputies | Selected fidelity (SGP4 / numerical / CW) | Per-user CZML + relative-state | No — per user, per scenario |
+
+Both modes flow through the same streaming contract (Decision 10); the catalog
+is effectively a degenerate, shared scenario.
+
+**Why.** Catalog propagation is naturally shareable — every user looking at
+"now" wants the same data. One computation per refresh cycle, fan-out to many
+viewers, is dramatically cheaper than per-user. Scenarios are inherently
+per-user (custom time ranges, fidelity, maneuvers), so caching doesn't apply.
+
+The dual model also matches the UX: the catalog is *how you compose*; the
+scenario is *what you save and analyze*. Catalog rendering at ~14,500 dots is
+the right default (no artificial cap), and search/filter/hit-padding handle
+click precision in dense regions.
+
+**Alternatives considered.**
+- *Per-user catalog propagation.* Wasteful; one shared cache is the clear win.
+- *Skip the catalog altogether, scenario-only.* Loses the click-to-compose
+  discovery UX and the "look at all the satellites" visual context for the
+  global view.
+- *Cap the catalog at a smaller number (e.g., 2k).* Render-side, Cesium handles
+  14,500 fine; bandwidth is manageable with CZML sample-and-interpolate;
+  capping would only hurt the experience.
+
+**Consequences.**
+- The catalog browser is a **first-class feature**, not a relic of the
+  pre-pivot plan. Phase-1 scaffold's catalog UI is repurposed (constellation
+  filters, stats), not removed.
+- Backend has two execution paths: a shared catalog refresher (driven by a
+  scheduler) and per-user scenario propagators (driven by connection
+  lifetimes).
+- Catalog stream is broadcast (one CZML chunk fan-out); scenario streams are
+  per-user (own WebSocket session per scenario).
+- Click-to-compose: click a satellite in the catalog → designate as chief if
+  none yet, otherwise add as deputy in the in-progress scenario.
+
 ---
 
 # Data
 
-## 13. Scenario data model: chief + deputies
+## 14. Scenario data model: chief + deputies
 
 **Context.** SRS §2.2.1: a scenario is one chief spacecraft, one or more
 deputies, initial states, a maneuver plan, attitude profiles, and sensor
@@ -385,12 +446,15 @@ Persisted in PostgreSQL (Decision 8), versioned with author + timestamp.
 
 **Alternatives considered.**
 - *Flat catalog of equal satellites (the old tracker model).* Doesn't capture
-  the chief/deputy relationship RPO analysis is built on. Superseded.
+  the chief/deputy relationship RPO analysis is built on. Superseded — but
+  catalog browsing survives as the *composition path* (Decision 13).
 
-**Consequences.** The whole UI is scenario-scoped, not catalog-scoped. Loading
-a scenario configures both views, the clock range, and the analysis pipeline.
+**Consequences.** The whole analysis UI is scenario-scoped. Loading a scenario
+configures both views, the clock range, and the analysis pipeline. Creation is
+either by click-to-compose from the catalog (Decision 13) or by form/import
+for hypothetical spacecraft.
 
-## 14. Data formats: TLE, CCSDS, Keplerian, CZML
+## 15. Data formats: TLE, CCSDS, Keplerian, CZML
 
 **Context.** SRS §3.10.3–4 import from TLE, CCSDS OEM/OPM, Keplerian; §4.1
 ingest TLE (file/URL) + CCSDS OEM/OPM + AEM attitude; §4.2 export OEM, JSON/CSV
@@ -414,7 +478,7 @@ client-side from the rendered canvases.
 
 # Cross-cutting / enterprise
 
-## 15. Enterprise posture: professional-grade from the start
+## 16. Enterprise posture: professional-grade from the start
 
 **Context.** Project may go professional; chosen posture is to build so a
 rebuild is never needed (the cross-cutting concerns — auth, audit,
@@ -425,11 +489,11 @@ the heavy *implementations* are sequenced later. Concretely, from day one:
 - **Auth seam:** all API traffic through one Spring Security pipeline; real
   OIDC/SAML + RBAC wired when needed, not stubbed-then-rethreaded.
 - **Ownership in the data model:** scenarios carry an `owner` + permissions
-  from the first migration (Decision 8/13).
+  from the first migration (Decisions 8, 14).
 - **Single mutation path** for scenarios → the audit-log hook point (§5.4.2).
 - **Deterministic propagation:** seeded dispersions, pinned Orekit settings →
   reproducibility (§5.4.1) holds by construction.
-- **12-factor config** → cloud/on-prem portability (Decision 16).
+- **12-factor config** → cloud/on-prem portability (Decision 17).
 
 **Why.** These seams cost ~a day of discipline now and turn a painful
 cross-cutting retrofit into additive work. Validated accuracy is already
@@ -444,7 +508,7 @@ layer, migrations). Conversion to full professional = implement real IdP/RBAC +
 write the §5.2 validation suite + deployment hardening — additive, weeks not a
 rewrite.
 
-## 16. Deployment: containerized, cloud + on-prem
+## 17. Deployment: containerized, cloud + on-prem
 
 **Context.** SRS §6.2.1 containerized services; §6.2.2 cloud and on-prem.
 
@@ -471,7 +535,7 @@ deliverable, but nothing in the design blocks it.
 Retained for the record. These were sound for the *public satellite tracker*
 scope; the 2026-05-28 SRS pivot reversed them.
 
-- **A. Client-only, no backend** → **superseded by Decisions 6, 9, 16.** The
+- **A. Client-only, no backend** → **superseded by Decisions 6, 9, 17.** The
   SRS mandates a backend propagation/analysis service with REST/WebSocket and
   auth. Client-only cannot meet fidelity, validation, persistence, or security
   requirements.
@@ -482,12 +546,14 @@ scope; the 2026-05-28 SRS pivot reversed them.
   is replaced by the network streaming contract. (Client-side workers may
   still interpolate streamed samples.)
 - **D. IndexedDB catalog cache (blob-per-group) + stale-while-revalidate TTL**
-  → **superseded by Decisions 8, 13.** Data is scenario-based and
-  server-persisted, not a cached public catalog. Client caching is no longer
-  the persistence story.
-- **E. PointPrimitiveCollection for ~15k objects** → **superseded by Decisions
-  4, 13.** Scenarios involve ~10 spacecraft (§5.1.1), not a 15k catalog;
-  rendering is dual-engine (Cesium global + three.js proximity).
+  → **superseded by Decisions 8, 13, 14.** Data is scenario-based and
+  server-persisted; the catalog now flows through a shared backend stream
+  (Decision 13), not a client cache.
+- **E. PointPrimitiveCollection for ~15k objects** → **revised, not retired.**
+  The render technique is still right — Cesium's `PointPrimitiveCollection`
+  remains the way to draw the catalog efficiently. What changed: the points
+  are fed by a backend stream (Decision 13), not client-side propagation;
+  scenarios on top use the dual-engine model (Decision 4).
 - **F. Two-body Keplerian model** → **superseded by Decision 7.** The SRS
   requires high-fidelity (DP8(7), J4+, drag, SRP, third-body) validated to
   sub-km/24h; two-body is insufficient. CW covers the close-range linearized
@@ -510,7 +576,7 @@ Explicitly not decided yet; each has a tracked reason.
   tests (compare to reference solutions, document per AIAA 2006-6753) are
   written when the propagation service stabilizes.
 - **Real identity provider for SSO/RBAC (§5.5.1–2).** Architecture/seam built
-  now (Decision 15); concrete OIDC/SAML integration chosen with deployment.
+  now (Decision 16); concrete OIDC/SAML integration chosen with deployment.
 - **Monte Carlo execution model (§3.12.4).** In-process Java vs a worker pool
   vs delegated compute — decide when the analysis phase arrives.
 - **Sensor occlusion technique (§3.6.5).** Ray casting vs GPU depth methods —
@@ -521,5 +587,11 @@ Explicitly not decided yet; each has a tracked reason.
   (WebCodecs/MediaRecorder) vs server-side render — decide at the export phase.
 - **Self-hosting Cesium imagery tiles.** Ion for now; switch at the 5 GB/mo
   ceiling.
+- **Catalog refresh cadence + sample density.** What CZML chunk size and
+  refresh cycle the catalog stream uses — pick empirically when measuring
+  bandwidth (Decision 13).
+- **Earth backdrop in the proximity view.** Default yes (orientation context)
+  or no (pure space) — design call when building the proximity scene
+  (Decision 4).
 - **Two-body + J2 quick model.** Not needed — Orekit's fidelity modes cover the
   range.

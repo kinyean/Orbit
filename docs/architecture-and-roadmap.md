@@ -10,6 +10,8 @@ The naming throughout:
 - **Deputy / deputies** — other spacecraft expressed relative to the chief.
 - **Scenario** — the central persistent artifact: chief + deputies + initial
   states + maneuvers + sensors + attitude.
+- **Catalog** — the live set of ~14,500 real active satellites, served as a
+  shared real-time feed and used as the composition path for scenarios.
 - **LVLH / RIC** — Local Vertical Local Horizontal / Radial-In-track-Cross-track
   frame centered on the chief; the natural frame for proximity analysis.
 
@@ -18,28 +20,34 @@ The naming throughout:
 ## 1. Component overview
 
 ```
-┌────────────────────────────────────────────────────────────────┐
-│  FRONTEND CLIENT  (static, containerized)                       │
-│                                                                  │
-│  ┌──────────────────────┐    ┌──────────────────────────────┐   │
-│  │ Global view          │    │ Proximity view               │   │
-│  │ React + CesiumJS     │    │ React + three.js (LVLH)      │   │
-│  │  (Phase-1 scaffold,  │◄──►│  (new)                       │   │
-│  │   carried over)      │ same clock + relative-state stream│   │
-│  └──────────────────────┘    └──────────────────────────────┘   │
-│  Scenario panel · Timeline · Sensor/Attitude controls           │
-└──────────────────────────┬──────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│  FRONTEND CLIENT  (static, containerized)                      │
+│                                                                 │
+│  ┌──────────────────────┐    ┌──────────────────────────────┐  │
+│  │ Global view          │    │ Proximity view               │  │
+│  │ React + CesiumJS     │    │ React + three.js (LVLH)      │  │
+│  │  catalog dots +      │◄──►│  chief at origin, deputies   │  │
+│  │  scenario sats +     │ same clock                         │  │
+│  │  orbits/ground tracks│    │  + relative-state stream      │  │
+│  └──────────────────────┘    └──────────────────────────────┘  │
+│  Catalog browser · Scenario panel · Timeline · Controls         │
+└──────────────────────────┬─────────────────────────────────────┘
         REST (OpenAPI 3.x) │  WebSocket (CZML + relative state)
-┌──────────────────────────┴──────────────────────────────────────┐
-│  BACKEND  (Java + Spring Boot, containerized)                    │
-│                                                                  │
-│  ┌─────────────────────────┐    ┌──────────────────────────┐    │
-│  │ Propagation & analysis  │    │ Scenario service         │    │
-│  │  Orekit                 │    │  CRUD, versioning,       │    │
-│  │  (SGP4 / numerical / CW)│    │  import/export, audit    │    │
-│  └─────────────────────────┘    └──────────────────────────┘    │
-│  Spring Security pipeline (auth/RBAC seam)                       │
-└──────────────────────────┬──────────────────────────────────────┘
+┌──────────────────────────┴─────────────────────────────────────┐
+│  BACKEND  (Java + Spring Boot, containerized)                   │
+│                                                                 │
+│  ┌────────────────────────┐  ┌─────────────────────────────┐   │
+│  │ Catalog service        │  │ Scenario service            │   │
+│  │  one shared SGP4 pass  │  │  CRUD, versioning,          │   │
+│  │  refreshed periodically│  │  import/export, audit       │   │
+│  │  → broadcast CZML      │  │                              │   │
+│  └────────────────────────┘  └─────────────────────────────┘   │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ Propagation core (Orekit) — multi-fidelity, frame utility │  │
+│  │ Analysis (conjunctions, events, Monte Carlo, link budget) │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│  Spring Security pipeline (auth/RBAC seam)                      │
+└──────────────────────────┬─────────────────────────────────────┘
                            │ JDBC
                 ┌──────────┴───────────┐
                 │  PostgreSQL          │
@@ -58,54 +66,95 @@ behind the streaming contract.
 
 ---
 
-## 2. Backend (Java + Spring Boot + Orekit)
+## 2. Two propagation/streaming modes (Decision 13)
+
+The backend serves the same engine in two operating profiles, with very
+different load characteristics:
+
+| Mode | Spacecraft | Engine | Stream | Cached? |
+|---|---|---|---|---|
+| **Catalog** | All ~14,500 active | SGP4 (Orekit) | One shared CZML feed | Yes — computed once per refresh cycle, broadcast to every viewer |
+| **Scenario** | Chief + ≤10 deputies | Selected fidelity (SGP4 / numerical / CW) | Per-user CZML + relative-state | No — per user, per scenario |
+
+The catalog mode is what makes "see all the active satellites at once" cheap:
+one SGP4 pass over the full catalog every refresh cycle, broadcast as CZML
+chunks that Cesium interpolates between client-side. Tens of users converge
+on the same data — one computation, fan-out.
+
+The scenario mode is the per-user heavy lifting: a custom time range, the
+selected fidelity (often the high-fidelity numerical propagator with drag /
+SRP / third-body), a deputy maneuver plan, and chief-relative analysis. Each
+active scenario is its own WebSocket session.
+
+A user can have both running simultaneously — catalog populated globally
+while a scenario propagates the selected spacecraft in detail.
+
+---
+
+## 3. Backend (Java + Spring Boot + Orekit)
 
 Responsibilities:
 
-- **Propagation.** Orekit-backed multi-fidelity propagation: SGP4/SDP4,
+- **Propagation core.** Orekit-backed multi-fidelity propagation: SGP4/SDP4,
   high-fidelity numerical (DP8(7), gravity field ≥J4, NRLMSISE-00 drag, SRP,
   Sun/Moon third-body), and Clohessy-Wiltshire for close range. Per-scenario
   fidelity selection. Deterministic (seeded, pinned).
+- **Catalog service.** Periodic SGP4 pass over the active TLE set (from
+  CelesTrak / Space-Track or uploaded TLEs). Produces a single shared CZML
+  feed broadcast to all connected viewers.
+- **Scenario service.** REST CRUD for scenarios, versioning, ownership, audit
+  log. CCSDS OEM/OPM/AEM and TLE import. CZML and OEM export.
 - **Frame transforms.** A single canonical utility wrapping Orekit's frames
   with IERS Earth-orientation corrections. All emitted states carry their
   frame tag (SRS §3.2.5).
-- **Scenario service.** REST CRUD for scenarios, versioning, ownership, audit
-  log. CCSDS OEM/OPM/AEM and TLE import. CZML and OEM export.
-- **Streaming.** WebSocket streams two payloads from one propagation result:
-  CZML for the global view, compact relative-state for the proximity view.
+- **Streaming.** WebSocket: one channel for the shared catalog feed; one
+  channel per active scenario session. Both shapes carry CZML for the global
+  view; scenarios additionally carry compact relative-state for the
+  proximity view.
 - **Analysis.** Conjunction detection, sensor acquisition/loss events,
   constraint checks, Monte Carlo dispersion, covariance evolution.
 - **Security.** All requests through a Spring Security pipeline; auth/RBAC
-  starts as a no-op stub but the pipeline is real from day one.
+  starts as a no-op stub but the pipeline is real from day one (Decision 16).
 
 Module sketch:
 
 ```
 backend/
 ├── prop/            Orekit wrappers, fidelity selection, frame utility
-├── scenario/        Domain model, persistence, versioning, audit
+├── catalog/         shared SGP4 pass, TLE refresh, broadcast CZML feed
+├── scenario/        domain model, persistence, versioning, audit
 ├── stream/          CZML + relative-state encoders, WebSocket handlers
-├── analysis/        Conjunctions, events, Monte Carlo, link budget
+├── analysis/        conjunctions, events, Monte Carlo, link budget
 ├── io/              CCSDS, TLE, Keplerian readers/writers
 ├── api/             REST controllers, OpenAPI annotations
-├── security/        Auth pipeline (stub today, OIDC/SAML-ready)
+├── security/        auth pipeline (stub today, OIDC/SAML-ready)
 └── config/          Spring config, 12-factor env binding
 ```
 
 ---
 
-## 3. Frontend (React + Vite + Cesium + three.js)
+## 4. Frontend (React + Vite + Cesium + three.js)
 
 Responsibilities:
 
-- **Global view (Cesium).** WGS84 Earth, day/night terminator, ground tracks,
-  full orbital paths, current positions. Consumes the CZML stream directly.
-  Carries over the Phase-1 scaffold ([components/Globe.tsx](../satellite-tracker/src/components/Globe.tsx)).
+- **Global view (Cesium).** Earth at WGS84 scale + day/night terminator +
+  ground tracks. Renders **two layers** simultaneously:
+  - The **catalog layer** — all ~14,500 active satellites as
+    `PointPrimitiveCollection` dots, fed by the shared catalog CZML stream.
+  - The **scenario layer** — the chief and deputies of the active scenario,
+    with full orbit paths, ground tracks, and highlighted markers, fed by
+    the scenario CZML stream.
 - **Proximity view (three.js).** Chief-centered LVLH scene. Spacecraft 3D
   models (GLTF) with articulable parts. Sensor FOV volumes as translucent
   geometry. Trajectory ribbons (past = solid, predicted = dashed). Delta-V
   vector annotations at maneuver epochs. Adjustable scale 1 m–100 km.
-- **Scenario panel.** List, create, edit, duplicate, version-browse scenarios.
+- **Catalog browser.** Filters (constellation, type, regime, country),
+  search by name / NORAD ID, hit-padded clicks. Click a catalog satellite
+  → designate as chief (if none) or add as deputy in the scenario being
+  composed.
+- **Scenario panel.** List, create, edit, duplicate, version-browse
+  scenarios. Click-to-compose flow + form-based creation (for hypothetical
+  spacecraft).
 - **Timeline.** Scrub bar with annotated maneuver epochs, eclipse periods,
   sensor acquisition windows, conjunction events.
 - **Controls.** Play / pause / step / reset / rate (0.01x–10000x) / reverse.
@@ -117,20 +166,21 @@ Module sketch (extending what exists):
 ```
 frontend/src/
 ├── views/
-│   ├── global/         CesiumJS scene, CZML data source, ground tracks
-│   └── proximity/      three.js scene, LVLH camera, spacecraft models, FOV
-├── timeline/           scrub bar, event annotations
+│   ├── global/         Cesium scene; catalog + scenario CZML data sources
+│   └── proximity/      three.js scene, LVLH camera, models, FOV volumes
+├── catalog/            browser UI, filters, search, click-to-compose wiring
 ├── scenario/           panel, CRUD UI, import/export forms
+├── timeline/           scrub bar, event annotations
 ├── stream/             WebSocket client, decoded state buffers, interpolation
 ├── api/                generated OpenAPI client
-├── store/              Zustand slices (clock, selection, layout)
+├── store/              Zustand slices (clock, selection, layout, composer)
 ├── lib/                frame helpers, formatting, time-scale UI utils
 └── components/         shared UI primitives
 ```
 
 ---
 
-## 4. Data store (PostgreSQL)
+## 5. Data store (PostgreSQL)
 
 Tables (sketch, names will firm up with the schema):
 
@@ -145,44 +195,67 @@ Tables (sketch, names will firm up with the schema):
   computed events / analysis outputs
 
 `owner_id` and `roles` exist on day one even when auth is stubbed (RBAC seam,
-Decision 15).
+Decision 16).
+
+Catalog TLE data is *not* persisted as application state — it's refreshed
+from CelesTrak/Space-Track on a backend schedule and held in memory for the
+shared SGP4 pass. (Local file caching is fine for resilience; the database
+holds *scenario* state.)
 
 ---
 
-## 5. Data flows
+## 6. Data flows
 
-### Scenario load
+### Catalog browse (always-on background)
+1. Backend scheduler triggers every N seconds (e.g., 30 s).
+2. Backend runs one SGP4 pass over all active TLEs; encodes the result as a
+   CZML chunk covering the next ~N + buffer seconds.
+3. CZML chunk is broadcast over the catalog WebSocket channel to every
+   connected viewer.
+4. Each Cesium instance ingests the chunk; `SampledPositionProperty`
+   interpolates between samples for smooth per-frame motion.
+
+### Click-to-compose
+1. User clicks a satellite dot in the global view.
+2. Frontend resolves the picked NORAD ID; current scenario-composer state
+   in Zustand decides: first pick → chief, subsequent → deputy.
+3. Frontend POSTs the new/updated scenario version to the backend.
+4. Backend persists, returns the updated scenario; frontend opens a
+   scenario stream for it (next flow).
+
+### Scenario load + playback
 1. UI requests `GET /scenarios/{id}/versions/{v}`.
 2. Backend returns the scenario body; UI populates the panel.
-3. UI requests a stream for the scenario's time range and fidelity:
-   `WS /stream/{scenarioId}?from=...&to=...`.
-4. Backend propagates, streams CZML to the global view and relative-state to
-   the proximity view, time-tagged.
+3. UI opens `WS /stream/{scenarioId}?from=...&to=...`.
+4. Backend propagates at the chosen fidelity; streams CZML to the global
+   view's scenario layer and relative-state to the proximity view.
+5. Frontend interpolates between samples; both views animate in lockstep.
 
-### Playback / scrub
+### Scrub / rate change
 1. UI advances the clock locally (or sets a new epoch on scrub).
-2. UI sends `{kind: 'seek' | 'rate', value: ...}` over the WebSocket.
-3. Backend either continues streaming at the new rate / direction, or jumps to
-   the requested epoch and resumes.
-4. Both views interpolate between received samples for smooth per-frame motion.
+2. UI sends `{kind: 'seek' | 'rate', value: ...}` over the scenario socket.
+3. Backend resumes streaming at the new rate / direction, or jumps to the
+   requested epoch and resumes.
 
 ### Maneuver evaluation
 1. UI edits the maneuver plan; PUTs the new scenario version.
 2. UI requests a fresh stream for the updated scenario.
-3. Backend re-propagates from the maneuver epoch onward (pre-maneuver state is
-   cached); streams updated CZML + relative state.
-4. Frontend renders the new transfer path; delta-V vector annotation appears
-   in the proximity view; the cumulative delta-V budget updates.
+3. Backend re-propagates from the maneuver epoch onward; streams updated
+   CZML + relative state.
+4. Frontend renders the new transfer path; delta-V vector annotation
+   appears in the proximity view; cumulative delta-V budget updates.
 
 ---
 
-## 6. Build roadmap
+## 7. Build roadmap
 
 Phased so each phase ends with a working slice end-to-end. Sequence chosen to
 get the smallest end-to-end pipeline running first, then deepen.
 
 ### Phase 0 — Foundation ✅ (done)
 - React + Vite + Cesium scaffold; globe renders with day/night.
+- Catalog UI (constellations filter, stats overlay) wired to client-side
+  CelesTrak fetch — to be repointed at the backend in Phase 2.
 
 ### Phase 1 — Project structure & dual-container dev env
 - Spring Boot backend skeleton + OpenAPI scaffold + Spring Security pipeline
@@ -191,27 +264,32 @@ get the smallest end-to-end pipeline running first, then deepen.
   `scenario_versions`, `audit_log` tables.
 - Docker Compose for local dev (backend + frontend + db).
 - Frontend gets an OpenAPI-generated client; one `GET /health` round-trip.
-- Reshape the frontend shell from "catalog browser" to "scenario shell"
-  (remove the obsolete constellation filter / catalog stats; introduce an
-  empty scenario panel).
+- Add an empty scenario panel + scenario-composer state in the store.
+- Keep the existing catalog UI intact — it's first-class (Decision 13), not
+  a relic. Its data source will be repointed in Phase 2.
 
-### Phase 2 — Propagation pipeline (smallest end-to-end slice)
+### Phase 2 — Propagation pipeline + shared catalog stream
 - Orekit wired in the backend with SGP4 (lowest-friction fidelity).
-- Define and version the streaming contract; encode CZML.
-- Backend can stream a single TLE-defined satellite to the global view.
-- Frontend renders it from the stream (no client-side propagation).
-- Frame utility v1: ECI/ECEF/geodetic.
+- Define and version the streaming contract; CZML encoding.
+- Backend catalog service: periodic SGP4 pass over CelesTrak TLEs;
+  broadcast CZML feed.
+- Frontend global view consumes the catalog stream (replaces the
+  client-side CelesTrak fetch from Phase 0).
+- Frame utility v1: ECI / ECEF / geodetic.
+- Click-to-compose wiring: catalog click → scenario composer state.
 
-### Phase 3 — High-fidelity numerical propagation + scenario CRUD
+### Phase 3 — High-fidelity propagation + scenario CRUD
 - Add the numerical propagator (DP8(7), gravity ≥J4, drag, SRP, third-body).
 - Per-scenario fidelity selection.
-- Full frame management (LVLH/RIC + per-spacecraft body frames).
-- `Scenario` REST CRUD + versioning; initial states from TLE/CCSDS/Keplerian.
-- Multiple deputies; scenario panel UI; load scenario into the global view.
+- Full frame management (LVLH / RIC + per-spacecraft body frames).
+- `Scenario` REST CRUD + versioning; initial states from TLE / CCSDS /
+  Keplerian.
+- Multiple deputies; scenario panel UI; load scenario → per-user scenario
+  stream.
 
 ### Phase 4 — Dual viewports + shared clock
 - three.js proximity view scaffold in LVLH frame.
-- Relative-state stream (alongside CZML).
+- Relative-state stream (alongside CZML for the scenario).
 - Shared clock slice in the store; both views in lockstep.
 - Time controls: play / pause / step / scrub / rate (0.01x–10000x) / reverse.
 - Timeline scrub bar (annotations come later).
@@ -228,6 +306,7 @@ get the smallest end-to-end pipeline running first, then deepen.
 - Trajectory ribbons (past solid / predicted dashed).
 - Adjustable scale 1 m–100 km.
 - Camera modes: chief-body, deputy-body, fixed external.
+- Earth backdrop decision (default yes — see Deferred in decisions.md).
 
 ### Phase 7 — Sensors & FOV
 - Sensor model (type, FOV geometry, range, pointing).
@@ -260,42 +339,45 @@ get the smallest end-to-end pipeline running first, then deepen.
 - On-prem packaging (image bundle / Helm or Compose).
 
 ### Phase 11 — Polish & ship
-- Sample scenarios; tooltips/help; performance pass to SRS §5.1 metrics.
+- Sample scenarios; tooltips / help; performance pass to SRS §5.1 metrics.
 - PNG snapshots + MP4 sequence export from rendered canvases.
 - OpenAPI docs polish; user guide.
 
 ---
 
-## 7. What carries over from the Phase-1 scaffold
+## 8. What carries over from the Phase-0 scaffold
 
-Reusable:
+Reusable and **first-class going forward**:
 - React + Vite + TypeScript project structure.
 - [components/Globe.tsx](../satellite-tracker/src/components/Globe.tsx) — the
   Cesium viewer setup with day/night lighting.
+- [components/FilterPanel.tsx](../satellite-tracker/src/components/FilterPanel.tsx)
+  — repurposed as the catalog browser's constellation filter (Decision 13).
+  Stays.
+- [components/StatsOverlay.tsx](../satellite-tracker/src/components/StatsOverlay.tsx)
+  — repurposed for catalog + scenario stats; counts come from the catalog
+  stream rather than hardcoded.
 - Zustand store pattern (Decision 5).
 - Cesium ion configuration via `.env` and the existing token.
 
-Replaced or removed:
-- [components/FilterPanel.tsx](../satellite-tracker/src/components/FilterPanel.tsx) —
-  obsolete (catalog-era constellations). Removed in Phase 1.
-- [components/StatsOverlay.tsx](../satellite-tracker/src/components/StatsOverlay.tsx) —
-  catalog stats; removed or repurposed for scenario stats.
-- [lib/celestrak.ts](../satellite-tracker/src/lib/celestrak.ts) — direct
-  client-side fetch is gone; TLE ingestion is a backend concern (Decision 14).
-- [lib/propagator.ts](../satellite-tracker/src/lib/propagator.ts) — satellite.js
-  is dropped; the frontend no longer propagates.
+Repointed in Phase 2 (no longer fetched client-side):
+- [lib/celestrak.ts](../satellite-tracker/src/lib/celestrak.ts) — TLE
+  ingestion moves to the backend (Decision 15); the frontend consumes the
+  backend catalog stream instead.
+- [lib/propagator.ts](../satellite-tracker/src/lib/propagator.ts) —
+  satellite.js drops out; the frontend no longer propagates.
 
-The current bottom bar (TimeController), top bar, and info panel survive as
-UI primitives and get rewired to scenario state in Phase 1.
+The existing TimeController, top bar, and info panel survive as UI primitives
+and get rewired to scenario state in Phases 1–4.
 
 ---
 
-## 8. Success metrics (SRS §5.1)
+## 9. Success metrics (SRS §5.1)
 
 These are the v1 acceptance targets:
 
 - Proximity view: 60 fps with ≤10 spacecraft on mid-range discrete GPU.
-- Global view: 30 fps under the same conditions.
+- Global view: 30 fps with the full catalog (~14,500 dots) + scenario layer.
 - Scrub latency: ≤200 ms input-to-frame.
 - Scenario load: ≤5 s for a 24-hour scenario.
 - High-fidelity propagation: sub-km / 24h LEO against reference (§5.2.2).
