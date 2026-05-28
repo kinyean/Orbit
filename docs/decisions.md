@@ -1,602 +1,525 @@
 # Decisions
 
-The single source of truth for "why this, not that" in the satellite tracker.
-Read this before deviating — the alternatives listed here have already been
-weighed.
+The single source of truth for "why this, not that." Read this before
+deviating — the alternatives here have already been weighed.
 
-Format: each decision has **Context** (what problem), **Decision** (what we
-picked), **Why** (the reasoning), **Alternatives considered** (what we rejected
-and why), and **Consequences** (what this commits us to).
+> **2026-05-28 — Project pivot.** A Software Requirements Specification
+> ([Software Requirements Specification.md](./Software%20Requirements%20Specification.md))
+> redefined this project from a *public satellite tracker* into an
+> *Inter-Satellite Remote Proximity Operations (RPO) simulation platform* for
+> flight-dynamics engineers. The SRS is now the authoritative spec. Several
+> early decisions were reversed; they are retained in
+> [Superseded decisions](#superseded-decisions-pre-srs-pivot) for the record.
+> Keystone choices from the pivot: backend required (Java + Spring Boot),
+> Orekit propagation engine, dual-viewport client (Cesium + three.js),
+> scenario-based data model, and a "build professional-grade from the start"
+> posture.
 
-The decisions are roughly ordered from broadest (whole-app architecture) to
-narrowest (specific implementation choices).
+Format per decision: **Context**, **Decision**, **Why**, **Alternatives
+considered**, **Consequences**.
 
 ## Table of contents
 
-1. [Client-only architecture, no backend in v1](#1-client-only-architecture-no-backend-in-v1)
-2. [Framework: React + TypeScript](#2-framework-react--typescript)
-3. [Build tool: Vite](#3-build-tool-vite)
-4. [3D engine: CesiumJS](#4-3d-engine-cesiumjs)
-5. [Propagation: satellite.js](#5-propagation-satellitejs)
-6. [State management: Zustand](#6-state-management-zustand)
-7. [Data source: CelesTrak](#7-data-source-celestrak)
-8. [Hosting: Cloudflare Pages](#8-hosting-cloudflare-pages)
-9. [Heavy compute: Web Workers](#9-heavy-compute-web-workers)
-10. [Time source of truth: Zustand](#10-time-source-of-truth-zustand)
-11. [Coordinate frame: ECEF for rendering, geodetic on demand](#11-coordinate-frame-ecef-for-rendering-geodetic-on-demand)
-12. [Worker boundary contract](#12-worker-boundary-contract)
-13. [IndexedDB cache schema: one blob per group](#13-indexeddb-cache-schema-one-blob-per-group)
-14. [Cache TTL: stale-while-revalidate, 6 hours](#14-cache-ttl-stale-while-revalidate-6-hours)
-15. [Render primitive: PointPrimitiveCollection + Entity for selection](#15-render-primitive-pointprimitivecollection--entity-for-selection)
-16. [Selection mechanism: Cesium pick + padded hit radius](#16-selection-mechanism-cesium-pick--padded-hit-radius)
-17. [Filter semantics: CelesTrak groups + OBJECT_TYPE](#17-filter-semantics-celestrak-groups--object_type)
-18. [Deferred decisions (revisit before launch)](#deferred-decisions-revisit-before-launch)
+**Frontend**
+1. [React + TypeScript](#1-react--typescript)
+2. [Build tool: Vite](#2-build-tool-vite)
+3. [Global-view engine: CesiumJS](#3-global-view-engine-cesiumjs)
+4. [Proximity-view engine: three.js](#4-proximity-view-engine-threejs)
+5. [Frontend state: Zustand](#5-frontend-state-zustand)
+
+**Backend & propagation**
+6. [Backend: Java + Spring Boot](#6-backend-java--spring-boot)
+7. [Propagation engine: Orekit, multi-fidelity](#7-propagation-engine-orekit-multi-fidelity)
+8. [Scenario store: PostgreSQL](#8-scenario-store-postgresql)
+
+**Architecture & contracts**
+9. [Four-component architecture, decoupled visualization](#9-four-component-architecture-decoupled-visualization)
+10. [State-streaming contract: REST + WebSocket + CZML](#10-state-streaming-contract-rest--websocket--czml)
+11. [Single authoritative simulation clock](#11-single-authoritative-simulation-clock)
+12. [Frame management: canonical utility, frame-tagged states](#12-frame-management-canonical-utility-frame-tagged-states)
+
+**Data**
+13. [Scenario data model: chief + deputies](#13-scenario-data-model-chief--deputies)
+14. [Data formats: TLE, CCSDS, Keplerian, CZML](#14-data-formats-tle-ccsds-keplerian-czml)
+
+**Cross-cutting / enterprise**
+15. [Enterprise posture: professional-grade from the start](#15-enterprise-posture-professional-grade-from-the-start)
+16. [Deployment: containerized, cloud + on-prem](#16-deployment-containerized-cloud--on-prem)
+
+[Superseded decisions (pre-SRS pivot)](#superseded-decisions-pre-srs-pivot)
+·
+[Deferred decisions](#deferred-decisions)
 
 ---
 
-## 1. Client-only architecture, no backend in v1
+# Frontend
 
-**Context.** A satellite tracker could be built as a server-rendered app, a
-backend-with-API model, or as a pure static client. Each adds different
-operational cost.
+## 1. React + TypeScript
 
-**Decision.** Everything runs in the browser. TLE (Two-Line Element) data
-fetched directly from CelesTrak, propagation done in-browser, state held in
-memory and IndexedDB. Static files served from a CDN. No servers, no
-database, no API.
+**Context.** The client is an interactive multi-panel app with two 3D
+viewports, a timeline, and scenario controls.
 
-**Why.** Each user gets an identical self-contained app pulling public data.
-~$0/month at any scale; scales to millions of users with no architectural
-changes. None of the features that require a backend (user accounts, shared
-state, push notifications, hidden API keys) are needed in v1.
+**Decision.** React (hooks, function components) + TypeScript strict mode.
 
-**Alternatives considered.**
-- *Backend with API.* Required for v3 features (public API tier, historical
-  TLE archive, user accounts). Adds it then, not now.
-- *Server-rendered (Next.js or similar).* Pointless — Google can't index a
-  WebGL canvas, and the whole app is one screen.
+**Why.** Deepest ecosystem, biggest talent pool. TypeScript matters
+doubly here: orbital/relative-motion code is full of unit and frame pitfalls
+(km vs m, degrees vs radians, ECI vs LVLH) that types catch before runtime.
 
-**Consequences.**
-- Things deferred to a future backend: user accounts that sync across
-  devices, historical playback before the cache window, push notifications,
-  hidden API keys, the public API tier.
-- Anything that needs CORS-blocked APIs needs a proxy layer (not in v1).
+**Alternatives considered.** Vue, Svelte, SolidJS — all viable, smaller
+ecosystems. No reason to go exotic.
 
----
+**Consequences.** Strict mode stays on; per-slice store subscriptions
+(Decision 5).
 
-## 2. Framework: React + TypeScript
+## 2. Build tool: Vite
 
-**Context.** A single-page interactive app with a 3D canvas and a chrome of
-panels around it. Many UI frameworks could do the job.
-
-**Decision.** React (with hooks, function components, `react-jsx` transform)
-+ TypeScript in strict mode.
-
-**Why.** React has the deepest ecosystem, the most documentation, and the
-largest talent pool. Nothing about this app is unusual enough to justify an
-exotic choice. TypeScript matters more here than in a typical web app because
-orbital math is full of unit pitfalls (km vs meters, degrees vs radians) —
-types catch many before runtime.
-
-**Alternatives considered.**
-- *Vue.* What `satvis` uses. Slightly smaller ecosystem, otherwise comparable.
-  Fine if forking satvis.
-- *Svelte / SolidJS.* Better runtime perf, smaller ecosystems, fewer
-  tutorials. Worth picking only if you're already fluent.
-
-**Consequences.**
-- Component design uses hooks and per-slice subscriptions to the Zustand
-  store (see [Decision 6](#6-state-management-zustand)).
-- Strict mode stays on; type errors get fixed, not suppressed.
-
----
-
-## 3. Build tool: Vite
-
-**Context.** Need a TypeScript bundler that produces static output, runs a
-dev server, supports HMR (Hot Module Replacement), and integrates with the
-CesiumJS asset story.
+**Context.** Need a fast TS/JSX bundler producing static output for the
+client container, with the CesiumJS asset story handled.
 
 **Decision.** Vite + `@vitejs/plugin-react` + `vite-plugin-cesium`.
 
-**Why.** Vite outputs plain static files (deploy anywhere), rebuilds in
-sub-second time in dev (vs 2–10 seconds for older tools), has zero server
-complexity, and the Cesium plugin handles `CESIUM_BASE_URL` and asset copy.
+**Why.** Sub-second HMR, static output, minimal config; Cesium plugin handles
+`CESIUM_BASE_URL` and asset copy. three.js needs no special build handling.
+
+**Alternatives considered.** Next.js (server features we don't need for the
+client), CRA (deprecated), raw Webpack (more config).
+
+**Consequences.** Two `tsconfig` files (browser code vs `vite.config.ts`).
+
+## 3. Global-view engine: CesiumJS
+
+**Context.** The global view (SRS §3.8) renders Earth at WGS84 scale with
+orbital paths, ground tracks, and time-dynamic state. SRS §6.1.1 mandates
+CesiumJS.
+
+**Decision.** CesiumJS for the global view. Consumes time-dynamic state as
+CZML (SRS §3.8.5).
+
+**Why.** Cesium natively handles the WGS84 ellipsoid, day/night terminator,
+atmosphere, ground tracks, geodetic math, and a time-driven clock — exactly
+the global-view needs. Mandated by the spec besides.
+
+**Alternatives considered.** None — spec-mandated. (The existing Phase-1
+scaffold is already this engine and carries over directly.)
+
+**Consequences.** Cesium ion provides imagery (5 GB/mo free; self-host
+trigger deferred). The global view is one of two engines (Decision 4).
+
+## 4. Proximity-view engine: three.js
+
+**Context.** The proximity view (SRS §3.9) renders the close-range scene in
+the chief's LVLH frame at scales from 1 m to 100 km: spacecraft 3D models with
+articulable parts, sensor FOV volumes, relative-motion trajectory ribbons,
+delta-V vectors. SRS §6.1.2 specifies three.js or equivalent.
+
+**Decision.** three.js for the proximity view, rendering in the chief-centered
+LVLH frame.
+
+**Why.** Cesium is globe-anchored and geo-centric — wrong tool for a
+free-space, model-rich scene at meter scale. three.js is a general 3D engine
+built for exactly this: custom GLTF models, articulated parts, translucent FOV
+geometry, custom shaders. The two engines share one clock (Decision 11).
 
 **Alternatives considered.**
-- *Next.js.* Built for apps with a server — SSR, API routes, page-level
-  code-splitting. None of which we need.
-- *Create React App.* Deprecated, slow, no longer maintained.
-- *Webpack directly.* Too much config for the same outcome.
+- *Cesium for both views.* Cesium's scene graph fights free-space
+  model-centric rendering; meter-scale proximity ops aren't its model.
+- *Babylon.js.* Comparable to three.js; three.js has the larger ecosystem and
+  is named in the spec.
 
-**Consequences.**
-- Two `tsconfig.json` files needed: one for browser code in `src/`, one for
-  `vite.config.ts` itself (runs in Node).
-- Cesium static assets (workers, shaders, imagery, fonts) are copied at build
-  time by the plugin.
+**Consequences.** Two render engines to maintain. They are decoupled and
+synchronized only through the shared clock and the relative-state stream
+(Decision 10). Spacecraft models need a GLTF asset pipeline.
+
+## 5. Frontend state: Zustand
+
+**Context.** The client has shared UI/session state (current sim time,
+selected objects, view layout, active scenario id) read by many components.
+Heavy ephemeris data comes from the backend stream, not the store.
+
+**Decision.** Zustand for **frontend UI/session state**, per-slice
+subscriptions. Streamed ephemeris/state is held in purpose-built buffers, not
+in Zustand.
+
+**Why.** ~1 KB, no boilerplate, per-slice subscriptions avoid the Context
+re-render trap during 60fps animation. The store holds control state; the
+high-frequency position data lives in typed buffers fed by the WebSocket.
+
+**Alternatives considered.** Redux Toolkit (overkill), Jotai (comparable),
+React Context (re-render trap).
+
+**Consequences.** Clear split: Zustand = control/UI; stream buffers = state
+data. Both views subscribe to the same clock slice for synchronization.
 
 ---
 
-## 4. 3D engine: CesiumJS
+# Backend & propagation
 
-**Context.** Need a 3D engine that handles a realistic Earth, day/night
-lighting, time-driven scenes, accurate geodetic coordinates, and renders
-many objects on a globe.
+## 6. Backend: Java + Spring Boot
 
-**Decision.** CesiumJS. This is the single most consequential technical
-choice.
+**Context.** The SRS requires a backend propagation/analysis service (§2.1.1,
+§6.1.4) with REST + WebSocket APIs (§4.3), auth/RBAC (§5.5), and the chosen
+propagation engine is Orekit — a Java library (Decision 7).
 
-**Why.** Cesium solves the boring parts of geospatial 3D natively:
-- Accurate Earth ellipsoid (Earth is slightly squashed, not a sphere).
-- Terrain elevation.
-- Day/night terminator and city-lights imagery.
-- Atmosphere glow at the limb.
-- A built-in clock object with time-driven scenes — exactly what a satellite
-  tracker needs.
-- Geodetic coordinate math.
+**Decision.** Java backend on Spring Boot, calling Orekit natively.
 
-Building these on Three.js takes months. The math is subtle.
+**Why.** Orekit is Java; native calls avoid bridging friction and get full
+performance. Spring Boot brings batteries-included REST, WebSocket (STOMP),
+Spring Security (OIDC/SAML/RBAC for §5.5), dependency injection, and a mature
+ops ecosystem — directly serving the "build professional-grade from the start"
+posture (Decision 15).
 
 **Alternatives considered.**
-- *Three.js.* General-purpose 3D engine. Smaller (~600 KB) and stylizable,
-  but you'd reimplement everything in the list above. Rejected.
-- *deck.gl.* Best-in-class GPU point rendering — could push 100k+ points
-  easily. Could layer on top of Cesium for the point cloud in v2. Not a v1
-  choice on its own.
+- *Python + Orekit via JPype.* Friendlier app code and easy NumPy-based Monte
+  Carlo, but a JVM bridge under the hood, weaker performance at the boundary,
+  and a less mature enterprise-security story than Spring. Rejected given the
+  professional posture.
+- *Custom propagator in TS/Node.* Cannot meet the validated-accuracy bar
+  (§5.2); rejected with Decision 7.
+
+**Consequences.** Backend is JVM; containerized (Decision 16). Monte Carlo and
+numerical analysis (SRS §3.12) are implemented in Java/Orekit or delegated to a
+worker pool — to be detailed when that phase arrives.
+
+## 7. Propagation engine: Orekit, multi-fidelity
+
+**Context.** The SRS demands SGP4/SDP4 (§3.1.1), high-fidelity numerical
+propagation (DP8(7) integrator, J4+ gravity, NRLMSISE-00 drag, SRP, third-body
+— §3.1.2–6), Clohessy-Wiltshire relative motion (§3.1.7), per-scenario fidelity
+selection (§3.1.8), CCSDS I/O (§4.1–4.2), IERS frame corrections (§3.2.2), and
+validation to AIAA 2006-6753 / sub-km over 24h (§5.2).
+
+**Decision.** Orekit as the single propagation engine, exposing three
+fidelity modes selectable per scenario:
+1. **SGP4/SDP4** from TLE.
+2. **High-fidelity numerical** — DP8(7), configurable gravity field (≥J4),
+   NRLMSISE-00 drag, SRP, Sun/Moon third-body.
+3. **Clohessy-Wiltshire** linearized relative motion for close range.
+
+Propagation is **deterministic** (fixed settings, seeded dispersions) for
+reproducibility (§5.4.1).
+
+**Why.** Orekit is the open-source industry standard and already provides every
+item above — including CCSDS OEM/OPM/AEM parsing/writing and IERS-corrected
+frames — already validated. Reimplementing any of this would be a multi-month
+effort that still wouldn't clear the validation bar.
+
+**Alternatives considered.**
+- *Tudat / Astropy (Python).* Capable but more assembly, lighter CCSDS, and
+  would pair with a Python backend we rejected (Decision 6).
+- *Custom (TS/Java).* Can't realistically hit AIAA conformance soon.
 
 **Consequences.**
-- Bundle weight is ~3 MB minified (~800 KB gzipped). Acceptable for this
-  app's audience and use case.
-- Hard to stylize — Cesium is opinionated about looking like a realistic
-  Earth.
-- Imagery comes from Cesium ion (5 GB egress free, then paid). Self-hosting
-  tiles becomes necessary at scale; revisit when usage approaches the cap.
+- satellite.js is dropped — Orekit handles SGP4 (supersedes old Decision 5).
+- The frontend never propagates; it consumes streamed state (Decision 10).
+- Fidelity selection is part of the scenario model (Decision 13).
+- A validation test suite against reference solutions is required for §5.2
+  (deferred but architected for).
+
+## 8. Scenario store: PostgreSQL
+
+**Context.** Scenarios are persistent, serializable artifacts with versioning,
+author/timestamp metadata (§3.10.5), and audit logging (§5.4.2). They contain
+nested, somewhat free-form payloads (states, maneuver plans, sensor configs,
+attitude profiles).
+
+**Decision.** PostgreSQL. Relational tables for scenarios, versions, users,
+and audit log; `jsonb` columns for the flexible scenario payloads.
+
+**Why.** Professional default: mature, transactional, supports both rigid
+relational structure (versioning, ownership, audit) and flexible `jsonb`
+(scenario bodies). One store covers persistence, versioning, and audit.
+
+**Alternatives considered.**
+- *SQLite.* Fine for single-user/dev; weak for concurrent multi-user and the
+  professional deployment story.
+- *MongoDB.* Flexible documents, but weaker transactional/relational support
+  for versioning + audit + RBAC ownership.
+
+**Consequences.** Backend gains a database dependency and migrations
+(Flyway/Liquibase). Scenario ownership column exists from day one as the RBAC
+seam (Decision 15).
 
 ---
 
-## 5. Propagation: satellite.js
+# Architecture & contracts
 
-**Context.** TLE (Two-Line Element) data is not positions — it's an orbital
-element set encoded in two text lines. Turning those into 3D positions at a
-given time requires SGP4 (Simplified General Perturbations 4), the standard
-analytic propagator.
+## 9. Four-component architecture, decoupled visualization
 
-**Decision.** Use `satellite.js`, the de facto JavaScript SGP4
-implementation.
+**Context.** SRS §2.1.1 names four components; §5.3.3 requires the
+visualization layer be decoupled from the propagation engine via a defined
+state-streaming contract; §5.3.1–2 require new propagators/sensors/maneuvers be
+addable without touching rendering.
 
-**Why.** Runs in the browser without compilation steps. De facto standard
-for amateur satellite tracking, well-tested, ships its own TypeScript
-declarations.
+**Decision.** Four components:
+1. **Backend propagation & analysis service** (Java/Spring/Orekit).
+2. **Frontend dual-viewport client** (React + Cesium + three.js).
+3. **Scenario data store** (PostgreSQL).
+4. **External interfaces** (CelesTrak/Space-Track, CCSDS files).
+
+The frontend and backend communicate **only** through the streaming contract
+(Decision 10) — the frontend has no propagation logic.
+
+**Why.** Hard decoupling is a spec requirement and good architecture: the
+engine can grow (new perturbations, new fidelity) without rendering changes,
+and the rendering can grow without engine changes. The contract is the seam.
 
 **Alternatives considered.**
-- *Native C/Fortran SGP4 via WebAssembly.* Roughly 10× faster, but requires
-  a build toolchain and an extra layer. Premature optimization for v1.
-  Revisit only if profiling shows propagation is the bottleneck after
-  workers and interpolation.
+- *Client-side propagation (the old no-backend model).* Reversed by the SRS —
+  cannot meet fidelity/validation, and the spec mandates a backend. See
+  [superseded Decision A](#superseded-decisions-pre-srs-pivot).
 
-**Consequences.**
-- Performance ceiling is set by satellite.js's throughput. Worker +
-  interpolation hides this for v1's scale.
-- Future port to WASM stays an open path.
+**Consequences.** A network hop sits between compute and render; the streaming
+contract must be efficient and well-specified (Decision 10). Local dev runs all
+components via Docker Compose (Decision 16).
+
+## 10. State-streaming contract: REST + WebSocket + CZML
+
+**Context.** SRS §4.3.1 (REST for scenario CRUD), §4.3.2 (WebSocket for
+time-synchronized state), §4.3.3 (OpenAPI 3.x), §3.8.5 (global view consumes
+CZML). Both views must stay synchronized (§3.11.4).
+
+**Decision.**
+- **REST** (OpenAPI 3.x documented) for scenario CRUD, import/export, and
+  analysis requests.
+- **WebSocket** for time-synchronized state streaming during playback.
+- **CZML** as the payload for global-view time-dynamic data.
+- A compact **relative-state stream** (positions/velocities in LVLH + events)
+  for the proximity view.
+
+This contract is the decoupling seam of Decision 9.
+
+**Why.** REST/WebSocket/OpenAPI/CZML are all spec-named. CZML is Cesium's
+native time-dynamic format. The relative-state stream keeps the proximity view
+independent of CZML and of Cesium specifics.
+
+**Alternatives considered.**
+- *Polling REST for state.* Too coarse for 60fps sync; WebSocket is specified.
+- *One payload format for both views.* CZML is Cesium-shaped; forcing the
+  three.js view to parse it couples them. Separate streams keep them decoupled.
+
+**Consequences.** Backend emits two stream shapes from one propagation result.
+Versioned contract; the frontend buffers and interpolates between samples for
+smooth playback (echoing the old worker-interpolation idea, now across the
+network).
+
+## 11. Single authoritative simulation clock
+
+**Context.** SRS §3.3.1 requires a single authoritative simulation clock;
+§6.1.3 requires both viewports share it; §3.3.4 requires 0.01x–10000x time
+scaling including reverse; §3.3.2–3 require UTC + leap seconds and J2000.
+
+**Decision.** One authoritative simulation clock. The **frontend owns playback
+control** (play/pause/scrub/rate/direction); the **backend is the authority on
+time-tagged state** (it propagates at the requested epochs and tags every
+sample). Both Cesium and three.js views read the same clock slice in the store.
+Time scales/frames use Orekit's `TimeScalesFactory` (UTC w/ leap seconds, TAI,
+J2000) on the backend.
+
+**Why.** Confirms and extends the earlier "single source of truth for time"
+choice — now validated by the SRS. Frontend-owns-control keeps the UI
+responsive; backend-owns-state keeps physics authoritative. Orekit handles leap
+seconds and time-scale conversions correctly (avoids the JS `Date` leap-second
+gap).
+
+**Alternatives considered.**
+- *Per-view clocks.* Causes desync; spec forbids (§3.11.4).
+- *Backend drives the clock tick.* Adds latency to play/pause/scrub; let the UI
+  own control and request state.
+
+**Consequences.** Scrubbing requests state at the new epoch; playback streams
+state forward/backward at the chosen rate. Both views update from the same
+stream, staying in lockstep.
+
+## 12. Frame management: canonical utility, frame-tagged states
+
+**Context.** SRS §3.2: support ECI (J2000/ICRF), ECEF (ITRF with polar motion
++ UT1-UTC), LVLH and RIC centered on the chief, and per-spacecraft body frames
+from attitude quaternions; §3.2.5 every state tagged with its frame; §3.2.6 a
+single canonical transformation utility; §5.2.4 transforms precise to 1e-9.
+
+**Decision.** All transforms go through **one canonical frame utility backed by
+Orekit's frames** (which include IERS Earth-orientation data). Every state
+vector carries an explicit frame tag. Supported frames: ECI(J2000/ICRF),
+ECEF(ITRF), LVLH/RIC(chief-centered), body-fixed(per-spacecraft, quaternion).
+
+**Why.** Frame bugs are the dominant error class in this domain; a single
+audited conversion path plus mandatory frame tags makes mismatches detectable
+and prevents silent errors. Orekit already provides IERS-accurate frames to the
+required precision.
+
+**Alternatives considered.**
+- *Ad-hoc conversions at call sites.* The classic source of frame bugs.
+  Rejected.
+- *Hand-rolled frame math.* Won't meet §5.2.4 precision with IERS corrections.
+
+**Consequences.** Confirms/extends the earlier RIC and ECEF choices, now under
+one utility. The frontend receives pre-tagged state and converts for display
+via a thin client mirror of the same conventions.
 
 ---
 
-## 6. State management: Zustand
+# Data
 
-**Context.** The app has shared state (current time, selected satellite,
-active filters, camera) read by many components. Need a way to share it
-without prop drilling, and without triggering unnecessary re-renders.
+## 13. Scenario data model: chief + deputies
 
-**Decision.** Zustand. Components subscribe per-slice (e.g.,
-`useStore(s => s.currentTime)`) rather than reading the whole store.
+**Context.** SRS §2.2.1: a scenario is one chief spacecraft, one or more
+deputies, initial states, a maneuver plan, attitude profiles, and sensor
+configs. §3.10: persist, edit, duplicate, delete, version. §3.1.8: per-scenario
+fidelity.
 
-**Why.** Zustand is ~1 KB, has no boilerplate, supports per-slice
-subscriptions natively. Per-slice subscriptions avoid the Context API
-performance trap where any state change re-renders every consumer.
-
-**Alternatives considered.**
-- *React Context.* Has a performance trap: any change to the context value
-  re-renders every component that uses it, even for unrelated state. With
-  60fps animations this causes visible jank.
-- *Redux Toolkit.* Industry standard but overkill for this app — too much
-  boilerplate for the amount of state involved.
-- *Jotai.* Similar size and ergonomics to Zustand with an atom-based mental
-  model. Reasonable alternative; Zustand was picked for the simpler API.
-
-**Consequences.**
-- Per-slice subscriptions are the convention, enforced by code review.
-- Components do not pass state through props when both ends could subscribe
-  to Zustand directly.
-
----
-
-## 7. Data source: CelesTrak
-
-**Context.** The authoritative source for orbital elements is the U.S. Space
-Force's 18th Space Defense Squadron. They distribute through Space-Track.org
-(requires registration, no CORS) and CelesTrak (free, no auth, CORS-enabled,
-republished from the same upstream).
-
-**Decision.** Fetch from CelesTrak directly in the browser. Endpoint:
-`https://celestrak.org/NORAD/elements/gp.php?GROUP=<group>&FORMAT=json`.
-
-**Why.** Free, no auth, browser-fetchable, same underlying data as
-Space-Track. The `gp.php` endpoint returns full catalog records (not just
-TLE lines) with all the metadata we need for filtering.
-
-**Alternatives considered.**
-- *Space-Track.org.* Required for historical data (CelesTrak only serves
-  current). Needs registration and a backend proxy for CORS. Add in v2 when
-  historical playback is built.
-
-**Consequences.**
-- v1 has no historical data; the time scrubber's useful range is "around
-  now" only.
-- Group endpoints (`starlink`, `oneweb`, etc.) drive the constellation
-  filter design (see [Decision 17](#17-filter-semantics-celestrak-groups--object_type)).
-
----
-
-## 8. Hosting: Cloudflare Pages
-
-**Context.** Static files need a CDN. The free tier matters because
-satellite tools can go viral and bandwidth caps elsewhere are tight.
-
-**Decision.** Cloudflare Pages.
-
-**Why.** Unlimited bandwidth on the free tier; 300+ city CDN footprint. For
-a tool with international appeal, this is the right tradeoff.
-
-**Alternatives considered.**
-- *Vercel.* Polished DX, but 100 GB/month bandwidth cap (~30k uniques with
-  a 3 MB initial load).
-- *Netlify.* Comparable to Vercel; same cap.
-
-**Consequences.**
-- Cloudflare's developer experience is rougher than Vercel's. If it slows
-  development meaningfully, migrating takes ~1 hour — build output is
-  identical static files.
-
----
-
-## 9. Heavy compute: Web Workers
-
-**Context.** Propagating 15,000 satellites with SGP4 takes 50–200 ms per
-pass. Running this on the main thread blocks rendering, dropping the UI to
-~5 fps with visible stutter.
-
-**Decision.** Propagation runs in a Web Worker on a separate thread.
-Snapshots come back to the main thread every ~500 ms; main thread linearly
-interpolates between snapshots for per-frame motion.
-
-**Why.** A 500 ms snapshot cadence with linear interpolation introduces at
-most a few kilometers of error for a fast LEO satellite. At globe scale
-(Earth radius ~6,400 km, satellite as one pixel), this is invisible. The
-user sees smooth 60 fps motion that's indistinguishable from per-frame
-propagation, at a fraction of the compute cost.
-
-**Alternatives considered.**
-- *Per-frame propagation on the main thread.* Blocks rendering. Rejected.
-- *Per-frame propagation in a worker.* Possible, but wastes CPU —
-  interpolation handles the per-frame motion correctly with no perceptible
-  difference.
-
-**Consequences.**
-- Not built in Phase 2 — Phase 2 propagates on the main thread for a smaller
-  subset (a few thousand satellites) to keep iteration speed up. Phase 3
-  introduces the worker with the contract defined in
-  [Decision 12](#12-worker-boundary-contract).
-- The store does not hold per-satellite position objects — see
-  [Decision 12](#12-worker-boundary-contract) for the array shape.
-
----
-
-## 10. Time source of truth: Zustand
-
-**Context.** Three pieces of code care about "what time is it": the time
-scrubber and play/pause UI, the satellite propagator, and the Cesium scene
-(sun position, animations). If each owns its own clock, they drift apart.
-
-**Decision.** The Zustand store's `currentTime: Date` is the single source
-of truth. Cesium's `viewer.clock` is a downstream consumer — an effect in
-the Globe component pushes Zustand's `currentTime` into
-`viewer.clock.currentTime` whenever it changes. During playback, a single
-`requestAnimationFrame` loop advances `currentTime` in the store; Cesium
-follows.
-
-**Why.** One-way data flow eliminates desync. The UI naturally writes to
-Zustand (every component reads from it); making Zustand authoritative keeps
-the UI in charge.
-
-**Alternatives considered.**
-- *Cesium clock as source of truth.* Forces the UI to read Cesium imperative
-  state on every render. Awkward, and reintroduces the React-vs-imperative
-  boundary we already manage.
-- *Both as sources with bidirectional sync.* Always ends in infinite loops
-  or inconsistent state. Rejected on principle.
-
-**Consequences.**
-- All time mutations go through `setCurrentTime`.
-- Cesium's internal clock multiplier is unused; speed control is implemented
-  in the main animation loop multiplying its delta.
-- Conversion to `Cesium.JulianDate` happens only at the Cesium boundary.
-
----
-
-## 11. Coordinate frame: ECEF for rendering, geodetic on demand
-
-**Context.** Three frames are in play:
-- **ECI** (Earth-Centered Inertial): what SGP4 propagation outputs.
-- **ECEF** (Earth-Centered Earth-Fixed): what Cesium needs for placing
-  objects on the rotating globe.
-- **Geodetic** (latitude, longitude, altitude): what humans read in the
-  info panel.
-
-Going between frames is a few matrix operations, but doing it for 15,000
-objects per frame adds up.
-
-**Decision.** In-memory positions (and the worker boundary) are **ECEF
-Cartesians** as `Float32Array` of `[x, y, z, x, y, z, …]`. Geodetic is
-computed **on demand** for the selected satellite only, when the info panel
-needs it.
-
-**Why.** Cesium consumes ECEF directly with no conversion. Computing
-geodetic once per click is free; computing it 15,000 times per second is
-wasteful.
-
-**Alternatives considered.**
-- *Store geodetic, convert in the renderer.* Current state of
-  `propagator.ts`. ~15,000 `Cartesian3.fromDegrees` calls per frame is slow.
-- *Store ECI, convert at render time.* Moves work to the render hot path
-  for no gain.
-
-**Consequences.**
-- `propagator.ts` outputs ECEF (using satellite.js `eciToEcf` after
-  `propagate`).
-- A small helper `ecefToGeodetic(x, y, z)` for the info panel.
-- The worker contract carries ECEF.
-
----
-
-## 12. Worker boundary contract
-
-**Context.** The worker contract — message shapes, cadence, transfer model
-— must be fixed before propagation code is written, or it becomes
-load-bearing in two places.
-
-**Decision.** Message types:
-
-```typescript
-// main → worker
-type ToWorker =
-  | { kind: 'init'; catalog: TLE[] }
-  | { kind: 'tick'; timestampMs: number };
-
-// worker → main
-type FromWorker =
-  | { kind: 'positions'; timestampMs: number; ids: Int32Array; ecef: Float32Array }
-  | { kind: 'error'; message: string };
+**Decision.** A scenario is the central artifact:
 ```
-
-Cadence: worker propagates every **500 ms**. Main thread holds the last two
-snapshots and interpolates linearly between them for each frame.
-ArrayBuffers are **transferred** (not copied) via the `postMessage` transfer
-list to avoid marshalling cost.
-
-**Why.** Float32Array + transfer is the standard high-performance pattern
-(~0 ms overhead vs ~5 ms for clone of 180 KB). Per-satellite objects would
-have ~100× the serialization cost.
-
-**Alternatives considered.**
-- *Per-satellite object messages.* Easier to debug, dramatically slower.
-- *SharedArrayBuffer.* Faster still (no transfer at all), but needs COOP/COEP
-  HTTP headers and a more careful synchronization protocol. Revisit if
-  transfer becomes a bottleneck.
-
-**Consequences.**
-- The store holds `ids: Int32Array` and `ecef: Float32Array` snapshots, not
-  a map of satellites.
-- Looking up a satellite by NORAD ID at render time uses a separate index
-  (`Map<number, number>` from NORAD ID to array offset).
-
----
-
-## 13. IndexedDB cache schema: one blob per group
-
-**Context.** TLE data is ~10 MB of JSON. Re-fetching on every page load
-wastes bandwidth and slows boot. IndexedDB is the browser's structured local
-database (much higher quota than localStorage).
-
-**Decision.** One object store called `tle-groups`, keyed by group name
-(`'active'`, `'starlink'`, etc.). Each row:
-
-```typescript
-{
-  group: 'active',
-  fetchedAt: 1716688800000,   // ms epoch
-  records: CelestrakRecord[],
-}
+Scenario
+ ├─ metadata (id, name, owner, version, author, timestamps)
+ ├─ time range + propagator fidelity selection
+ ├─ chief        (initial state, attitude profile)
+ ├─ deputies[]   (initial state, attitude profile, maneuver plan)
+ ├─ sensors[]    (type, FOV geometry, range limits, mounting/pointing)
+ └─ events/analysis config (miss-distance thresholds, constraints)
 ```
+Persisted in PostgreSQL (Decision 8), versioned with author + timestamp.
 
-**Why.** The runtime never queries IndexedDB by satellite ID — it loads the
-whole catalog into memory at boot. Per-satellite schema would optimize for
-queries we never run.
+**Why.** Mirrors the SRS operational concept directly. Chief-relative framing
+(everything expressed relative to the chief) matches the LVLH/RIC analysis
+(Decision 12) and the proximity view (Decision 4).
 
 **Alternatives considered.**
-- *Row per satellite, indexed by NORAD ID.* In principle supports queries
-  by ID and per-satellite updates. In practice we never use either:
-  runtime queries hit in-memory data, and CelesTrak only provides
-  whole-group fetches with no diff endpoint. YAGNI (You Aren't Gonna Need
-  It).
-- *localStorage.* Synchronous, ~5 MB quota, string-only. Too small.
+- *Flat catalog of equal satellites (the old tracker model).* Doesn't capture
+  the chief/deputy relationship RPO analysis is built on. Superseded.
 
-**Consequences.**
-- If user-specific per-satellite data is added later (favorites, notes,
-  view counts), it goes in a **separate** object store, not mixed with the
-  catalog.
-- Cache invalidation is per-group, not per-satellite.
+**Consequences.** The whole UI is scenario-scoped, not catalog-scoped. Loading
+a scenario configures both views, the clock range, and the analysis pipeline.
+
+## 14. Data formats: TLE, CCSDS, Keplerian, CZML
+
+**Context.** SRS §3.10.3–4 import from TLE, CCSDS OEM/OPM, Keplerian; §4.1
+ingest TLE (file/URL) + CCSDS OEM/OPM + AEM attitude; §4.2 export OEM, JSON/CSV
+events, PNG/MP4; §3.8.5 CZML for the global view.
+
+**Decision.** Use Orekit's CCSDS support for OEM/OPM/AEM parse+write; accept TLE
+(CelesTrak/Space-Track or upload) and Keplerian elements as initial-state
+inputs; generate CZML for Cesium; export events as JSON/CSV and views as
+PNG/MP4 (client-side capture).
+
+**Why.** Orekit already implements the CCSDS suite — no parser to write. These
+are the spec-named interchange formats used across flight dynamics.
+
+**Alternatives considered.** Hand-rolled CCSDS parsers — needless given Orekit.
+
+**Consequences.** Import/export is a backend concern (Orekit); CZML generation
+sits at the streaming boundary (Decision 10); media export (PNG/MP4) is
+client-side from the rendered canvases.
 
 ---
 
-## 14. Cache TTL: stale-while-revalidate, 6 hours
+# Cross-cutting / enterprise
 
-**Context.** CelesTrak data updates every few hours. Refreshing more often
-wastes bandwidth; refreshing less often shows outdated positions.
+## 15. Enterprise posture: professional-grade from the start
 
-**Decision.** Wall-clock TTL (Time To Live) of 6 hours. If the cached entry
-is fresh, use it. If stale, **serve the stale data immediately for instant
-boot**, and kick off a background fetch that updates the store when it
-arrives.
+**Context.** Project may go professional; chosen posture is to build so a
+rebuild is never needed (the cross-cutting concerns — auth, audit,
+reproducibility — are the expensive-to-retrofit ones).
 
-```typescript
-const STALE_MS = 6 * 60 * 60 * 1000;
-const isStale = (entry) => Date.now() - entry.fetchedAt > STALE_MS;
-```
+**Decision.** Build the **architecture** to professional grade now, even where
+the heavy *implementations* are sequenced later. Concretely, from day one:
+- **Auth seam:** all API traffic through one Spring Security pipeline; real
+  OIDC/SAML + RBAC wired when needed, not stubbed-then-rethreaded.
+- **Ownership in the data model:** scenarios carry an `owner` + permissions
+  from the first migration (Decision 8/13).
+- **Single mutation path** for scenarios → the audit-log hook point (§5.4.2).
+- **Deterministic propagation:** seeded dispersions, pinned Orekit settings →
+  reproducibility (§5.4.1) holds by construction.
+- **12-factor config** → cloud/on-prem portability (Decision 16).
 
-**Why.** Stale-while-revalidate gives the best UX: globe populates instantly
-on every boot after the first; refreshes silently if needed. Users never
-see a spinner blocking the UI.
+**Why.** These seams cost ~a day of discipline now and turn a painful
+cross-cutting retrofit into additive work. Validated accuracy is already
+covered by Orekit (Decision 7), so "professional" here is mostly the wrapper.
 
 **Alternatives considered.**
-- *Hard TTL.* Block boot on refetch if stale. Worse UX for marginal
-  accuracy gain.
-- *Per-record `EPOCH` check.* Each TLE has an `EPOCH` indicating when those
-  orbital elements were computed; records past ~14 days are inaccurate.
-  Overkill for v1; revisit if showing accuracy warnings becomes a feature.
+- *Defer everything incl. seams.* Risks a partial backend rewrite to add auth
+  later. Rejected given the stated posture.
 
-**Consequences.**
-- First-time visitors wait for the initial fetch.
-- Returning visitors get an instant globe.
-- `fetchedAt` should be surfaced somewhere (likely the stats overlay) as a
-  "last updated" indicator.
+**Consequences.** Slightly more upfront structure (security pipeline, audit
+layer, migrations). Conversion to full professional = implement real IdP/RBAC +
+write the §5.2 validation suite + deployment hardening — additive, weeks not a
+rewrite.
+
+## 16. Deployment: containerized, cloud + on-prem
+
+**Context.** SRS §6.2.1 containerized services; §6.2.2 cloud and on-prem.
+
+**Decision.** Each component is a container (backend, frontend, PostgreSQL).
+Docker Compose for local/dev; the same images deploy to cloud or on-prem.
+Config via environment (12-factor).
+
+**Why.** Spec-mandated and the only sane way to run a multi-service system
+reproducibly across environments. (Note: this reverses the earlier
+"static-only, no containers" stance, which was correct for the old
+frontend-only scope and wrong for this one.)
+
+**Alternatives considered.** Static-hosting the frontend only — insufficient;
+there's a stateful backend + DB now.
+
+**Consequences.** Docker is a hard dependency for development. TLS terminates
+at the ingress/reverse proxy (§5.5.3). On-prem packaging is a later
+deliverable, but nothing in the design blocks it.
 
 ---
 
-## 15. Render primitive: PointPrimitiveCollection + Entity for selection
+# Superseded decisions (pre-SRS pivot)
 
-**Context.** Cesium offers three rendering abstraction levels: `Entity`
-(high-level, ~1k feasible), `PointPrimitiveCollection` (batched, ~50k
-feasible), and custom `Primitive` with GPU instancing (no practical limit,
-huge code cost).
+Retained for the record. These were sound for the *public satellite tracker*
+scope; the 2026-05-28 SRS pivot reversed them.
 
-**Decision.** All catalog satellites are drawn as a single
-`PointPrimitiveCollection`. The **selected** satellite *additionally* gets
-an `Entity` overlay carrying its orbit polyline, ground track, and label.
+- **A. Client-only, no backend** → **superseded by Decisions 6, 9, 16.** The
+  SRS mandates a backend propagation/analysis service with REST/WebSocket and
+  auth. Client-only cannot meet fidelity, validation, persistence, or security
+  requirements.
+- **B. satellite.js as the propagator** → **superseded by Decision 7.** Orekit
+  provides SGP4 plus high-fidelity propagation; one engine, no second SGP4.
+- **C. Web Worker for propagation + worker boundary contract** → **superseded
+  by Decisions 9, 10.** Propagation moved to the backend; the worker contract
+  is replaced by the network streaming contract. (Client-side workers may
+  still interpolate streamed samples.)
+- **D. IndexedDB catalog cache (blob-per-group) + stale-while-revalidate TTL**
+  → **superseded by Decisions 8, 13.** Data is scenario-based and
+  server-persisted, not a cached public catalog. Client caching is no longer
+  the persistence story.
+- **E. PointPrimitiveCollection for ~15k objects** → **superseded by Decisions
+  4, 13.** Scenarios involve ~10 spacecraft (§5.1.1), not a 15k catalog;
+  rendering is dual-engine (Cesium global + three.js proximity).
+- **F. Two-body Keplerian model** → **superseded by Decision 7.** The SRS
+  requires high-fidelity (DP8(7), J4+, drag, SRP, third-body) validated to
+  sub-km/24h; two-body is insufficient. CW covers the close-range linearized
+  case.
+- **G. Relative analysis by client-side sampling** → **revised into Decisions
+  7, 9, 10.** Still sampling-based conceptually, but computed on the backend
+  (Orekit) and streamed; CW provides a closed-form close-range option.
 
-**Why.** PointPrimitiveCollection handles 15k objects in one batched draw
-call. Per-object features (orbit lines, labels, follow-cam) only matter for
-the one selected satellite, so paying Entity overhead there is trivial.
-
-Bonus: Cesium's `viewer.trackedEntity = entity` gives smooth camera-follow
-for free, but only on Entities. Using an Entity for the selected satellite
-gets follow-cam without writing a custom camera controller.
-
-**Alternatives considered.**
-- *All Entities.* Won't hit 60 fps past ~1,000 satellites.
-- *Custom Primitive with GPU instancing.* Best performance ceiling but
-  requires writing WebGL shaders. Defer until we hit a real bottleneck.
-
-**Consequences.**
-- Two parallel render paths: bulk (PointPrimitiveCollection) and selected
-  (Entity).
-- Filters that hide objects can either remove from the collection or set
-  `pixelSize: 0`; pick after profiling.
-
----
-
-## 16. Selection mechanism: Cesium pick + padded hit radius
-
-**Context.** Satellites render as 3-pixel points and move fast. Clicking
-accurately on a moving 3-pixel target is hard.
-
-**Decision.** Use `ScreenSpaceEventHandler` for click events, then
-`viewer.scene.pick(position)` for the primary hit test. If `pick` returns
-nothing, scan a ±5-pixel square around the click and return the closest
-satellite in screen space. On a successful pick:
-
-1. Set `selectedId` in the store.
-2. Add (or update) the selection Entity with orbit polyline, label,
-   ground track.
-3. Set `viewer.trackedEntity` to that Entity for smooth camera follow.
-4. Update the info panel.
-5. Update the URL (e.g., `?sat=25544`).
-
-**Why.** Native `scene.pick` is pixel-perfect and fast; the surrounding
-square pick adds forgiveness without sacrificing precision when the user
-clicks accurately. Camera follow via `trackedEntity` is built-in and
-smooth.
-
-**Alternatives considered.**
-- *Manual raycasting.* More work, same result.
-- *Auto-pause on hover.* Feels wrong when the user is panning. Pause on
-  **select** is acceptable.
-
-**Consequences.**
-- Time speed control in `TimeController` lets users slow down playback to
-  click on fast-moving objects.
-- URL state must support encoding/decoding selection — the deep-linking
-  contract is established at the same time as selection logic.
+The still-valid earlier decisions (single time source, RIC/LVLH frame, Cesium
+for the globe, React/Vite/Zustand, CelesTrak ingestion) are carried forward and
+restated above as Decisions 1–5, 11, 12.
 
 ---
 
-## 17. Filter semantics: CelesTrak groups + OBJECT_TYPE
+# Deferred decisions
 
-**Context.** Users will toggle constellations ("show Starlink", "show
-GPS") and object types ("hide debris"). We need a reliable way to
-identify which satellites belong to each group.
+Explicitly not decided yet; each has a tracked reason.
 
-**Decision.** Hybrid:
-- **Constellations** are identified by fetching the CelesTrak group
-  endpoint (`?GROUP=starlink`, `?GROUP=oneweb`, etc.) once and building
-  `Set<NORAD_ID>` membership tables.
-- **Object types** (PAYLOAD / DEBRIS / ROCKET BODY) come from the
-  `OBJECT_TYPE` field on each CelesTrak record.
-
-Filter check is O(1) per satellite per frame: Set lookup for
-constellation, string equality for type.
-
-**Why.** CelesTrak's groups are curated by domain experts. Substring
-matching on `OBJECT_NAME` is brittle (false positives and negatives).
-Hardcoded NORAD ID lists go stale.
-
-**Alternatives considered.**
-- *Name-prefix matching ("STARLINK-*").* Brittle across constellations.
-- *Hardcoded NORAD ID lists.* Stale on day one.
-
-**Consequences.**
-- Boot fetches multiple CelesTrak endpoints (the `active` set plus one per
-  supported constellation). Total bytes are similar — group fetches
-  return subsets of `active`.
-- `recordToTLE` is extended to preserve `OBJECT_TYPE`.
-- A `loadCatalog()` orchestrator fans out the requests and assembles the
-  membership tables.
-
----
-
-## Deferred decisions (revisit before launch)
-
-Explicitly **not** decided yet. Each has a tracked reason.
-
-- **Runtime data validation (Zod / Valibot).** Currently trusting
-  CelesTrak's response shape. Fine for development. Add before launch — a
-  silent shape change at the source will otherwise crash the app with
-  `undefined` propagation.
-- **Testing strategy.** No tests yet. Minimum bar before launch:
-  propagator unit tests against known `(TLE, time, expected position)`
-  fixtures.
-- **Error handling.** No policy for CelesTrak 5xx, parse failures,
-  IndexedDB quota errors. Default to log-and-skip for now; revisit when
-  designing the error UI.
-- **Mobile design.** Plan ships responsive in v1. Designs and performance
-  budgets not yet set — revisit before Phase 7.
-- **URL state schema.** Phase 6 work. Selection encoding will be set
-  alongside Phase 4 (selection mechanism); camera and filter encoding are
-  open.
-- **Bundle splitting / lazy Cesium load.** Defer until Lighthouse audit in
-  Phase 7.
-- **Self-hosting Cesium imagery tiles.** Using Cesium ion for v1. Switch
-  trigger: hitting the 5 GB/month free-tier ceiling.
-- **Analytics tooling.** Plausible or Umami at launch — pick when there's
-  something to measure.
-- **Error monitoring.** Plausible tracks page views, not exceptions.
-  Sentry's free tier is enough; add before launch.
+- **§5.2 validation test suite.** Orekit is validated, but our conformance
+  tests (compare to reference solutions, document per AIAA 2006-6753) are
+  written when the propagation service stabilizes.
+- **Real identity provider for SSO/RBAC (§5.5.1–2).** Architecture/seam built
+  now (Decision 15); concrete OIDC/SAML integration chosen with deployment.
+- **Monte Carlo execution model (§3.12.4).** In-process Java vs a worker pool
+  vs delegated compute — decide when the analysis phase arrives.
+- **Sensor occlusion technique (§3.6.5).** Ray casting vs GPU depth methods —
+  decide in the sensor-modeling phase.
+- **Spacecraft 3D model asset pipeline (§3.9.3).** GLTF sourcing, articulation
+  rig conventions — decide with the proximity view.
+- **Media export implementation (§4.2.3).** Client-side canvas capture
+  (WebCodecs/MediaRecorder) vs server-side render — decide at the export phase.
+- **Self-hosting Cesium imagery tiles.** Ion for now; switch at the 5 GB/mo
+  ceiling.
+- **Two-body + J2 quick model.** Not needed — Orekit's fidelity modes cover the
+  range.
