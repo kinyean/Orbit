@@ -49,9 +49,15 @@ services:
       APP_BUILD_TIME: "dev"
       # Permit CORS from the Vite dev server during local dev. Tightened in
       # production via the same env var.
+      # CORS is unused in dev now that the Vite proxy gives same-origin
+      # requests. Kept for any direct access (Swagger UI, curl from another
+      # host, etc.) and as the seam for prod's reverse-proxy origin list.
       CORS_ALLOWED_ORIGINS: "http://localhost:5174"
     ports:
-      # host:8081 → container:8080 (8080 is taken on the host by Airflow)
+      # host:8081 → container:8080 (8080 is taken on the host by Airflow).
+      # The frontend reaches the backend by docker service name (see PROXY_TARGET
+      # below), not via this published port. The port is kept for direct access
+      # (Swagger UI in a browser, curl from the host, IDE OpenAPI client gen).
       - "8081:8080"
 
   frontend:
@@ -60,9 +66,10 @@ services:
     depends_on:
       - backend
     environment:
-      # The browser is on the *host*, so it reaches the backend via the
-      # host-published port, not the docker network.
-      VITE_BACKEND_URL: "http://localhost:8081"
+      # The Vite dev server proxies /api/* to this URL. Backend reached by
+      # docker service name on the docker network — the browser never sees
+      # this, it only ever talks to localhost:5174 (same-origin).
+      PROXY_TARGET: "http://backend:8080"
     volumes:
       # Bind-mount source for hot reload.
       - ./frontend:/app

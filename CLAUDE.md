@@ -81,6 +81,11 @@ catalog-browser to scenario-shell.
 - `npm run dev` — Vite dev server on port 5173 (inside container; 5174 from host).
 - `npm run type-check` — `tsc --noEmit`.
 - `npm run gen:api` — regenerate the OpenAPI client from the running backend.
+- **When `package.json` changes**, rebuild the image AND drop the anon volume
+  or the container keeps stale deps. See "dep-change workflow" in
+  [frontend/README.md](frontend/README.md). The browser-facing API base is
+  `/api` (proxied by Vite to the backend); never use absolute backend URLs in
+  client code.
 
 ### Backend (`backend/`) — Gradle, Spring Boot 3.5, Java 21
 - `./gradlew bootRun` — start backend locally (requires local JDK 21 + a Postgres reachable at $DB_URL).

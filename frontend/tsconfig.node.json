@@ -5,7 +5,10 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
-    "strict": true
+    "strict": true,
+    // vite.config.ts runs under Node (the Vite CLI is a Node program), so we
+    // need Node's ambient types for things like `process.cwd()`.
+    "types": ["node"]
   },
   "include": ["vite.config.ts"]
 }

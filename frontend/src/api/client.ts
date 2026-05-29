@@ -9,11 +9,15 @@
 //     not a runtime surprise (R12 in docs/risks.md).
 //   - Adding a new endpoint backend-side and `npm run gen:api` on the frontend
 //     is the entire integration.
+//
+// Base URL is a relative `/api` prefix. The Vite dev server's same-origin
+// proxy (see vite.config.ts) forwards /api/* to the backend service. The
+// browser therefore only ever talks to the frontend's own origin — no CORS
+// in dev, and only one port needs to be reachable from outside the host.
+// In production the same /api prefix is served by whatever reverse proxy
+// fronts the static build.
 
 import createClient from 'openapi-fetch';
 import type { paths } from './schema';
 
-const BASE_URL =
-  import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8081';
-
-export const api = createClient<paths>({ baseUrl: BASE_URL });
+export const api = createClient<paths>({ baseUrl: '/api' });
