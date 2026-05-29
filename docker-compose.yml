@@ -9,11 +9,13 @@
 #
 # Ports exposed to host:
 #   5432 — Postgres (for local psql convenience)
-#   8080 — Backend (REST + WebSocket)
-#   5173 — Frontend Vite dev server
+#   8081 — Backend (REST + WebSocket). Host port 8080 is taken on this shared
+#          machine by Apache Airflow; we map host:8081 → container:8080.
+#   5174 — Frontend Vite dev server. Host port 5173 is taken by another
+#          process on this shared machine; we map host:5174 → container:5173.
 #
-# The browser hits localhost:8080 directly (not via the docker network), so
-# VITE_BACKEND_URL is set to localhost-style URLs for client-side fetches.
+# The browser hits localhost:8081 (backend) and localhost:5174 (frontend)
+# directly, not via the docker network. VITE_BACKEND_URL reflects this.
 
 services:
   db:
@@ -47,9 +49,10 @@ services:
       APP_BUILD_TIME: "dev"
       # Permit CORS from the Vite dev server during local dev. Tightened in
       # production via the same env var.
-      CORS_ALLOWED_ORIGINS: "http://localhost:5173"
+      CORS_ALLOWED_ORIGINS: "http://localhost:5174"
     ports:
-      - "8080:8080"
+      # host:8081 → container:8080 (8080 is taken on the host by Airflow)
+      - "8081:8080"
 
   frontend:
     build:
@@ -59,7 +62,7 @@ services:
     environment:
       # The browser is on the *host*, so it reaches the backend via the
       # host-published port, not the docker network.
-      VITE_BACKEND_URL: "http://localhost:8080"
+      VITE_BACKEND_URL: "http://localhost:8081"
     volumes:
       # Bind-mount source for hot reload.
       - ./satellite-tracker:/app
@@ -67,7 +70,8 @@ services:
       # the host's node_modules (potentially different platform) overlays it.
       - /app/node_modules
     ports:
-      - "5173:5173"
+      # host:5174 → container:5173 (5173 is taken on the host)
+      - "5174:5173"
 
 volumes:
   db_data:
