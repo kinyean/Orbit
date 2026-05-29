@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "type-check": "tsc --noEmit",
-    "gen:api": "openapi-typescript ${VITE_BACKEND_URL:-http://localhost:8081}/v3/api-docs -o src/api/schema.d.ts"
+    "gen:api": "openapi-typescript ${BACKEND_URL:-http://localhost:8081}/v3/api-docs -o src/api/schema.d.ts"
   },
   "dependencies": {
     "cesium": "^1.118.0",

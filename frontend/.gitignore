@@ -6,3 +6,7 @@ dist
 *.log
 .vscode
 .idea
+
+# TypeScript incremental-build artifact (written by composite projects even
+# with --noEmit; not source of truth).
+*.tsbuildinfo

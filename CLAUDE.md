@@ -24,10 +24,26 @@ pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
 ## Current phase
-Phase 0 (foundation scaffold) complete: React + Vite + Cesium globe runs
-locally with day/night terminator. **Phase 1 next:** stand up the Java/Spring
-backend + PostgreSQL + Docker Compose dev env; reshape the frontend shell from
-catalog-browser to scenario-shell.
+**Phase 1 complete.** The full stack runs locally via `docker compose up`:
+- Cesium globe + day/night, catalog UI shell carried from Phase 0 (no
+  regression).
+- Spring Boot 3.5 / Java 21 backend with Flyway V1 migration (users,
+  scenarios, scenario_versions, audit_log; owner_id + roles columns from
+  day one as the RBAC seam).
+- PostgreSQL with named volume for persistence.
+- Spring Security pipeline wired (permitAll stub + dev user principal —
+  the seam for OIDC/SAML in Phase 10).
+- Frontend talks to backend via a Vite same-origin proxy (`/api/*`); browser
+  only ever talks to the frontend's port; no CORS in dev.
+- Typed OpenAPI client (`openapi-typescript` + `openapi-fetch`); status chip
+  in the top bar proves end-to-end pipeline.
+- Empty scenario panel + Zustand composer slice ready for Phase 3 wire-up.
+
+**Phase 2 next:** Orekit-backed SGP4 propagation pipeline + shared catalog
+stream (CZML over WebSocket). The frontend's existing catalog UI (filter
+panel, stats) gets repointed from CelesTrak-direct to backend-served. See
+[docs/architecture-and-roadmap.md §7](docs/architecture-and-roadmap.md) and
+[docs/user-stories.md Phase 2](docs/user-stories.md).
 
 ## Stack
 - **Frontend:** React + TS strict + Vite + CesiumJS (global view) + three.js
