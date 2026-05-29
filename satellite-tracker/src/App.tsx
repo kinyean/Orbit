@@ -3,6 +3,8 @@ import TimeController from './components/TimeController';
 import InfoPanel from './components/InfoPanel';
 import StatsOverlay from './components/StatsOverlay';
 import FilterPanel from './components/FilterPanel';
+import StatusChip from './components/StatusChip';
+import ScenarioPanel from './scenario/ScenarioPanel';
 import './App.css';
 
 export default function App() {
@@ -20,9 +22,11 @@ export default function App() {
           className="search"
           aria-label="Search satellites"
         />
+        <StatusChip />
       </header>
 
       <FilterPanel />
+      <ScenarioPanel />
       <StatsOverlay />
       <InfoPanel />
       <TimeController />
