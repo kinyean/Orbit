@@ -349,22 +349,22 @@ get the smallest end-to-end pipeline running first, then deepen.
 
 Reusable and **first-class going forward**:
 - React + Vite + TypeScript project structure.
-- [components/Globe.tsx](../satellite-tracker/src/components/Globe.tsx) — the
+- [components/Globe.tsx](../frontend/src/components/Globe.tsx) — the
   Cesium viewer setup with day/night lighting.
-- [components/FilterPanel.tsx](../satellite-tracker/src/components/FilterPanel.tsx)
+- [components/FilterPanel.tsx](../frontend/src/components/FilterPanel.tsx)
   — repurposed as the catalog browser's constellation filter (Decision 13).
   Stays.
-- [components/StatsOverlay.tsx](../satellite-tracker/src/components/StatsOverlay.tsx)
+- [components/StatsOverlay.tsx](../frontend/src/components/StatsOverlay.tsx)
   — repurposed for catalog + scenario stats; counts come from the catalog
   stream rather than hardcoded.
 - Zustand store pattern (Decision 5).
 - Cesium ion configuration via `.env` and the existing token.
 
 Repointed in Phase 2 (no longer fetched client-side):
-- [lib/celestrak.ts](../satellite-tracker/src/lib/celestrak.ts) — TLE
+- [lib/celestrak.ts](../frontend/src/lib/celestrak.ts) — TLE
   ingestion moves to the backend (Decision 15); the frontend consumes the
   backend catalog stream instead.
-- [lib/propagator.ts](../satellite-tracker/src/lib/propagator.ts) —
+- [lib/propagator.ts](../frontend/src/lib/propagator.ts) —
   satellite.js drops out; the frontend no longer propagates.
 
 The existing TimeController, top bar, and info panel survive as UI primitives

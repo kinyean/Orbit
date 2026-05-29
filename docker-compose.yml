@@ -56,7 +56,7 @@ services:
 
   frontend:
     build:
-      context: ./satellite-tracker
+      context: ./frontend
     depends_on:
       - backend
     environment:
@@ -65,7 +65,7 @@ services:
       VITE_BACKEND_URL: "http://localhost:8081"
     volumes:
       # Bind-mount source for hot reload.
-      - ./satellite-tracker:/app
+      - ./frontend:/app
       # Keep the container's node_modules (Linux/musl binaries) — without this
       # the host's node_modules (potentially different platform) overlays it.
       - /app/node_modules

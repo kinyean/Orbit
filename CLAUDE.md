@@ -64,18 +64,29 @@ catalog-browser to scenario-shell.
 
 ## Conventions
 - Ask before adding dependencies.
-- Commit after each working feature (the scaffold + the SRS-pivot docs is one
-  such — still uncommitted).
+- Commit after each working feature.
 - Tag frame in code wherever state vectors live (names, types, comments):
   `ECI` / `ECEF` / `LVLH` / `RIC` / `body`.
 
 ## Build commands
-### Frontend (`satellite-tracker/`)
-- `npm run dev` — Vite dev server on port 5173.
-- `npm run type-check` — `tsc --noEmit`.
 
-### Backend (TBD — Phase 1)
-- Spring Boot + Maven/Gradle; commands land here when the module is created.
+### Full stack (Docker Compose)
+- `docker compose up -d --build` — backend + Postgres + frontend (build on first run).
+- `docker compose down` — stop services (preserves db volume).
+- `docker compose down -v` — stop and wipe db.
+- Backend: http://localhost:8081  ·  Frontend: http://localhost:5174
+  (host ports 8080 / 5173 are taken by other services on this shared box).
+
+### Frontend (`frontend/`)
+- `npm run dev` — Vite dev server on port 5173 (inside container; 5174 from host).
+- `npm run type-check` — `tsc --noEmit`.
+- `npm run gen:api` — regenerate the OpenAPI client from the running backend.
+
+### Backend (`backend/`) — Gradle, Spring Boot 3.5, Java 21
+- `./gradlew bootRun` — start backend locally (requires local JDK 21 + a Postgres reachable at $DB_URL).
+- `./gradlew build` — full build incl. tests.
+- `./gradlew build -x test` — build without tests (faster, no DB needed).
+- Set `JAVA_HOME=$HOME/jdk-21.0.11+10` and prepend to `PATH` (already in `~/.bashrc`).
 
 ### Stack (TBD — Phase 1)
 - `docker compose up` — full local dev environment (frontend + backend + db).
