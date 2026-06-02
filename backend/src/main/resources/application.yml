@@ -29,6 +29,20 @@ orbit:
     # Path to the unpacked Orekit data bundle. Container bakes it at /opt/orekit-data;
     # the Gradle test task overrides this via the orekit.data.path system property.
     data-path: ${OREKIT_DATA_PATH:/opt/orekit-data}
+  catalog:
+    # Bundled offline TLE/GP seed (baked into the image at build time). Loaded at
+    # startup so the catalog works with zero network. Best-effort if absent.
+    seed-file: ${CATALOG_SEED_FILE:/opt/orbit/tle-seed.json}
+    # Refresh sources, tried in order. CelesTrak is firewall-blocked from this
+    # host (expected to fail, caught); the GitHub mirror is reachable.
+    sources: ${CATALOG_SOURCES:https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=json,https://raw.githubusercontent.com/jaimeautomatiza/tle-proxy/main/data/tle.json}
+    refresh-cron: ${CATALOG_REFRESH_CRON:0 0 */6 * * *}
+    propagation-interval-ms: ${CATALOG_PROPAGATION_INTERVAL_MS:30000}
+    window-seconds: ${CATALOG_WINDOW_SECONDS:180}
+    step-seconds: ${CATALOG_STEP_SECONDS:60}
+    fetch-timeout-ms: ${CATALOG_FETCH_TIMEOUT_MS:20000}
+    # 0 = no cap; set a smaller number to throttle for perf experiments.
+    max-satellites: ${CATALOG_MAX_SATELLITES:0}
 
 springdoc:
   api-docs:

@@ -33,7 +33,7 @@ public class FrameService {
     private OneAxisEllipsoid earth;
 
     @PostConstruct
-    void init() {
+    public void init() {
         eci = FramesFactory.getEME2000();
         teme = FramesFactory.getTEME();
         // simpleEOP=true skips tidal EOP corrections — fine at visualization fidelity.

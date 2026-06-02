@@ -34,7 +34,7 @@ public class TleFactory {
     private TimeScale utc;
 
     @PostConstruct
-    void init() {
+    public void init() {
         // Safe: @DependsOn ensures Orekit data is loaded first.
         utc = TimeScalesFactory.getUTC();
     }

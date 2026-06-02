@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.RestController;
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.time.Instant;
+import space.orbit.backend.stream.StreamContract;
 
 /**
  * /health — a small, predictable status endpoint for the frontend status chip
@@ -26,10 +27,10 @@ public class HealthController {
 
     /**
      * Stream-contract version sent in the {@link HealthResponse}. Frontend
-     * uses this to refuse connections on mismatch (R12, see risks.md). Bump
-     * on any breaking change to the WebSocket message shape.
+     * uses this to refuse connections on mismatch (R12, see risks.md). Single
+     * source of truth is {@link StreamContract#VERSION}.
      */
-    public static final String CONTRACT_VERSION = "1";
+    public static final String CONTRACT_VERSION = StreamContract.VERSION;
 
     private final DataSource dataSource;
     private final String appVersion;
