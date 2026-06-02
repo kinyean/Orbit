@@ -24,26 +24,32 @@ pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
 ## Current phase
-**Phase 1 complete.** The full stack runs locally via `docker compose up`:
-- Cesium globe + day/night, catalog UI shell carried from Phase 0 (no
-  regression).
-- Spring Boot 3.5 / Java 21 backend with Flyway V1 migration (users,
-  scenarios, scenario_versions, audit_log; owner_id + roles columns from
-  day one as the RBAC seam).
-- PostgreSQL with named volume for persistence.
-- Spring Security pipeline wired (permitAll stub + dev user principal —
-  the seam for OIDC/SAML in Phase 10).
-- Frontend talks to backend via a Vite same-origin proxy (`/api/*`); browser
-  only ever talks to the frontend's port; no CORS in dev.
-- Typed OpenAPI client (`openapi-typescript` + `openapi-fetch`); status chip
-  in the top bar proves end-to-end pipeline.
-- Empty scenario panel + Zustand composer slice ready for Phase 3 wire-up.
+**Phase 2 complete** (backend + wiring; one browser-visual check outstanding).
+On top of Phase 1's dual-container dev env:
+- **Orekit 13.1.5** propagation core: SGP4 via `TLEPropagator`, `FrameService`
+  (ECI/ECEF/geodetic, frame-tagged `StateVector`), OMM→TLE conversion. The
+  reachable catalog mirrors serve OMM JSON (no TLE lines), so `TleFactory`
+  builds TLEs from mean elements (ndot/nddot=0; SGP4 ignores them).
+- **Catalog mode** (Decision 13): loads a bundled offline TLE seed (~15.5k
+  sats) + best-effort GitHub-mirror refresh (CelesTrak is firewall-blocked
+  here), propagates the whole set every 30 s, broadcasts one shared CZML feed
+  over WebSocket `/stream/catalog`. ~100–650 ms/pass, 7.36 MB/message.
+- **Streaming contract v1** (docs/streaming-contract.md): JSON envelope +
+  CZML; ECEF/FIXED positions; `contractVersion` checked client-side (R12).
+- **Frontend**: `CatalogStreamClient` → `CzmlDataSource` on the globe;
+  click-to-inspect (hit-padded, live position), constellation filters
+  (name-prefix; localStorage), search-to-fly, live stats. satellite.js +
+  client-side propagation/fetch removed.
+- Data bundles (orekit-data + TLE seed) baked into the backend image; fully
+  offline-capable. Backend at :8081, frontend at :5174 (8080/5173 taken).
 
-**Phase 2 next:** Orekit-backed SGP4 propagation pipeline + shared catalog
-stream (CZML over WebSocket). The frontend's existing catalog UI (filter
-panel, stats) gets repointed from CelesTrak-direct to backend-served. See
-[docs/architecture-and-roadmap.md §7](docs/architecture-and-roadmap.md) and
-[docs/user-stories.md Phase 2](docs/user-stories.md).
+Outstanding: browser FPS + visual click/filter at ~15.5k dots (R7 — if under
+30 fps, fall back from the CZML Entity layer to a PointPrimitiveCollection).
+
+**Phase 3 next:** high-fidelity numerical propagation (DP8(7), J4+, drag, SRP,
+third-body), LVLH/RIC frames, scenario CRUD + persistence, and wiring the
+composer's Set-as-chief / Add-as-deputy actions. See
+[docs/architecture-and-roadmap.md §7](docs/architecture-and-roadmap.md).
 
 ## Stack
 - **Frontend:** React + TS strict + Vite + CesiumJS (global view) + three.js
