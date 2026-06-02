@@ -52,9 +52,15 @@ public class SecurityConfig {
 
     @Bean
     public CorsConfigurationSource corsConfigurationSource(
-            @Value("${CORS_ALLOWED_ORIGINS:http://localhost:5173}") String allowedOrigins) {
+            @Value("${CORS_ALLOWED_ORIGINS:*}") String allowedOrigins) {
         var cfg = new CorsConfiguration();
-        cfg.setAllowedOrigins(Arrays.asList(allowedOrigins.split(",")));
+        // Origin PATTERNS (not origins): the browser's origin is the frontend's
+        // host:port (e.g. http://<server-ip>:5174), which varies and is never the
+        // backend's. Patterns are also required to coexist with allowCredentials.
+        // Default "*" for dev; lock down via CORS_ALLOWED_ORIGINS in Phase 10.
+        // This gate matters for the WebSocket handshake too — browsers always send
+        // Origin on WS upgrades, so a too-narrow list 403s the catalog stream.
+        cfg.setAllowedOriginPatterns(Arrays.asList(allowedOrigins.split(",")));
         cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
         cfg.setAllowedHeaders(List.of("*"));
         cfg.setExposedHeaders(List.of("Location"));
