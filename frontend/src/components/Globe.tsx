@@ -304,6 +304,12 @@ export default function Globe() {
     if (!satPos) return;
     const targetNorad = focus.noradId;
 
+    // Release any existing tracking BEFORE flying. Otherwise the new flight and
+    // the still-active EntityView fight each other — that's the brief black
+    // flash and the orientation twist when switching from one tracked satellite
+    // to another.
+    viewer.trackedEntity = undefined;
+
     viewer.camera.flyToBoundingSphere(new BoundingSphere(satPos, 0), {
       duration: 1.5,
       offset: new HeadingPitchRange(0, CesiumMath.toRadians(-45), 2_000_000),
