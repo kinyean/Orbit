@@ -5,15 +5,13 @@ import {
   CzmlDataSource,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
-  BoundingSphere,
+  CallbackPositionProperty,
+  CallbackProperty,
   Cartesian2,
   Cartesian3,
   Cartographic,
-  CallbackPositionProperty,
   Color,
-  ConstantProperty,
   Entity,
-  HeadingPitchRange,
   JulianDate,
   Math as CesiumMath,
   Matrix4,
@@ -284,14 +282,13 @@ export default function Globe() {
     if (ds) applyFilters(ds, activeConstellations);
   }, [activeConstellations]);
 
-  // --- focus request: smoothly fly over, then TRACK (double-click/search) --
-  // 1) Fly to a zero-radius sphere at the satellite's current position with a
-  //    fixed range → identical 3/4 framing every time (not the entity's
-  //    time-dynamic bounding sphere, whose radius varies per CZML chunk).
-  // 2) On arrival, derive viewFrom from the camera's ACTUAL pose (its offset in
-  //    the satellite's ENU frame) and engage trackedEntity. Because viewFrom is
-  //    exactly where the flight ended, tracking continues with no positional or
-  //    angular jerk; from there the satellite is the orbit/zoom center.
+  // --- focus request: smoothly zoom into a tracked satellite (dbl-click/search)
+  // Done ENTIRELY via the tracking camera (EntityView) — never camera.flyTo,
+  // which fought EntityView and caused twist-back / black-flash / super-zoom.
+  // Engage tracking starting at the camera's CURRENT offset (so the position
+  // doesn't jump), then animate viewFrom to a fixed 3/4 view; afterward clear
+  // viewFrom so the user can orbit/zoom freely. The satellite stays centered
+  // throughout.
   useEffect(() => {
     const viewer = viewerRef.current;
     const ds = dataSourceRef.current;
@@ -302,34 +299,34 @@ export default function Globe() {
     useStore.getState().setSelectedSatellite(describeEntity(entity, time));
     const satPos = entity.position?.getValue(time);
     if (!satPos) return;
-    const targetNorad = focus.noradId;
 
-    // Release any existing tracking BEFORE flying. Otherwise the new flight and
-    // the still-active EntityView fight each other — that's the brief black
-    // flash and the orientation twist when switching from one tracked satellite
-    // to another.
-    viewer.trackedEntity = undefined;
+    viewer.trackedEntity = undefined; // release any prior tracking cleanly
 
-    viewer.camera.flyToBoundingSphere(new BoundingSphere(satPos, 0), {
-      duration: 1.5,
-      offset: new HeadingPitchRange(0, CesiumMath.toRadians(-45), 2_000_000),
-      complete: () => {
-        const v = viewerRef.current;
-        const dsc = dataSourceRef.current;
-        if (!v || v.isDestroyed() || !dsc) return;
-        if (useStore.getState().selectedSatellite?.noradId !== targetNorad) return;
-        const ent = dsc.entities.getById(`sat-${targetNorad}`);
-        const pos = ent?.position?.getValue(v.clock.currentTime);
-        if (!ent || !pos) return;
-        // viewFrom = camera's current offset in the satellite's ENU frame, so
-        // EntityView keeps the exact pose the flight ended at.
-        const enu = Transforms.eastNorthUpToFixedFrame(pos);
-        const invEnu = Matrix4.inverseTransformation(enu, new Matrix4());
-        const offset = Matrix4.multiplyByPoint(invEnu, v.camera.positionWC, new Cartesian3());
-        ent.viewFrom = new ConstantProperty(offset);
-        v.trackedEntity = ent;
-      },
-    });
+    // Camera's current offset in the satellite's ENU frame = the animation start
+    // (engaging tracking from here means no position jump).
+    const enu = Transforms.eastNorthUpToFixedFrame(satPos);
+    const invEnu = Matrix4.inverseTransformation(enu, new Matrix4());
+    const startOffset = Matrix4.multiplyByPoint(invEnu, viewer.camera.positionWC, new Cartesian3());
+    const endOffset = new Cartesian3(0, -1_500_000, 1_500_000); // 3/4 view, ~2120 km
+    const startMs = performance.now();
+    const durationMs = 1200;
+
+    entity.viewFrom = new CallbackProperty(() => {
+      const t = Math.min(1, (performance.now() - startMs) / durationMs);
+      const eased = t * t * (3 - 2 * t); // smoothstep
+      return Cartesian3.lerp(startOffset, endOffset, eased, new Cartesian3());
+    }, false);
+    viewer.trackedEntity = entity;
+
+    // Once the zoom-in finishes, drop viewFrom so EntityView preserves the
+    // user's offset (lets them orbit/zoom) instead of forcing the camera.
+    const clearTimer = window.setTimeout(() => {
+      const v = viewerRef.current;
+      if (v && !v.isDestroyed() && v.trackedEntity === entity) {
+        entity.viewFrom = undefined;
+      }
+    }, durationMs + 200);
+    return () => window.clearTimeout(clearTimer);
   }, [focus]);
 
   // --- camera reset: stop tracking + fly back to a global view -------------
