@@ -57,6 +57,7 @@ export interface State {
   // Inspection + camera focus
   selectedSatellite: SelectedSatellite | null;
   focus: FocusRequest | null;
+  cameraResetNonce: number;
 
   setCurrentTime: (t: Date) => void;
   togglePlay: () => void;
@@ -65,6 +66,7 @@ export interface State {
   setSelectedSatellite: (sat: SelectedSatellite | null) => void;
   updateSelectedPosition: (latitudeDeg: number, longitudeDeg: number, altitudeKm: number) => void;
   requestFocus: (noradId: number) => void;
+  resetCamera: () => void;
 
   // Composer actions
   setChief: (id: number) => void;
@@ -118,6 +120,7 @@ export const useStore = create<State>((set) => ({
 
   selectedSatellite: null,
   focus: null,
+  cameraResetNonce: 0,
 
   setCurrentTime: (t) => set({ currentTime: t }),
   togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),
@@ -141,6 +144,7 @@ export const useStore = create<State>((set) => ({
     ),
   requestFocus: (noradId) =>
     set((s) => ({ focus: { noradId, nonce: (s.focus?.nonce ?? 0) + 1 } })),
+  resetCamera: () => set((s) => ({ cameraResetNonce: s.cameraResetNonce + 1 })),
 
   setChief: (id) =>
     set((s) => ({

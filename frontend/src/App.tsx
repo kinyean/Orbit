@@ -65,6 +65,13 @@ export default function App() {
       <FilterPanel />
       <ScenarioPanel />
       <StatsOverlay />
+      <button
+        className="reset-view-btn"
+        onClick={() => useStore.getState().resetCamera()}
+        title="Reset the camera to a global view"
+      >
+        ⌂ Reset view
+      </button>
       <InfoPanel />
       <TimeController />
     </div>

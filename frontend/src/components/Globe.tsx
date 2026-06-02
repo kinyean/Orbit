@@ -127,6 +127,7 @@ export default function Globe() {
   // Reactive store slices that drive imperative Cesium updates.
   const activeConstellations = useStore((s) => s.filters.constellations);
   const focus = useStore((s) => s.focus);
+  const cameraResetNonce = useStore((s) => s.cameraResetNonce);
 
   // --- mount: viewer + stream + click handler ------------------------------
   useEffect(() => {
@@ -149,6 +150,12 @@ export default function Globe() {
     if (viewer.scene.moon) viewer.scene.moon.show = true;
     viewer.scene.globe.enableLighting = true;
     viewer.clock.shouldAnimate = true; // advance through the streamed samples
+    // Bound zoom so the camera can't dive into the surface or fly off into
+    // deep space (the usual cause of "scroll/zoom gets weird with no way to
+    // fix"). Range covers the surface out to beyond GEO (~35,786 km).
+    const camCtrl = viewer.scene.screenSpaceCameraController;
+    camCtrl.minimumZoomDistance = 1_000; // 1 km
+    camCtrl.maximumZoomDistance = 80_000_000; // 80,000 km
     viewerRef.current = viewer;
 
     const dataSource = new CzmlDataSource('catalog');
@@ -240,9 +247,11 @@ export default function Globe() {
     const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
     handler.setInputAction((click: { position: Cartesian2 }) => {
       const entity = pickSatellite(viewer, click.position);
-      if (entity) {
-        useStore.getState().setSelectedSatellite(describeEntity(entity, viewer.clock.currentTime));
-      }
+      if (!entity) return;
+      const norad = noradFromEntityId(entity.id);
+      // Route click through the same focus path as search: select + frame +
+      // highlight. (requestFocus drives the focus effect below.)
+      if (norad !== null) useStore.getState().requestFocus(norad);
     }, ScreenSpaceEventType.LEFT_CLICK);
 
     return () => {
@@ -286,6 +295,12 @@ export default function Globe() {
         /* flyTo rejects if interrupted by another camera move — ignore */
       });
   }, [focus]);
+
+  // --- camera reset: fly back to a default global view --------------------
+  useEffect(() => {
+    if (cameraResetNonce === 0) return; // skip initial mount
+    viewerRef.current?.camera.flyHome(1.0);
+  }, [cameraResetNonce]);
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />;
 }

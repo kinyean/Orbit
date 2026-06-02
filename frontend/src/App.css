@@ -304,6 +304,25 @@
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
+.reset-view-btn {
+  position: absolute;
+  top: 124px;
+  right: 16px;
+  z-index: 10;
+  padding: 7px 14px;
+  background: rgba(19, 24, 38, 0.85);
+  border: 1px solid rgba(71, 85, 105, 0.3);
+  border-radius: 6px;
+  color: #e2e8f0;
+  font-size: 12px;
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+}
+
+.reset-view-btn:hover {
+  border-color: #38bdf8;
+}
+
 .stats-overlay {
   position: absolute;
   top: 72px;
