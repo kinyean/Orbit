@@ -5,6 +5,7 @@ import {
   CzmlDataSource,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
+  BoundingSphere,
   Cartesian2,
   Cartographic,
   CallbackPositionProperty,
@@ -176,9 +177,9 @@ export default function Globe() {
         outlineColor: Color.YELLOW,
         outlineWidth: 2,
         // Grow the ring as the camera approaches so zoom has visible feedback
-        // (the satellite itself is a fixed-size screen-space dot). 3x within
-        // ~200 km, 1x beyond ~20,000 km.
-        scaleByDistance: new NearFarScalar(200_000, 3.0, 20_000_000, 1.0),
+        // (the satellite itself is a fixed-size screen-space dot). Normal size
+        // at the ~2000 km default focus view, up to 3x when zoomed to ~100 km.
+        scaleByDistance: new NearFarScalar(100_000, 3.0, 2_000_000, 1.0),
         disableDepthTestDistance: Number.POSITIVE_INFINITY, // always visible
       },
     });
@@ -280,38 +281,40 @@ export default function Globe() {
   }, [activeConstellations]);
 
   // --- focus request: smoothly fly over, then TRACK (double-click/search) --
-  // A smooth flyTo (1.5s, 3/4 view at 2000 km) provides the pan; on arrival we
-  // engage trackedEntity so the satellite becomes the camera's center — orbit
-  // 360°, zoom toward it, follow it as it moves. viewFrom is cleared first so
-  // tracking continues from the post-flight camera offset (no snap/cut).
+  // Fly to a ZERO-RADIUS bounding sphere at the satellite's CURRENT position,
+  // not viewer.flyTo(entity): a time-dynamic entity's bounding sphere encloses
+  // a chunk of its orbit path, with a radius that varies per CZML chunk — which
+  // made the framing distance inconsistent (sometimes very close, then hard to
+  // zoom out). A fixed range from a point gives the same 2000 km 3/4 view every
+  // time. On arrival we engage trackedEntity (viewFrom cleared first, so it
+  // continues from the post-flight offset — no snap), giving the orbit/zoom/
+  // follow camera.
   useEffect(() => {
     const viewer = viewerRef.current;
     const ds = dataSourceRef.current;
     if (!viewer || !ds || !focus) return;
     const entity = ds.entities.getById(`sat-${focus.noradId}`);
     if (!entity) return;
-    useStore.getState().setSelectedSatellite(describeEntity(entity, viewer.clock.currentTime));
+    const time = viewer.clock.currentTime;
+    useStore.getState().setSelectedSatellite(describeEntity(entity, time));
     entity.viewFrom = undefined;
+    const position = entity.position?.getValue(time);
+    if (!position) return;
     const targetNorad = focus.noradId;
-    viewer
-      .flyTo(entity, {
-        duration: 1.5,
-        offset: new HeadingPitchRange(0, CesiumMath.toRadians(-45), 2_000_000),
-      })
-      .then((completed) => {
+    viewer.camera.flyToBoundingSphere(new BoundingSphere(position, 0), {
+      duration: 1.5,
+      offset: new HeadingPitchRange(0, CesiumMath.toRadians(-45), 2_000_000),
+      complete: () => {
         const v = viewerRef.current;
         if (
-          completed &&
           v &&
           !v.isDestroyed() &&
           useStore.getState().selectedSatellite?.noradId === targetNorad
         ) {
           v.trackedEntity = entity; // lock on, preserving the post-flight offset
         }
-      })
-      .catch(() => {
-        /* flight interrupted by another camera move — ignore */
-      });
+      },
+    });
   }, [focus]);
 
   // --- camera reset: stop tracking + fly back to a global view -------------
