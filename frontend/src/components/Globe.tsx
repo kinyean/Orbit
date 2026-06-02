@@ -5,16 +5,18 @@ import {
   CzmlDataSource,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
-  BoundingSphere,
   Cartesian2,
+  Cartesian3,
   Cartographic,
   CallbackPositionProperty,
   Color,
+  ConstantProperty,
   Entity,
-  HeadingPitchRange,
   JulianDate,
   Math as CesiumMath,
+  Matrix4,
   NearFarScalar,
+  Transforms,
   defined,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
@@ -281,14 +283,12 @@ export default function Globe() {
   }, [activeConstellations]);
 
   // --- focus request: smoothly fly over, then TRACK (double-click/search) --
-  // Fly to a ZERO-RADIUS bounding sphere at the satellite's CURRENT position,
-  // not viewer.flyTo(entity): a time-dynamic entity's bounding sphere encloses
-  // a chunk of its orbit path, with a radius that varies per CZML chunk — which
-  // made the framing distance inconsistent (sometimes very close, then hard to
-  // zoom out). A fixed range from a point gives the same 2000 km 3/4 view every
-  // time. On arrival we engage trackedEntity (viewFrom cleared first, so it
-  // continues from the post-flight offset — no snap), giving the orbit/zoom/
-  // follow camera.
+  // The seamless trick: pick a FIXED tracking offset (entity.viewFrom, in the
+  // satellite's local East-North-Up frame) and fly the camera to the exact
+  // world point that same offset implies. Then trackedEntity engages at
+  // viewFrom == where the flight already landed — no sudden zoom/jump. Using a
+  // fixed offset (not the entity's time-dynamic bounding sphere, whose radius
+  // varies per CZML chunk) also makes the framing identical every time.
   useEffect(() => {
     const viewer = viewerRef.current;
     const ds = dataSourceRef.current;
@@ -297,13 +297,28 @@ export default function Globe() {
     if (!entity) return;
     const time = viewer.clock.currentTime;
     useStore.getState().setSelectedSatellite(describeEntity(entity, time));
-    entity.viewFrom = undefined;
-    const position = entity.position?.getValue(time);
-    if (!position) return;
+    const satPos = entity.position?.getValue(time);
+    if (!satPos) return;
+
+    // Fixed 3/4 view: 1500 km "behind" (south) and 1500 km up → ~2120 km range.
+    const offsetEnu = new Cartesian3(0, -1_500_000, 1_500_000);
+    entity.viewFrom = new ConstantProperty(offsetEnu);
+
+    // World destination = (ENU frame at the satellite) · offset — the exact
+    // point trackedEntity will hold the camera at.
+    const enuToFixed = Transforms.eastNorthUpToFixedFrame(satPos);
+    const destination = Matrix4.multiplyByPoint(enuToFixed, offsetEnu, new Cartesian3());
+    const direction = Cartesian3.normalize(
+      Cartesian3.subtract(satPos, destination, new Cartesian3()),
+      new Cartesian3(),
+    );
+    const up = Cartesian3.normalize(satPos, new Cartesian3()); // geocentric up
+
     const targetNorad = focus.noradId;
-    viewer.camera.flyToBoundingSphere(new BoundingSphere(position, 0), {
+    viewer.camera.flyTo({
+      destination,
+      orientation: { direction, up },
       duration: 1.5,
-      offset: new HeadingPitchRange(0, CesiumMath.toRadians(-45), 2_000_000),
       complete: () => {
         const v = viewerRef.current;
         if (
@@ -311,7 +326,7 @@ export default function Globe() {
           !v.isDestroyed() &&
           useStore.getState().selectedSatellite?.noradId === targetNorad
         ) {
-          v.trackedEntity = entity; // lock on, preserving the post-flight offset
+          v.trackedEntity = entity; // engages at viewFrom == flight destination
         }
       },
     });
