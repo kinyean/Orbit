@@ -152,6 +152,11 @@ export default function Globe() {
     viewer.dataSources.add(dataSource);
     dataSourceRef.current = dataSource;
 
+    // Serialize chunk processing so a slow process() can't overlap the next
+    // chunk, and catch failures so one malformed frame degrades gracefully
+    // instead of throwing an unhandled rejection (the stream self-heals: the
+    // next good chunk merges by id).
+    let processChain: Promise<void> = Promise.resolve();
     const stream = new CatalogStreamClient(CatalogStreamClient.defaultUrl(), STREAM_CONTRACT_VERSION, {
       onMessage: (msg) => {
         const ds = dataSourceRef.current;
@@ -160,9 +165,15 @@ export default function Globe() {
           // Align the viewer clock with the first data epoch.
           viewer.clock.currentTime = JulianDate.fromIso8601(msg.epoch);
         }
-        ds.process(msg.czml as unknown as object).then(() => {
-          applyFilters(ds, useStore.getState().filters.constellations);
-        });
+        processChain = processChain
+          .then(() => ds.process(msg.czml as unknown as object))
+          .then(() => {
+            applyFilters(ds, useStore.getState().filters.constellations);
+          })
+          .catch((err) => {
+            // eslint-disable-next-line no-console
+            console.error('Catalog CZML chunk failed to process; skipping it', err);
+          });
         if (!indexBuiltRef.current) {
           useStore.getState().setCatalog(msg.satelliteCount, buildIndex(msg.czml));
           indexBuiltRef.current = true;
@@ -170,6 +181,29 @@ export default function Globe() {
       },
     });
     stream.connect();
+
+    // Keep the selected satellite's lat/lon/alt live as the clock advances
+    // (the dot moves; the info panel must show "current" position, not a frozen
+    // click-time snapshot). Throttled so the panel updates a few times a second.
+    let lastPosUpdate = 0;
+    const removeTick = viewer.clock.onTick.addEventListener((clock) => {
+      const selected = useStore.getState().selectedSatellite;
+      if (!selected) return;
+      const now = performance.now();
+      if (now - lastPosUpdate < 250) return;
+      lastPosUpdate = now;
+      const ds = dataSourceRef.current;
+      const entity = ds?.entities.getById(`sat-${selected.noradId}`);
+      const pos = entity?.position?.getValue(clock.currentTime);
+      if (!pos) return;
+      const carto = Cartographic.fromCartesian(pos);
+      if (!carto) return;
+      useStore.getState().updateSelectedPosition(
+        CesiumMath.toDegrees(carto.latitude),
+        CesiumMath.toDegrees(carto.longitude),
+        carto.height / 1000,
+      );
+    });
 
     const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
     handler.setInputAction((click: { position: Cartesian2 }) => {
@@ -181,6 +215,7 @@ export default function Globe() {
 
     return () => {
       stream.close();
+      removeTick();
       handler.destroy();
       viewer.destroy();
       viewerRef.current = null;

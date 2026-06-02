@@ -63,6 +63,7 @@ export interface State {
   toggleConstellation: (name: string) => void;
   setCatalog: (total: number, index: SatIndexEntry[]) => void;
   setSelectedSatellite: (sat: SelectedSatellite | null) => void;
+  updateSelectedPosition: (latitudeDeg: number, longitudeDeg: number, altitudeKm: number) => void;
   requestFocus: (noradId: number) => void;
 
   // Composer actions
@@ -132,6 +133,12 @@ export const useStore = create<State>((set) => ({
 
   setCatalog: (total, index) => set({ catalogTotal: total, catalogIndex: index }),
   setSelectedSatellite: (sat) => set({ selectedSatellite: sat }),
+  updateSelectedPosition: (latitudeDeg, longitudeDeg, altitudeKm) =>
+    set((s) =>
+      s.selectedSatellite
+        ? { selectedSatellite: { ...s.selectedSatellite, latitudeDeg, longitudeDeg, altitudeKm } }
+        : s,
+    ),
   requestFocus: (noradId) =>
     set((s) => ({ focus: { noradId, nonce: (s.focus?.nonce ?? 0) + 1 } })),
 

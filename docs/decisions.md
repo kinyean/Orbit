@@ -587,9 +587,18 @@ Explicitly not decided yet; each has a tracked reason.
   (WebCodecs/MediaRecorder) vs server-side render — decide at the export phase.
 - **Self-hosting Cesium imagery tiles.** Ion for now; switch at the 5 GB/mo
   ceiling.
-- **Catalog refresh cadence + sample density.** What CZML chunk size and
-  refresh cycle the catalog stream uses — pick empirically when measuring
-  bandwidth (Decision 13).
+- **Catalog refresh cadence + sample density.** Phase 2 baseline (measured,
+  dev hardware): propagation pass every **30 s**, window **180 s**, step
+  **60 s** → 4 samples/sat, `interpolationDegree` clamped to 3. A full pass of
+  **15,501 satellites** propagates in **~100–140 ms** (warm) and produces a
+  **~7.36 MB** uncompressed CZML message. Backend compute is a non-issue;
+  message size is the lever. **Open optimization:** enable WebSocket
+  `permessage-deflate` (Tomcat doesn't by default) — CZML is highly repetitive
+  and should compress ~10×; biggest bandwidth win before more clients connect.
+  Secondary levers: fewer samples / shorter window, or delta-encoding. Revisit
+  when client count or bandwidth matters. Browser render FPS at 15.5k Entity
+  dots still needs measurement (R7) — if under 30 fps, fall back from the CZML
+  Entity layer to a `PointPrimitiveCollection` fed from the same samples.
 - **Earth backdrop in the proximity view.** Default yes (orientation context)
   or no (pure space) — design call when building the proximity scene
   (Decision 4).
