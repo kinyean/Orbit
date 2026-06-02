@@ -66,21 +66,24 @@ export class CatalogStreamClient {
       this.handlers.onStatus?.('open');
     };
 
+    ws.binaryType = 'arraybuffer';
     ws.onmessage = (event) => {
-      let msg: CatalogMessage;
-      try {
-        msg = JSON.parse(event.data as string) as CatalogMessage;
-      } catch {
-        return; // ignore unparseable frames
+      const data = event.data;
+      if (typeof data === 'string') {
+        this.handleText(data, ws); // tolerate an uncompressed text frame
+      } else if (data instanceof ArrayBuffer) {
+        inflateGzip(data)
+          .then((text) => this.handleText(text, ws))
+          .catch(() => {
+            /* drop an undecodable frame; the next one self-heals */
+          });
+      } else if (data instanceof Blob) {
+        data
+          .arrayBuffer()
+          .then(inflateGzip)
+          .then((text) => this.handleText(text, ws))
+          .catch(() => {});
       }
-      if (msg.contractVersion !== this.expectedVersion) {
-        // Persistent mismatch — stop trying, surface it.
-        this.closedByUser = true;
-        this.handlers.onStatus?.('version-mismatch');
-        ws.close();
-        return;
-      }
-      this.handlers.onMessage(msg);
     };
 
     ws.onclose = () => {
@@ -96,9 +99,32 @@ export class CatalogStreamClient {
     };
   }
 
+  private handleText(text: string, ws: WebSocket): void {
+    let msg: CatalogMessage;
+    try {
+      msg = JSON.parse(text) as CatalogMessage;
+    } catch {
+      return; // ignore unparseable frames
+    }
+    if (msg.contractVersion !== this.expectedVersion) {
+      // Persistent mismatch — stop trying, surface it.
+      this.closedByUser = true;
+      this.handlers.onStatus?.('version-mismatch');
+      ws.close();
+      return;
+    }
+    this.handlers.onMessage(msg);
+  }
+
   private scheduleReconnect(): void {
     const delay = this.backoff;
     this.backoff = Math.min(this.backoff * 2, MAX_BACKOFF_MS);
     this.reconnectTimer = window.setTimeout(() => this.open(), delay);
   }
+}
+
+/** Inflate a gzip-compressed frame using the native DecompressionStream. */
+async function inflateGzip(buffer: ArrayBuffer): Promise<string> {
+  const stream = new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return await new Response(stream).text();
 }

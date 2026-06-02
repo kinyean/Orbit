@@ -1,13 +1,16 @@
 package space.orbit.backend.stream;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.zip.GZIPOutputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
-import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
@@ -21,17 +24,23 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
  * because a raw {@code WebSocketSession} is not safe for concurrent sends — a
  * scheduled broadcast and a connect-time warm-start can otherwise collide on
  * the same session.
+ *
+ * <p>Messages are <strong>gzip-compressed and sent as binary frames</strong>.
+ * CZML is highly repetitive (~10x compressible), and an uncompressed multi-MB
+ * frame cannot drain to a remote browser within the send-time limit (it works
+ * over loopback but resets over a real network). The client inflates with the
+ * native DecompressionStream. See docs/streaming-contract.md.
  */
 @Component
 public class CatalogStreamHandler extends TextWebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(CatalogStreamHandler.class);
 
-    private static final int SEND_TIME_LIMIT_MS = 10_000;
-    private static final int SEND_BUFFER_LIMIT_BYTES = 16 * 1024 * 1024;
+    private static final int SEND_TIME_LIMIT_MS = 30_000;
+    private static final int SEND_BUFFER_LIMIT_BYTES = 32 * 1024 * 1024;
 
     private final Set<WebSocketSession> sessions = ConcurrentHashMap.newKeySet();
-    private volatile String latestMessage;
+    private volatile byte[] latestMessage;
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
@@ -40,7 +49,7 @@ public class CatalogStreamHandler extends TextWebSocketHandler {
         sessions.add(guarded);
         log.debug("Catalog stream connected: {} ({} total)", session.getId(), sessions.size());
 
-        String warmStart = latestMessage;
+        byte[] warmStart = latestMessage;
         if (warmStart != null) {
             sendTo(guarded, warmStart);
         }
@@ -53,11 +62,12 @@ public class CatalogStreamHandler extends TextWebSocketHandler {
         log.debug("Catalog stream closed: {} ({} remain)", session.getId(), sessions.size());
     }
 
-    /** Cache as the warm-start message and fan out to all open sessions. */
+    /** Compress once, cache as the warm-start frame, and fan out to all sessions. */
     public void broadcast(String message) {
-        latestMessage = message;
+        byte[] compressed = gzip(message);
+        latestMessage = compressed;
         for (WebSocketSession session : sessions) {
-            sendTo(session, message);
+            sendTo(session, compressed);
         }
     }
 
@@ -65,13 +75,24 @@ public class CatalogStreamHandler extends TextWebSocketHandler {
         return sessions.size();
     }
 
-    private void sendTo(WebSocketSession session, String message) {
+    private static byte[] gzip(String message) {
+        byte[] raw = message.getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream bos = new ByteArrayOutputStream(Math.max(1024, raw.length / 8));
+        try (GZIPOutputStream gz = new GZIPOutputStream(bos)) {
+            gz.write(raw);
+        } catch (IOException e) {
+            throw new IllegalStateException("gzip of catalog message failed", e);
+        }
+        return bos.toByteArray();
+    }
+
+    private void sendTo(WebSocketSession session, byte[] compressed) {
         if (!session.isOpen()) {
             sessions.remove(session);
             return;
         }
         try {
-            session.sendMessage(new TextMessage(message));
+            session.sendMessage(new BinaryMessage(compressed));
         } catch (IOException | RuntimeException e) {
             // One dead/slow client must not abort the broadcast to everyone else.
             log.debug("Dropping catalog session {} after send failure: {}", session.getId(), e.toString());

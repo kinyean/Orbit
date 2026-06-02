@@ -592,11 +592,13 @@ Explicitly not decided yet; each has a tracked reason.
   **60 s** → 4 samples/sat, `interpolationDegree` clamped to 3. A full pass of
   **15,501 satellites** propagates in **~100–140 ms** (warm) and produces a
   **~7.36 MB** uncompressed CZML message. Backend compute is a non-issue;
-  message size is the lever. **Open optimization:** enable WebSocket
-  `permessage-deflate` (Tomcat doesn't by default) — CZML is highly repetitive
-  and should compress ~10×; biggest bandwidth win before more clients connect.
-  Secondary levers: fewer samples / shorter window, or delta-encoding. Revisit
-  when client count or bandwidth matters. Browser render FPS at 15.5k Entity
+  message size is the lever. **Implemented:** the backend gzips each message
+  and sends it as a binary WebSocket frame; the client inflates with the native
+  `DecompressionStream`. Measured **7.36 MB → 1.15 MB (6.4×)**. This was not
+  just bandwidth — the uncompressed frame could not drain to a *remote* browser
+  within the send-time limit (worked over loopback, reset over the network), so
+  the catalog never appeared in the browser until compression landed. Secondary
+  levers if needed later: fewer samples / shorter window, or delta-encoding. Browser render FPS at 15.5k Entity
   dots still needs measurement (R7) — if under 30 fps, fall back from the CZML
   Entity layer to a `PointPrimitiveCollection` fed from the same samples.
 - **Earth backdrop in the proximity view.** Default yes (orientation context)

@@ -25,9 +25,18 @@ Phase 4 and will extend, not replace, this contract.
 - One shared broadcast: every connected client receives the same catalog
   messages ([Decision 13](./decisions.md) — one SGP4 pass, fan-out to all).
 
+## Wire framing — gzip binary
+
+Each message is the JSON envelope below, **gzip-compressed and sent as a binary
+WebSocket frame**. CZML is ~10× compressible; an uncompressed multi-MB frame
+drains fine over loopback but resets over a real network within the send-time
+limit. The client inflates with the native `DecompressionStream('gzip')` and
+then parses JSON. (A plain text frame is also tolerated by the client as a
+fallback.)
+
 ## Message envelope
 
-Each text frame is one JSON object:
+After inflation, each frame is one JSON object:
 
 ```jsonc
 {
