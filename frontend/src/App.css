@@ -50,6 +50,50 @@
   border-color: #38bdf8;
 }
 
+.search-form {
+  flex: 1;
+  max-width: 340px;
+  display: flex;
+}
+
+.search-form .search {
+  width: 100%;
+  max-width: none;
+}
+
+.search-error {
+  border-color: #ef4444 !important;
+}
+
+.info-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f1f5f9;
+  margin-bottom: 10px;
+}
+
+.info-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.role-btn {
+  flex: 1;
+  height: 30px;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: 6px;
+  color: #e2e8f0;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.role-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* Status chip in the top bar — backend health indicator (US-INFRA-04). */
 .status-chip {
   display: flex;

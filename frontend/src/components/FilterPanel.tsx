@@ -1,7 +1,11 @@
 import { useStore } from '../store/useStore';
+import { CONSTELLATIONS } from '../lib/constellations';
 
-const CONSTELLATIONS = ['Starlink', 'OneWeb', 'GPS', 'Galileo', 'BeiDou', 'Iridium'];
-
+/**
+ * Constellation visibility toggles. Each defaults on; unchecking hides that
+ * group to declutter (non-constellation satellites stay visible). State
+ * persists in localStorage (US-CAT-06).
+ */
 export default function FilterPanel() {
   const filters = useStore((s) => s.filters);
   const toggleConstellation = useStore((s) => s.toggleConstellation);
