@@ -24,6 +24,12 @@ spring:
 server:
   port: ${SERVER_PORT:8080}
 
+orbit:
+  orekit:
+    # Path to the unpacked Orekit data bundle. Container bakes it at /opt/orekit-data;
+    # the Gradle test task overrides this via the orekit.data.path system property.
+    data-path: ${OREKIT_DATA_PATH:/opt/orekit-data}
+
 springdoc:
   api-docs:
     path: /v3/api-docs
