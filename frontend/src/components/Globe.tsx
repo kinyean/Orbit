@@ -7,7 +7,10 @@ import {
   ScreenSpaceEventType,
   Cartesian2,
   Cartographic,
+  CallbackPositionProperty,
+  Color,
   Entity,
+  HeadingPitchRange,
   JulianDate,
   Math as CesiumMath,
   defined,
@@ -152,6 +155,28 @@ export default function Globe() {
     viewer.dataSources.add(dataSource);
     dataSourceRef.current = dataSource;
 
+    // Selection highlight: a yellow ring that live-tracks the selected
+    // satellite's position (via a CallbackProperty, so it follows the moving
+    // dot every frame with no per-tick allocation). Returns undefined when
+    // nothing is selected, so the ring simply isn't drawn. Lives in
+    // viewer.entities (not the CZML source), so chunk processing never wipes it.
+    viewer.entities.add({
+      id: '__selection__',
+      position: new CallbackPositionProperty(() => {
+        const sel = useStore.getState().selectedSatellite;
+        if (!sel) return undefined;
+        const e = dataSourceRef.current?.entities.getById(`sat-${sel.noradId}`);
+        return e?.position?.getValue(viewer.clock.currentTime) ?? undefined;
+      }, false),
+      point: {
+        pixelSize: 18,
+        color: Color.TRANSPARENT,
+        outlineColor: Color.YELLOW,
+        outlineWidth: 2,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY, // always visible
+      },
+    });
+
     // Serialize chunk processing so a slow process() can't overlap the next
     // chunk, and catch failures so one malformed frame degrades gracefully
     // instead of throwing an unhandled rejection (the stream self-heals: the
@@ -180,7 +205,14 @@ export default function Globe() {
         }
       },
     });
-    stream.connect();
+    // Defer connect to the next macrotask so React StrictMode's dev
+    // mount→unmount→remount doesn't open then immediately close a socket
+    // (which logs "WebSocket is closed before the connection is established").
+    // The cancelled first scheduling never connects; only the remount's does.
+    let connectCancelled = false;
+    const connectTimer = window.setTimeout(() => {
+      if (!connectCancelled) stream.connect();
+    }, 0);
 
     // Keep the selected satellite's lat/lon/alt live as the clock advances
     // (the dot moves; the info panel must show "current" position, not a frozen
@@ -214,6 +246,8 @@ export default function Globe() {
     }, ScreenSpaceEventType.LEFT_CLICK);
 
     return () => {
+      connectCancelled = true;
+      window.clearTimeout(connectTimer);
       stream.close();
       removeTick();
       handler.destroy();
@@ -230,17 +264,27 @@ export default function Globe() {
     if (ds) applyFilters(ds, activeConstellations);
   }, [activeConstellations]);
 
-  // --- focus request: fly the camera to a satellite ------------------------
+  // --- focus request: select + frame a satellite (from search) -------------
   useEffect(() => {
     const viewer = viewerRef.current;
     const ds = dataSourceRef.current;
     if (!viewer || !ds || !focus) return;
     const entity = ds.entities.getById(`sat-${focus.noradId}`);
-    if (entity) {
-      viewer.flyTo(entity, { duration: 1.2 }).catch(() => {
+    if (!entity) return;
+    // Select it — opens the info panel and lights up the highlight ring so the
+    // satellite is identifiable among ~15k dots.
+    useStore.getState().setSelectedSatellite(describeEntity(entity, viewer.clock.currentTime));
+    // Frame it at a fixed range (a bare flyTo to a point entity uses an
+    // awkward default distance); look down from ~2000 km so the dot + its
+    // highlight sit centered with Earth for context.
+    viewer
+      .flyTo(entity, {
+        duration: 1.5,
+        offset: new HeadingPitchRange(0, CesiumMath.toRadians(-30), 2_000_000),
+      })
+      .catch(() => {
         /* flyTo rejects if interrupted by another camera move — ignore */
       });
-    }
   }, [focus]);
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />;
