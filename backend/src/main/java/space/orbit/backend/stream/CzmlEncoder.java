@@ -90,6 +90,11 @@ public class CzmlEncoder {
         g.writeStringField("epoch", epochIso);
         g.writeStringField("interpolationAlgorithm", "LAGRANGE");
         g.writeNumberField("interpolationDegree", degree);
+        // Hold the end samples instead of returning "no value" just past the
+        // window edge — otherwise dots (and the selection ring) blink out for a
+        // frame at the leading edge between chunks.
+        g.writeStringField("forwardExtrapolationType", "HOLD");
+        g.writeStringField("backwardExtrapolationType", "HOLD");
         g.writeStringField("referenceFrame", "FIXED");
         g.writeArrayFieldStart("cartesian");
         for (double v : c) {

@@ -5,6 +5,7 @@ import {
   CzmlDataSource,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
+  BoundingSphere,
   Cartesian2,
   Cartesian3,
   Cartographic,
@@ -12,6 +13,7 @@ import {
   Color,
   ConstantProperty,
   Entity,
+  HeadingPitchRange,
   JulianDate,
   Math as CesiumMath,
   Matrix4,
@@ -283,12 +285,13 @@ export default function Globe() {
   }, [activeConstellations]);
 
   // --- focus request: smoothly fly over, then TRACK (double-click/search) --
-  // The seamless trick: pick a FIXED tracking offset (entity.viewFrom, in the
-  // satellite's local East-North-Up frame) and fly the camera to the exact
-  // world point that same offset implies. Then trackedEntity engages at
-  // viewFrom == where the flight already landed — no sudden zoom/jump. Using a
-  // fixed offset (not the entity's time-dynamic bounding sphere, whose radius
-  // varies per CZML chunk) also makes the framing identical every time.
+  // 1) Fly to a zero-radius sphere at the satellite's current position with a
+  //    fixed range → identical 3/4 framing every time (not the entity's
+  //    time-dynamic bounding sphere, whose radius varies per CZML chunk).
+  // 2) On arrival, derive viewFrom from the camera's ACTUAL pose (its offset in
+  //    the satellite's ENU frame) and engage trackedEntity. Because viewFrom is
+  //    exactly where the flight ended, tracking continues with no positional or
+  //    angular jerk; from there the satellite is the orbit/zoom center.
   useEffect(() => {
     const viewer = viewerRef.current;
     const ds = dataSourceRef.current;
@@ -299,35 +302,26 @@ export default function Globe() {
     useStore.getState().setSelectedSatellite(describeEntity(entity, time));
     const satPos = entity.position?.getValue(time);
     if (!satPos) return;
-
-    // Fixed 3/4 view: 1500 km "behind" (south) and 1500 km up → ~2120 km range.
-    const offsetEnu = new Cartesian3(0, -1_500_000, 1_500_000);
-    entity.viewFrom = new ConstantProperty(offsetEnu);
-
-    // World destination = (ENU frame at the satellite) · offset — the exact
-    // point trackedEntity will hold the camera at.
-    const enuToFixed = Transforms.eastNorthUpToFixedFrame(satPos);
-    const destination = Matrix4.multiplyByPoint(enuToFixed, offsetEnu, new Cartesian3());
-    const direction = Cartesian3.normalize(
-      Cartesian3.subtract(satPos, destination, new Cartesian3()),
-      new Cartesian3(),
-    );
-    const up = Cartesian3.normalize(satPos, new Cartesian3()); // geocentric up
-
     const targetNorad = focus.noradId;
-    viewer.camera.flyTo({
-      destination,
-      orientation: { direction, up },
+
+    viewer.camera.flyToBoundingSphere(new BoundingSphere(satPos, 0), {
       duration: 1.5,
+      offset: new HeadingPitchRange(0, CesiumMath.toRadians(-45), 2_000_000),
       complete: () => {
         const v = viewerRef.current;
-        if (
-          v &&
-          !v.isDestroyed() &&
-          useStore.getState().selectedSatellite?.noradId === targetNorad
-        ) {
-          v.trackedEntity = entity; // engages at viewFrom == flight destination
-        }
+        const dsc = dataSourceRef.current;
+        if (!v || v.isDestroyed() || !dsc) return;
+        if (useStore.getState().selectedSatellite?.noradId !== targetNorad) return;
+        const ent = dsc.entities.getById(`sat-${targetNorad}`);
+        const pos = ent?.position?.getValue(v.clock.currentTime);
+        if (!ent || !pos) return;
+        // viewFrom = camera's current offset in the satellite's ENU frame, so
+        // EntityView keeps the exact pose the flight ended at.
+        const enu = Transforms.eastNorthUpToFixedFrame(pos);
+        const invEnu = Matrix4.inverseTransformation(enu, new Matrix4());
+        const offset = Matrix4.multiplyByPoint(invEnu, v.camera.positionWC, new Cartesian3());
+        ent.viewFrom = new ConstantProperty(offset);
+        v.trackedEntity = ent;
       },
     });
   }, [focus]);
