@@ -6,11 +6,12 @@ import {
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
   Cartesian2,
+  Cartesian3,
   Cartographic,
   CallbackPositionProperty,
   Color,
+  ConstantProperty,
   Entity,
-  HeadingPitchRange,
   JulianDate,
   Math as CesiumMath,
   defined,
@@ -150,12 +151,6 @@ export default function Globe() {
     if (viewer.scene.moon) viewer.scene.moon.show = true;
     viewer.scene.globe.enableLighting = true;
     viewer.clock.shouldAnimate = true; // advance through the streamed samples
-    // Bound zoom so the camera can't dive into the surface or fly off into
-    // deep space (the usual cause of "scroll/zoom gets weird with no way to
-    // fix"). Range covers the surface out to beyond GEO (~35,786 km).
-    const camCtrl = viewer.scene.screenSpaceCameraController;
-    camCtrl.minimumZoomDistance = 1_000; // 1 km
-    camCtrl.maximumZoomDistance = 80_000_000; // 80,000 km
     viewerRef.current = viewer;
 
     const dataSource = new CzmlDataSource('catalog');
@@ -245,14 +240,21 @@ export default function Globe() {
     });
 
     const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
+    // Single click = inspect only (select + info panel + highlight ring, no
+    // camera move).
+    handler.setInputAction((click: { position: Cartesian2 }) => {
+      const entity = pickSatellite(viewer, click.position);
+      if (!entity) return;
+      useStore.getState().setSelectedSatellite(describeEntity(entity, viewer.clock.currentTime));
+    }, ScreenSpaceEventType.LEFT_CLICK);
+    // Double click = focus (track the satellite: 360° orbit, centered, zoom
+    // toward it). Routed through requestFocus → the focus effect below.
     handler.setInputAction((click: { position: Cartesian2 }) => {
       const entity = pickSatellite(viewer, click.position);
       if (!entity) return;
       const norad = noradFromEntityId(entity.id);
-      // Route click through the same focus path as search: select + frame +
-      // highlight. (requestFocus drives the focus effect below.)
       if (norad !== null) useStore.getState().requestFocus(norad);
-    }, ScreenSpaceEventType.LEFT_CLICK);
+    }, ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
 
     return () => {
       connectCancelled = true;
@@ -273,33 +275,30 @@ export default function Globe() {
     if (ds) applyFilters(ds, activeConstellations);
   }, [activeConstellations]);
 
-  // --- focus request: select + frame a satellite (from search) -------------
+  // --- focus request: TRACK a satellite (double-click or search) -----------
+  // trackedEntity makes the satellite the camera's center of rotation: orbit
+  // it 360°, zoom moves toward it, and the camera follows it as it moves —
+  // which is also why the "angle" is no longer fixed/weird (you control it).
   useEffect(() => {
     const viewer = viewerRef.current;
     const ds = dataSourceRef.current;
     if (!viewer || !ds || !focus) return;
     const entity = ds.entities.getById(`sat-${focus.noradId}`);
     if (!entity) return;
-    // Select it — opens the info panel and lights up the highlight ring so the
-    // satellite is identifiable among ~15k dots.
     useStore.getState().setSelectedSatellite(describeEntity(entity, viewer.clock.currentTime));
-    // Frame it at a fixed range (a bare flyTo to a point entity uses an
-    // awkward default distance); look down from ~2000 km so the dot + its
-    // highlight sit centered with Earth for context.
-    viewer
-      .flyTo(entity, {
-        duration: 1.5,
-        offset: new HeadingPitchRange(0, CesiumMath.toRadians(-30), 2_000_000),
-      })
-      .catch(() => {
-        /* flyTo rejects if interrupted by another camera move — ignore */
-      });
+    // Initial tracking offset (local east/north/up, metres): back + above for a
+    // sensible 3/4 view; the user can orbit/zoom freely from there.
+    entity.viewFrom = new ConstantProperty(new Cartesian3(0, -2_000_000, 1_000_000));
+    viewer.trackedEntity = entity;
   }, [focus]);
 
-  // --- camera reset: fly back to a default global view --------------------
+  // --- camera reset: stop tracking + fly back to a global view -------------
   useEffect(() => {
     if (cameraResetNonce === 0) return; // skip initial mount
-    viewerRef.current?.camera.flyHome(1.0);
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    viewer.trackedEntity = undefined; // release the orbit-camera lock
+    viewer.camera.flyHome(1.0);
   }, [cameraResetNonce]);
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />;
