@@ -6,14 +6,14 @@ import {
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
   Cartesian2,
-  Cartesian3,
   Cartographic,
   CallbackPositionProperty,
   Color,
-  ConstantProperty,
   Entity,
+  HeadingPitchRange,
   JulianDate,
   Math as CesiumMath,
+  NearFarScalar,
   defined,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
@@ -175,6 +175,10 @@ export default function Globe() {
         color: Color.TRANSPARENT,
         outlineColor: Color.YELLOW,
         outlineWidth: 2,
+        // Grow the ring as the camera approaches so zoom has visible feedback
+        // (the satellite itself is a fixed-size screen-space dot). 3x within
+        // ~200 km, 1x beyond ~20,000 km.
+        scaleByDistance: new NearFarScalar(200_000, 3.0, 20_000_000, 1.0),
         disableDepthTestDistance: Number.POSITIVE_INFINITY, // always visible
       },
     });
@@ -275,10 +279,11 @@ export default function Globe() {
     if (ds) applyFilters(ds, activeConstellations);
   }, [activeConstellations]);
 
-  // --- focus request: TRACK a satellite (double-click or search) -----------
-  // trackedEntity makes the satellite the camera's center of rotation: orbit
-  // it 360°, zoom moves toward it, and the camera follows it as it moves —
-  // which is also why the "angle" is no longer fixed/weird (you control it).
+  // --- focus request: smoothly fly over, then TRACK (double-click/search) --
+  // A smooth flyTo (1.5s, 3/4 view at 2000 km) provides the pan; on arrival we
+  // engage trackedEntity so the satellite becomes the camera's center — orbit
+  // 360°, zoom toward it, follow it as it moves. viewFrom is cleared first so
+  // tracking continues from the post-flight camera offset (no snap/cut).
   useEffect(() => {
     const viewer = viewerRef.current;
     const ds = dataSourceRef.current;
@@ -286,10 +291,27 @@ export default function Globe() {
     const entity = ds.entities.getById(`sat-${focus.noradId}`);
     if (!entity) return;
     useStore.getState().setSelectedSatellite(describeEntity(entity, viewer.clock.currentTime));
-    // Initial tracking offset (local east/north/up, metres): back + above for a
-    // sensible 3/4 view; the user can orbit/zoom freely from there.
-    entity.viewFrom = new ConstantProperty(new Cartesian3(0, -2_000_000, 1_000_000));
-    viewer.trackedEntity = entity;
+    entity.viewFrom = undefined;
+    const targetNorad = focus.noradId;
+    viewer
+      .flyTo(entity, {
+        duration: 1.5,
+        offset: new HeadingPitchRange(0, CesiumMath.toRadians(-45), 2_000_000),
+      })
+      .then((completed) => {
+        const v = viewerRef.current;
+        if (
+          completed &&
+          v &&
+          !v.isDestroyed() &&
+          useStore.getState().selectedSatellite?.noradId === targetNorad
+        ) {
+          v.trackedEntity = entity; // lock on, preserving the post-flight offset
+        }
+      })
+      .catch(() => {
+        /* flight interrupted by another camera move — ignore */
+      });
   }, [focus]);
 
   // --- camera reset: stop tracking + fly back to a global view -------------
