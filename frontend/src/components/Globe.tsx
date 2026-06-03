@@ -10,10 +10,13 @@ import {
   Cartesian3,
   Cartographic,
   Color,
+  ConstantProperty,
   Entity,
   JulianDate,
   Math as CesiumMath,
+  Matrix4,
   NearFarScalar,
+  Transforms,
   defined,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
@@ -279,12 +282,14 @@ export default function Globe() {
     if (ds) applyFilters(ds, activeConstellations);
   }, [activeConstellations]);
 
-  // --- focus request: recenter on a satellite, LeoLabs-style (dbl-click/search)
-  // Keep the camera's current POSITION (so no zoom change), smoothly ROTATE in
-  // place to put the satellite at screen center, then track it so it stays
-  // centered while the user zooms/orbits manually. Because the flight changes
-  // only orientation (destination == current position) and tracking then
-  // engages at that exact pose, there's no zoom jump, no twist, no snap.
+  // --- focus request: recenter + track (double-click / search) -------------
+  // Reliable baseline (no camera.flyTo — every flight-then-track variant fought
+  // Cesium's EntityView and produced a twist, zoom-jump or flash): engage
+  // trackedEntity with viewFrom = the camera's CURRENT offset in the
+  // satellite's ENU frame. That keeps the current distance (no zoom change),
+  // recenters the satellite, and follows it. viewFrom is cleared shortly after
+  // so the user can orbit/zoom freely. The recenter is instant (a small turn
+  // when you click a satellite that's near where you're already looking).
   useEffect(() => {
     const viewer = viewerRef.current;
     const ds = dataSourceRef.current;
@@ -298,39 +303,18 @@ export default function Globe() {
 
     viewer.trackedEntity = undefined; // release any prior tracking
 
-    // Orthonormal orientation that looks from the current camera position at the
-    // satellite, up ≈ geocentric up.
-    const camPos = Cartesian3.clone(viewer.camera.positionWC, new Cartesian3());
-    const direction = Cartesian3.normalize(
-      Cartesian3.subtract(satPos, camPos, new Cartesian3()),
-      new Cartesian3(),
-    );
-    const approxUp = Cartesian3.normalize(satPos, new Cartesian3());
-    const right = Cartesian3.normalize(
-      Cartesian3.cross(direction, approxUp, new Cartesian3()),
-      new Cartesian3(),
-    );
-    const up = Cartesian3.normalize(Cartesian3.cross(right, direction, new Cartesian3()), new Cartesian3());
+    // Current camera offset in the satellite's ENU frame → preserves distance.
+    const enu = Transforms.eastNorthUpToFixedFrame(satPos);
+    const inv = Matrix4.inverseTransformation(enu, new Matrix4());
+    const offset = Matrix4.multiplyByPoint(inv, viewer.camera.positionWC, new Cartesian3());
+    entity.viewFrom = new ConstantProperty(offset);
+    viewer.trackedEntity = entity;
 
-    const targetNorad = focus.noradId;
-    viewer.camera.flyTo({
-      destination: camPos, // unchanged position → pure rotation, no zoom
-      orientation: { direction, up },
-      duration: 0.8,
-      complete: () => {
-        const v = viewerRef.current;
-        const dsc = dataSourceRef.current;
-        if (!v || v.isDestroyed() || !dsc) return;
-        if (useStore.getState().selectedSatellite?.noradId !== targetNorad) return;
-        const ent = dsc.entities.getById(`sat-${targetNorad}`);
-        if (!ent) return;
-        // Engage tracking with NO viewFrom: EntityView then PRESERVES the
-        // camera's current pose (the one the flight just established) and simply
-        // follows the satellite from there — so there's no re-derived
-        // orientation and no twist. The user can orbit/zoom freely.
-        v.trackedEntity = ent;
-      },
-    });
+    const clearTimer = window.setTimeout(() => {
+      const v = viewerRef.current;
+      if (v && !v.isDestroyed() && v.trackedEntity === entity) entity.viewFrom = undefined;
+    }, 300);
+    return () => window.clearTimeout(clearTimer);
   }, [focus]);
 
   // --- camera reset: stop tracking + fly back to a global view -------------
