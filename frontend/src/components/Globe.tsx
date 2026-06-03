@@ -16,6 +16,7 @@ import {
   Math as CesiumMath,
   Matrix4,
   NearFarScalar,
+  TrackingReferenceFrame,
   Transforms,
   defined,
 } from 'cesium';
@@ -283,14 +284,20 @@ export default function Globe() {
   }, [activeConstellations]);
 
   // --- focus request: blend into the LIVE tracked pose (double-click/search)
-  // The end-twist was the hand-off: flyTo landed at a computed pose, then
-  // trackedEntity engaged at a slightly different LIVE pose (the satellite kept
-  // moving). Fix: don't hand off — converge to the live target. Each frame,
-  // compute the exact pose tracking would have RIGHT NOW (Cesium's own
-  // lookAtTransform), and blend the camera from its start pose toward it over
-  // ~0.8s. At t=1 the camera already IS the tracked pose, so engaging
-  // trackedEntity changes nothing → no twist. Distance/zoom is preserved
-  // (offset = current ENU offset).
+  // Two parts make this twist-free:
+  //  (1) Frame match. Cesium's trackedEntity AUTO-SELECTS a velocity-aligned
+  //      (VVLH) frame for fast objects like satellites (EntityView.js lines
+  //      165-214), but our blend computes the target with eastNorthUpToFixedFrame
+  //      (ENU). Converging to an ENU pose then engaging in a VVLH frame is what
+  //      produced the end-twist. We force the entity's tracking frame to ENU
+  //      (TrackingReferenceFrame.ENU → EntityView uses eastNorthUpToFixedFrame),
+  //      so tracking engages in the exact frame the blend targets.
+  //  (2) Live convergence. Each frame we compute the exact pose tracking would
+  //      have RIGHT NOW (the same camera.lookAtTransform(enu, offset) call
+  //      EntityView makes) and blend the camera from its start pose toward it
+  //      over ~0.8s. At t=1 the camera already IS the tracked pose, so engaging
+  //      trackedEntity changes nothing. Distance/zoom preserved (offset = the
+  //      current ENU offset).
   useEffect(() => {
     const viewer = viewerRef.current;
     const ds = dataSourceRef.current;
@@ -306,6 +313,9 @@ export default function Globe() {
     const targetNorad = focus.noradId;
 
     viewer.trackedEntity = undefined; // release any prior tracking
+    // Track in ENU (not the auto-selected VVLH) so the engage pose matches the
+    // ENU pose our blend converges to — the key to no twist on hand-off.
+    entity.trackingReferenceFrame = TrackingReferenceFrame.ENU;
 
     // Fixed ENU-local offset = current distance/zoom, and the viewFrom we track with.
     const enu0 = Transforms.eastNorthUpToFixedFrame(satNow);
