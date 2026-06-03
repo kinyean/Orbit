@@ -282,71 +282,37 @@ export default function Globe() {
     if (ds) applyFilters(ds, activeConstellations);
   }, [activeConstellations]);
 
-  // --- focus request: smooth LeoLabs-style recenter + track (dbl-click/search)
-  // The trick that finally avoids the twist: don't GUESS the pose Cesium's
-  // tracking will snap to — ASK Cesium for it. Briefly apply lookAtTransform
-  // with the current offset (synchronous → no visible flash), read the exact
-  // resulting world pose, restore the live camera, then smoothly fly to that
-  // exact pose. The flight ends precisely where tracking wants the camera, so
-  // engaging trackedEntity is seamless: smooth recenter, current zoom kept
-  // (offset = current distance), no twist. viewFrom is cleared after so the
-  // user can orbit/zoom freely.
+  // --- focus request: clean instant recenter + track (double-click / search)
+  // Cesium's tracking (EntityView) snaps the camera to its OWN orientation the
+  // moment it engages (built from an internal velocity-aware frame), so any
+  // pre-flight ends with a small correction = the "end twist". A non-animated
+  // engage has nothing to mis-match, so it's clean: set viewFrom = the camera's
+  // current ENU offset (keeps the current distance/zoom), engage trackedEntity
+  // (recenters + follows), then clear viewFrom so the user can orbit/zoom.
   useEffect(() => {
     const viewer = viewerRef.current;
     const ds = dataSourceRef.current;
     if (!viewer || !ds || !focus) return;
     const entity = ds.entities.getById(`sat-${focus.noradId}`);
     if (!entity) return;
-    const camera = viewer.camera;
     const time = viewer.clock.currentTime;
     useStore.getState().setSelectedSatellite(describeEntity(entity, time));
     const satPos = entity.position?.getValue(time);
     if (!satPos) return;
-    const targetNorad = focus.noradId;
 
     viewer.trackedEntity = undefined; // release any prior tracking
 
-    // Current camera offset in the satellite's ENU frame → preserves distance.
     const enu = Transforms.eastNorthUpToFixedFrame(satPos);
     const inv = Matrix4.inverseTransformation(enu, new Matrix4());
-    const offset = Matrix4.multiplyByPoint(inv, camera.positionWC, new Cartesian3());
+    const offset = Matrix4.multiplyByPoint(inv, viewer.camera.positionWC, new Cartesian3());
+    entity.viewFrom = new ConstantProperty(offset);
+    viewer.trackedEntity = entity;
 
-    // Read Cesium's exact tracking pose (lookAtTransform → read → restore).
-    const savedPos = Cartesian3.clone(camera.positionWC, new Cartesian3());
-    const savedDir = Cartesian3.clone(camera.directionWC, new Cartesian3());
-    const savedUp = Cartesian3.clone(camera.upWC, new Cartesian3());
-    camera.lookAtTransform(enu, offset);
-    const targetPos = Cartesian3.clone(camera.positionWC, new Cartesian3());
-    const targetDir = Cartesian3.clone(camera.directionWC, new Cartesian3());
-    const targetUp = Cartesian3.clone(camera.upWC, new Cartesian3());
-    camera.lookAtTransform(Matrix4.IDENTITY); // release back to world frame
-    camera.setView({ destination: savedPos, orientation: { direction: savedDir, up: savedUp } });
-
-    camera.flyTo({
-      destination: targetPos,
-      orientation: { direction: targetDir, up: targetUp },
-      duration: 0.8,
-      complete: () => {
-        const v = viewerRef.current;
-        const dsc = dataSourceRef.current;
-        if (!v || v.isDestroyed() || !dsc) return;
-        if (useStore.getState().selectedSatellite?.noradId !== targetNorad) return;
-        const ent = dsc.entities.getById(`sat-${targetNorad}`);
-        const pos = ent?.position?.getValue(v.clock.currentTime);
-        if (!ent || !pos) return;
-        // viewFrom = camera's current offset in the (now-current) ENU frame, so
-        // tracking engages exactly where the flight ended.
-        const enu2 = Transforms.eastNorthUpToFixedFrame(pos);
-        const inv2 = Matrix4.inverseTransformation(enu2, new Matrix4());
-        const offset2 = Matrix4.multiplyByPoint(inv2, v.camera.positionWC, new Cartesian3());
-        ent.viewFrom = new ConstantProperty(offset2);
-        v.trackedEntity = ent;
-        window.setTimeout(() => {
-          const vv = viewerRef.current;
-          if (vv && !vv.isDestroyed() && vv.trackedEntity === ent) ent.viewFrom = undefined;
-        }, 250);
-      },
-    });
+    const clearTimer = window.setTimeout(() => {
+      const v = viewerRef.current;
+      if (v && !v.isDestroyed() && v.trackedEntity === entity) entity.viewFrom = undefined;
+    }, 300);
+    return () => window.clearTimeout(clearTimer);
   }, [focus]);
 
   // --- camera reset: stop tracking + fly back to a global view -------------
