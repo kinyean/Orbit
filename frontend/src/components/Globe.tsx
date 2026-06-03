@@ -10,13 +10,10 @@ import {
   Cartesian3,
   Cartographic,
   Color,
-  ConstantProperty,
   Entity,
   JulianDate,
   Math as CesiumMath,
-  Matrix4,
   NearFarScalar,
-  Transforms,
   defined,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
@@ -326,20 +323,12 @@ export default function Globe() {
         if (!v || v.isDestroyed() || !dsc) return;
         if (useStore.getState().selectedSatellite?.noradId !== targetNorad) return;
         const ent = dsc.entities.getById(`sat-${targetNorad}`);
-        const pos = ent?.position?.getValue(v.clock.currentTime);
-        if (!ent || !pos) return;
-        // Track from the current pose: viewFrom = camera's offset in the sat's
-        // ENU frame, so engaging tracking moves nothing. Cleared shortly after
-        // so the user can orbit/zoom freely.
-        const enu = Transforms.eastNorthUpToFixedFrame(pos);
-        const inv = Matrix4.inverseTransformation(enu, new Matrix4());
-        const offset = Matrix4.multiplyByPoint(inv, v.camera.positionWC, new Cartesian3());
-        ent.viewFrom = new ConstantProperty(offset);
+        if (!ent) return;
+        // Engage tracking with NO viewFrom: EntityView then PRESERVES the
+        // camera's current pose (the one the flight just established) and simply
+        // follows the satellite from there — so there's no re-derived
+        // orientation and no twist. The user can orbit/zoom freely.
         v.trackedEntity = ent;
-        window.setTimeout(() => {
-          const vv = viewerRef.current;
-          if (vv && !vv.isDestroyed() && vv.trackedEntity === ent) ent.viewFrom = undefined;
-        }, 300);
       },
     });
   }, [focus]);
