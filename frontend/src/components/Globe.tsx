@@ -6,17 +6,15 @@ import {
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
   CallbackPositionProperty,
-  CallbackProperty,
   Cartesian2,
   Cartesian3,
   Cartographic,
   Color,
+  ConstantProperty,
   Entity,
   JulianDate,
   Math as CesiumMath,
-  Matrix4,
   NearFarScalar,
-  Transforms,
   defined,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
@@ -282,50 +280,34 @@ export default function Globe() {
     if (ds) applyFilters(ds, activeConstellations);
   }, [activeConstellations]);
 
-  // --- focus request: smoothly zoom into a tracked satellite (dbl-click/search)
-  // Done ENTIRELY via the tracking camera (EntityView) — never camera.flyTo,
-  // which fought EntityView and caused twist-back / black-flash / super-zoom.
-  // Engage tracking starting at the camera's CURRENT offset (so the position
-  // doesn't jump), then animate viewFrom to a fixed 3/4 view; afterward clear
-  // viewFrom so the user can orbit/zoom freely. The satellite stays centered
-  // throughout.
+  // --- focus request: TRACK a satellite (double-click / search) ------------
+  // Reliable, conflict-free recipe (no camera.flyTo — mixing a flight with the
+  // tracking EntityView is what caused the twist / black-flash / super-zoom):
+  //   1. set a FIXED viewFrom → EntityView snaps to a consistent, centered 3/4
+  //      view of the satellite (same distance/angle every time);
+  //   2. shortly after (once EntityView has applied it), clear viewFrom so the
+  //      camera is no longer forced — the user can orbit/zoom around the
+  //      satellite, and it stays centered as it follows the moving target.
   useEffect(() => {
     const viewer = viewerRef.current;
     const ds = dataSourceRef.current;
     if (!viewer || !ds || !focus) return;
     const entity = ds.entities.getById(`sat-${focus.noradId}`);
     if (!entity) return;
-    const time = viewer.clock.currentTime;
-    useStore.getState().setSelectedSatellite(describeEntity(entity, time));
-    const satPos = entity.position?.getValue(time);
-    if (!satPos) return;
+    useStore.getState().setSelectedSatellite(describeEntity(entity, viewer.clock.currentTime));
 
     viewer.trackedEntity = undefined; // release any prior tracking cleanly
-
-    // Camera's current offset in the satellite's ENU frame = the animation start
-    // (engaging tracking from here means no position jump).
-    const enu = Transforms.eastNorthUpToFixedFrame(satPos);
-    const invEnu = Matrix4.inverseTransformation(enu, new Matrix4());
-    const startOffset = Matrix4.multiplyByPoint(invEnu, viewer.camera.positionWC, new Cartesian3());
-    const endOffset = new Cartesian3(0, -1_500_000, 1_500_000); // 3/4 view, ~2120 km
-    const startMs = performance.now();
-    const durationMs = 1200;
-
-    entity.viewFrom = new CallbackProperty(() => {
-      const t = Math.min(1, (performance.now() - startMs) / durationMs);
-      const eased = t * t * (3 - 2 * t); // smoothstep
-      return Cartesian3.lerp(startOffset, endOffset, eased, new Cartesian3());
-    }, false);
+    entity.viewFrom = new ConstantProperty(new Cartesian3(0, -1_500_000, 1_500_000));
     viewer.trackedEntity = entity;
 
-    // Once the zoom-in finishes, drop viewFrom so EntityView preserves the
-    // user's offset (lets them orbit/zoom) instead of forcing the camera.
+    // Drop viewFrom after EntityView has positioned the camera, so it preserves
+    // the user's offset (free orbit/zoom) instead of locking the view.
     const clearTimer = window.setTimeout(() => {
       const v = viewerRef.current;
       if (v && !v.isDestroyed() && v.trackedEntity === entity) {
         entity.viewFrom = undefined;
       }
-    }, durationMs + 200);
+    }, 400);
     return () => window.clearTimeout(clearTimer);
   }, [focus]);
 
