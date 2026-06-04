@@ -24,12 +24,13 @@ pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
 ## Current phase
-**Phase 2 complete** (backend + wiring; one browser-visual check outstanding).
-On top of Phase 1's dual-container dev env:
-- **Orekit 13.1.5** propagation core: SGP4 via `TLEPropagator`, `FrameService`
-  (ECI/ECEF/geodetic, frame-tagged `StateVector`), OMM→TLE conversion. The
-  reachable catalog mirrors serve OMM JSON (no TLE lines), so `TleFactory`
-  builds TLEs from mean elements (ndot/nddot=0; SGP4 ignores them).
+**Phase 2 complete & verified in-browser.** On top of Phase 1's dual-container
+dev env:
+- **Orekit 13.1.5** propagation core: SGP4 via `SatellitePropagator` (wraps
+  Orekit `TLEPropagator`), `FrameService` (ECI/ECEF/geodetic, frame-tagged
+  `StateVector`), OMM→TLE conversion. The reachable catalog mirrors serve OMM
+  JSON (no TLE lines), so `TleFactory` builds TLEs from mean elements
+  (ndot/nddot=0; SGP4 ignores them).
 - **Catalog mode** (Decision 13): loads a bundled offline TLE seed (~15.5k
   sats) + best-effort GitHub-mirror refresh (CelesTrak is firewall-blocked
   here), propagates the whole set every 30 s, broadcasts one shared CZML feed
@@ -37,14 +38,17 @@ On top of Phase 1's dual-container dev env:
 - **Streaming contract v1** (docs/streaming-contract.md): JSON envelope +
   CZML; ECEF/FIXED positions; `contractVersion` checked client-side (R12).
 - **Frontend**: `CatalogStreamClient` → `CzmlDataSource` on the globe;
-  click-to-inspect (hit-padded, live position), constellation filters
+  click-to-inspect (hit-padded, live position), **single-click inspect /
+  double-click focus** (smooth blend into an ENU tracked-entity orbit — no
+  auto-zoom, no twist; Decision 18) + reset-view, constellation filters
   (name-prefix; localStorage), search-to-fly, live stats. satellite.js +
   client-side propagation/fetch removed.
 - Data bundles (orekit-data + TLE seed) baked into the backend image; fully
   offline-capable. Backend at :8081, frontend at :5174 (8080/5173 taken).
 
-Outstanding: browser FPS + visual click/filter at ~15.5k dots (R7 — if under
-30 fps, fall back from the CZML Entity layer to a PointPrimitiveCollection).
+Verified in-browser: ~15.5k dots render and animate smoothly; click-inspect,
+constellation filters, search-to-fly, and double-click focus all work (R7
+PointPrimitiveCollection fallback not needed; no FPS counter instrumented).
 
 **Phase 3 next:** high-fidelity numerical propagation (DP8(7), J4+, drag, SRP,
 third-body), LVLH/RIC frames, scenario CRUD + persistence, and wiring the
@@ -86,7 +90,7 @@ composer's Set-as-chief / Add-as-deputy actions. See
 
 ## Conventions
 - Ask before adding dependencies.
-- Commit after each working feature.
+- Commit only when the user explicitly asks — never auto-commit.
 - Tag frame in code wherever state vectors live (names, types, comments):
   `ECI` / `ECEF` / `LVLH` / `RIC` / `body`.
 

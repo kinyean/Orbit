@@ -47,6 +47,9 @@ considered**, **Consequences**.
 16. [Enterprise posture: professional-grade from the start](#16-enterprise-posture-professional-grade-from-the-start)
 17. [Deployment: containerized, cloud + on-prem](#17-deployment-containerized-cloud--on-prem)
 
+**UX / interaction**
+18. [Global-view camera: click-to-inspect, double-click focus](#18-global-view-camera-click-to-inspect-double-click-focus)
+
 [Superseded decisions (pre-SRS pivot)](#superseded-decisions-pre-srs-pivot)
 ·
 [Deferred decisions](#deferred-decisions)
@@ -530,6 +533,85 @@ deliverable, but nothing in the design blocks it.
 
 ---
 
+# UX / interaction
+
+## 18. Global-view camera: click-to-inspect, double-click focus
+
+**Context.** The global view shows ~15,500 small moving dots. Users need to
+(a) inspect one satellite's details and (b) point the camera at one and watch
+it move — without losing their place. Cesium offers `viewer.trackedEntity`,
+which orbits-and-follows an entity, but setting it *snaps* the camera to a pose
+Cesium computes (and, for fast objects, in a velocity-aligned frame it picks
+automatically). This wiring was the single most-iterated part of Phase 2.
+
+**Decision.** Two distinct gestures on the global view:
+- **Single-click = inspect only.** Selects the satellite: info panel populates,
+  a yellow highlight ring tracks it. **The camera does not move.** (Matches the
+  "click-to-inspect, then commit" UX pattern in
+  [use-cases.md](./use-cases.md).)
+- **Double-click (or search-Enter) = focus.** A ~0.8 s smooth animation
+  recenters the satellite **without changing zoom** (keeps the camera's current
+  distance), then hands off to `viewer.trackedEntity` so the user can orbit
+  (drag) and zoom toward it (scroll). A "Reset view" button releases tracking
+  and flies home.
+
+Two implementation choices make the focus twist-free:
+1. **Converge to the live tracked pose.** Each frame the focus animation
+   computes the *exact* pose tracking would have for the satellite's *current*
+   position (the same `camera.lookAtTransform(enu, offset)` call EntityView
+   makes) and blends the camera toward it. At animation end the camera already
+   equals the tracked pose, so engaging `trackedEntity` changes nothing.
+2. **Force the ENU tracking frame.** `entity.trackingReferenceFrame =
+   TrackingReferenceFrame.ENU`. By default Cesium auto-selects a velocity
+   (VVLH) frame for fast objects; converging to an ENU pose and then engaging
+   in a VVLH frame is what produced the persistent orientation "twist". Forcing
+   ENU makes both sides use the identical, position-only frame.
+
+These are **not redundant** — they fix two independent problems, and as
+implemented neither works alone. Think of two axes: *which* pose to aim at, and
+*actually hitting it* while the target moves.
+- #2 fixes a **frame-type mismatch.** The animation must compute a target pose,
+  and it does so in ENU; tracking, left to its defaults, engages a satellite in
+  VVLH — *a different orientation entirely*. #2 forces tracking into ENU so both
+  sides mean the same thing.
+- #1 fixes a **moving-target/timing mismatch.** The ~0.8 s animation runs while
+  the satellite travels ~6 km and its frame rotates. Aiming at a pose computed
+  once at the start would leave the camera a step behind when tracking engages —
+  a small jump whose size varies with orbit geometry (worst near the poles),
+  which is exactly the *intermittent* twist seen in earlier attempts. #1
+  recomputes the target every frame so the camera lands on the live pose.
+- **Neither alone:** #2 without #1 → frames agree but the camera lands on a
+  stale (start-of-focus) pose → residual twist. #1 without #2 → the blend lands
+  perfectly on the *ENU* pose, then tracking snaps to the *VVLH* pose → twist.
+  They're a matched pair: #1 picks an ENU pose to aim at; #2 makes tracking
+  actually use that ENU frame.
+
+**Why.** Inspect-without-moving keeps dense-region exploration calm and matches
+the documented UX pattern. Double-click focus matches familiar tools (e.g.
+LeoLabs): centering is automatic, zoom stays manual. The twist was traced — by
+reading the installed Cesium `EntityView` source — to a frame mismatch at the
+fly-then-track hand-off, not a Cesium limitation; the fix is exact, not a
+workaround.
+
+**Alternatives considered.**
+- *Default `trackedEntity` (instant snap).* Jarring; auto-zooms to a
+  bounding-sphere distance and twists into the VVLH frame.
+- *`camera.flyTo` to the entity's bounding sphere, then track.* Inconsistent
+  framing (the time-dynamic sphere encloses a variable slice of the orbit) and
+  the same hand-off twist.
+- *A fully custom camera controller (no `trackedEntity`).* Full control but
+  reimplements orbit/zoom — unnecessary once the frame mismatch was identified.
+
+**Consequences.** Focus is smooth, centered, twist-free, and preserves zoom.
+Implemented in [`frontend/src/components/Globe.tsx`](../frontend/src/components/Globe.tsx)
+(the focus `useEffect`). One known trade-off: an ENU follow can **slowly roll**
+over a long pass as the satellite crosses latitudes (smooth, not a snap). If
+that becomes undesirable, switch the tracking frame to `VELOCITY` and match the
+animation target with `Transforms.rotationMatrixFromPositionVelocity` (the
+exact basis Cesium's velocity frame uses).
+
+---
+
 # Superseded decisions (pre-SRS pivot)
 
 Retained for the record. These were sound for the *public satellite tracker*
@@ -598,9 +680,12 @@ Explicitly not decided yet; each has a tracked reason.
   just bandwidth — the uncompressed frame could not drain to a *remote* browser
   within the send-time limit (worked over loopback, reset over the network), so
   the catalog never appeared in the browser until compression landed. Secondary
-  levers if needed later: fewer samples / shorter window, or delta-encoding. Browser render FPS at 15.5k Entity
-  dots still needs measurement (R7) — if under 30 fps, fall back from the CZML
-  Entity layer to a `PointPrimitiveCollection` fed from the same samples.
+  levers if needed later: fewer samples / shorter window, or delta-encoding.
+  **Resolved (Phase 2):** ~15.5k CZML Entity dots render and animate smoothly
+  in-browser — confirmed by observation, not by an FPS counter — so the
+  `PointPrimitiveCollection` fallback (R7) was **not** needed. Revisit with an
+  actual FPS counter only if performance degrades (e.g. once the scenario layer
+  is added on top).
 - **Earth backdrop in the proximity view.** Default yes (orientation context)
   or no (pure space) — design call when building the proximity scene
   (Decision 4).

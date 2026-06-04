@@ -257,7 +257,7 @@ get the smallest end-to-end pipeline running first, then deepen.
 - Catalog UI (constellations filter, stats overlay) wired to client-side
   CelesTrak fetch — to be repointed at the backend in Phase 2.
 
-### Phase 1 — Project structure & dual-container dev env
+### Phase 1 — Project structure & dual-container dev env ✅ (done)
 - Spring Boot backend skeleton + OpenAPI scaffold + Spring Security pipeline
   (no-op stub).
 - PostgreSQL container; Flyway migrations; `users`, `scenarios`,
@@ -268,15 +268,21 @@ get the smallest end-to-end pipeline running first, then deepen.
 - Keep the existing catalog UI intact — it's first-class (Decision 13), not
   a relic. Its data source will be repointed in Phase 2.
 
-### Phase 2 — Propagation pipeline + shared catalog stream
+### Phase 2 — Propagation pipeline + shared catalog stream ✅ (done)
 - Orekit wired in the backend with SGP4 (lowest-friction fidelity).
 - Define and version the streaming contract; CZML encoding.
-- Backend catalog service: periodic SGP4 pass over CelesTrak TLEs;
-  broadcast CZML feed.
+- Backend catalog service: periodic SGP4 pass over the active TLE set;
+  broadcast CZML feed. (*Deviation:* CelesTrak is firewall-blocked here, so it
+  loads a bundled offline OMM seed + best-effort GitHub-mirror refresh, and the
+  feed is gzip-compressed binary because the 7.36 MB frame couldn't drain to a
+  remote browser uncompressed.)
 - Frontend global view consumes the catalog stream (replaces the
   client-side CelesTrak fetch from Phase 0).
 - Frame utility v1: ECI / ECEF / geodetic.
-- Click-to-compose wiring: catalog click → scenario composer state.
+- Global-view camera interaction: single-click inspect, double-click focus
+  (smooth, ENU tracked-entity orbit — Decision 18). (*Note:* catalog
+  click→info-panel landed; click→scenario-composer wiring is deferred to
+  Phase 3 with the rest of scenario CRUD.)
 
 ### Phase 3 — High-fidelity propagation + scenario CRUD
 - Add the numerical propagator (DP8(7), gravity ≥J4, drag, SRP, third-body).

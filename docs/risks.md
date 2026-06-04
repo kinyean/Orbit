@@ -139,6 +139,12 @@ workload could surface bottlenecks.
 
 **Trigger.** FPS drops below 30 with a hot catalog.
 
+**Status (Phase 2).** ~15.5k CZML Entity dots render and animate smoothly
+in-browser with day/night lighting — confirmed by observation (no FPS counter
+instrumented). The `PointPrimitiveCollection` / LOD fallback was **not** needed.
+Re-watch this when the scenario layer (highlighted sats + orbit paths + ground
+tracks) lands on top of the catalog, and instrument an actual FPS counter then.
+
 ---
 
 ## R8 — CZML chunk sizing trade-offs (Low impact, Medium likelihood)

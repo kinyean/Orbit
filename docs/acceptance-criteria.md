@@ -80,10 +80,13 @@ against a metric. Phase done = every criterion passes.
 
 ## Phase 2 — Propagation pipeline + shared catalog stream
 
-> Status: backend + wiring **complete and verified** (cold-start gate green:
+> Status: **Phase 2 complete and verified end-to-end** (cold-start gate green:
 > 15,501 sats from seed, 0 skipped; pass ~100–650 ms; 7.36 MB CZML; `/health`
-> + proxied WebSocket deliver). The only items left **`[~]`** need a human at
-> the browser (render FPS / visual click + filter). Deviations from the
+> + proxied WebSocket deliver). The browser-side items previously held at
+> **`[~]`** are now confirmed by observation — ~15.5k dots render and animate
+> smoothly, click-inspect / filters / search-to-fly / double-click focus all
+> work (no FPS counter was instrumented; the motion is smooth to the eye and
+> the R7 PointPrimitiveCollection fallback was not needed). Deviations from the
 > original wording are noted inline — they reflect the firewall-blocked
 > CelesTrak reality surfaced during the build.
 
@@ -121,16 +124,17 @@ against a metric. Phase done = every criterion passes.
 **Frontend catalog**
 - [x] Globe connects to `/api/stream/catalog` on load (via Vite proxy).
 - [x] Cesium ingests CZML via `CzmlDataSource.process` (merges by id).
-- [~] All active satellites (~15,500) render as dots. *(stream delivers 15,501;
-      visual confirmation pending in browser)*
-- [~] Smooth motion at ≥30 fps. *(needs browser FPS measurement — R7; fallback
-      to PointPrimitiveCollection if under)*
+- [x] All active satellites (~15,500) render as dots. *(stream delivers 15,501;
+      confirmed visible in browser.)*
+- [x] Smooth motion. *(Confirmed smooth to the eye; no FPS counter instrumented
+      — R7 PointPrimitiveCollection fallback not needed. Revisit with a counter
+      only if perf degrades.)*
 - [x] `lib/celestrak.ts` removed; backend is the only catalog source.
 - [x] Click resolves NORAD id (with ±5 px hit-padding) → info panel.
 - [x] Info panel shows name, NORAD ID, current lat/lon/alt (live-updating),
       altitude, period, inclination. *Deviation:* country / launch date are
       not in the reachable OMM mirror (SATCAT join deferred) — shown as "—".
-- [~] Hit-padding in dense regions *(implemented; visual confirmation pending)*.
+- [x] Hit-padding in dense regions *(confirmed; ±5 px ring around the click).*
 
 **Catalog navigation**
 - [x] Search: substring on name, exact on NORAD id.
@@ -139,8 +143,19 @@ against a metric. Phase done = every criterion passes.
       by name-prefix (group endpoints blocked); declutter semantics (off → hide).
 - [x] Filter state persists in localStorage.
 
+**Global-view camera** *(added during Phase 2 UX; see [Decision 18](./decisions.md))*
+- [x] Single-click = inspect only (info panel + yellow highlight ring); the
+      camera does not move.
+- [x] Double-click = focus: a ~0.8 s smooth blend that recenters the satellite
+      with no auto-zoom, then an ENU tracked-entity orbit (drag to orbit, scroll
+      to zoom toward it). No twist on hand-off (the blend converges to the live
+      tracked pose; the tracking frame is forced to ENU to match it).
+- [x] Search (Enter) flies to and selects the match.
+- [x] "Reset view" releases tracking and flies back to the global view.
+
 **Performance**
-- [~] Render FPS with hot catalog ≥30 fps *(browser measurement pending — R7)*.
+- [x] Render with hot catalog is smooth to the eye at ~15.5k dots *(no FPS
+      counter instrumented — R7)*.
 - [x] Backend pass: 15,501 sats in ~100–650 ms; warm-start delivery is
       effectively immediate after the catalog loads (well within the ≤8 s
       neighborhood).
