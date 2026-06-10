@@ -292,9 +292,13 @@ Sliced into **3A** (scenario composition on SGP4) then **3B** (physics depth).
   (list/save/load/delete) + wired composer (set-chief / add-deputy / remove).
   Loading repopulates the composer statically (live scenario streaming is
   Phase 4). CCSDS OEM + Keplerian initial-state sources deferred to a later phase.
-- **3B (next):** numerical propagator (DP8(7), gravity ≥J4, drag, SRP,
-  third-body); per-scenario fidelity selection (`sgp4`/`numerical`); full frame
-  management (LVLH / RIC + per-spacecraft body frames).
+- **3B ✅ (done):** numerical propagator (DP8(7), gravity ≥J4 [16×16], NRLMSISE-00
+  drag, SRP, Sun/Moon third-body) via `NumericalPropagation`; fidelity dispatch
+  (`PropagationService`: `sgp4`/`numerical`; `cw` deferred to Phase 5); frame
+  management v2 (LVLH / RIC + a minimal per-spacecraft body frame + a single-epoch
+  relative-state helper). Backend-only and engine-deepening — no UI or contract
+  change; proven by `./gradlew test` (orientation pinned by signed axis,
+  bit-identical reruns). Becomes user-visible in Phase 4. See Decision 20.
 
 ### Phase 4 — Dual viewports + shared clock
 - three.js proximity view scaffold in LVLH frame.

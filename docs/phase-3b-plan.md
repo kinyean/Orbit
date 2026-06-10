@@ -1,5 +1,12 @@
 # Phase 3B — High-fidelity numerical propagation + relative frames
 
+> **✅ Historical — Phase 3B shipped (2026-06-10), backend tests green.** The
+> design below was implemented as planned; the one substantive refinement —
+> the LVLH/RIC orientation is pinned by a **signed-axis** test, since the
+> planned closed-loop test is rotation-invariant and wouldn't catch a flipped
+> convention (R15) — is recorded in [decisions.md](./decisions.md) Decision 20.
+> Current status: [acceptance-criteria.md](./acceptance-criteria.md) and `CLAUDE.md`.
+
 > Planning artifact, written ahead of implementation (same workflow as
 > [phase-2-plan.md](./phase-2-plan.md) and [phase-3-plan.md](./phase-3-plan.md)).
 > Phase 3A shipped; this is the **3B half** — the Frank-facing physics depth. It

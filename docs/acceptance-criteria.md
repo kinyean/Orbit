@@ -180,19 +180,39 @@ against a metric. Phase done = every criterion passes.
 > and the frontend scenario store slice + wired InfoPanel + real ScenarioPanel.
 > Verified through the Vite proxy (`/api`) and `psql`: create → list → load →
 > rename→v2 → delete, with owner-tagged rows, immutable versions, an audit row
-> per mutation, and soft-delete preserving history. **3B items remain open.**
+> per mutation, and soft-delete preserving history.
+>
+> **Phase 3B complete — backend tests green** (2026-06-10). Backend-only,
+> engine-deepening: `prop` gained `Fidelity`, `PropagationSettings` (pinned
+> `DEFAULT`), `NumericalPropagation` (Orekit numerical propagator), and
+> `PropagationService` (the fidelity-dispatch seam Phase 4 will call);
+> `FrameService` grew LVLH/RIC + a minimal body frame + `toRelativeState`. No
+> UI, contract, or schema change (it's proven by `./gradlew test`, not in the
+> browser — Phase 4 makes it visible). 49 backend tests pass. See
+> [phase-3b-plan.md](./phase-3b-plan.md) and Decision 20.
 
-**Propagator** *(Phase 3B)*
-- [ ] Numerical propagator (DP8(7), gravity ≥J4, NRLMSISE-00 drag, SRP,
-      Sun + Moon third-body) implemented.
-- [~] Per-scenario fidelity selection: `sgp4` / `numerical` / `cw`. *(3A: the
-      scenario body carries `fidelity`, honored value is `sgp4`; `numerical`/`cw`
-      land in 3B/Phase 5.)*
-- [ ] Deterministic propagation: same inputs → same outputs, byte-compare.
+**Propagator** *(Phase 3B ✅)*
+- [x] Numerical propagator (DP8(7), gravity ≥J4 [16×16], NRLMSISE-00 drag, SRP,
+      Sun + Moon third-body) implemented (`NumericalPropagation`); verified to
+      hold a bound LEO orbit over a rev (`NumericalPropagationTests`).
+- [x] Per-scenario fidelity selection: `sgp4` / `numerical` / `cw`. *(3B:
+      `PropagationService` dispatches `sgp4`→SGP4 and `numerical`→numerical;
+      `cw` throws `UnsupportedOperationException` until Phase 5. The persisted
+      `ScenarioBody.fidelity` string is unchanged — `Fidelity.fromString` parses
+      it in the prop layer, Decision 20. Default stays `sgp4` until Phase 4 has
+      a streaming consumer.)*
+- [x] Deterministic propagation: same inputs → same outputs, byte-compare
+      (`numericalPropagationIsBitIdenticalOnRerun`; SRS §5.4.1, R11).
 
-**Frames** *(Phase 3B)*
-- [ ] `FrameService` v2: ECI↔LVLH(chief), ECI↔RIC(chief), ECI↔body(per-sat).
-- [ ] Round-trip tests for each frame pair.
+**Frames** *(Phase 3B ✅)*
+- [x] `FrameService` v2: ECI↔LVLH(chief), ECI↔RIC(chief), ECI↔body(per-sat)
+      (`lvlh`/`ric`/`body` + `toRelativeState`; LVLH≡QSW = glossary R/I/C, not
+      `LVLH_CCSDS`).
+- [x] Round-trip / orientation tests (`FrameRelativeTests`): a known
+      displacement lands on the expected **signed** axis (radial→+R, in-track→+I,
+      cross-track→+C — this pins the convention, R15; a closed loop alone would
+      not), a co-period deputy traces a closed loop in LVLH, the body frame
+      round-trips, and a missing chief is a clear error.
 
 **Scenario CRUD** *(Phase 3A ✅)*
 - [x] `POST /scenarios`, `GET /scenarios`, `GET /scenarios/{id}`,

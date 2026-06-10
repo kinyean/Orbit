@@ -24,19 +24,39 @@ pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
 ## Current phase
-**Phase 3A complete & verified end-to-end** (scenario composition on SGP4).
-Backend `scenario` package — JPA entities mapped to `V1__init.sql` (+ V2 seed
-dev user, V3 soft-delete), repositories, `ScenarioService` (the single
-audited/versioned mutation path, Decision 16), `UserService`,
-`ScenarioBody` (jsonb body schema v1 with a frozen TLE snapshot per role), and
-`api/ScenarioController` + `@RestControllerAdvice` (404/409/422). `CatalogService`
-gained a NORAD→`TleSnapshot` resolver. Frontend: scenario store slice (calls the
-generated client), wired InfoPanel role buttons, and a real ScenarioPanel
-(list/save/load/delete, names via the catalog index). Tests: `@DataJpaTest`
-(Testcontainers Postgres), `ScenarioService` slice, `@WebMvcTest`. New deps:
-`spring-boot-starter-validation`, Testcontainers; springdoc bumped 2.6.0→2.8.9
-(Spring Boot 3.5 compatibility — 2.6.0 500s on `/v3/api-docs` once a
-`@ControllerAdvice` exists). **Phase 3B next** (see below).
+**Phase 3 complete (3A + 3B) — backend tests green.** Phase 4 next (dual
+viewports + shared clock; see roadmap §7).
+
+**Phase 3B** (numerical propagation + relative frames, backend-only — no UI/
+contract change, proven by `./gradlew test`): new in `prop` — `Fidelity` enum
+(`fromString` defaults unknown→`SGP4`), `PropagationSettings` (pinned,
+deterministic `DEFAULT`: 500 kg, 1 m², Cd 2.2, Cr 1.8, gravity 16×16, DP8(7)
+posTol 1e-3 m), `NumericalPropagation` (Orekit `NumericalPropagator`: DP8(7) +
+Holmes-Featherstone gravity ≥J4 + NRLMSISE-00 drag + SRP + Sun/Moon third-body;
+seeded from the SGP4 ECI state; gravity-field μ seeds the orbit so the
+auto-added Newtonian central term agrees), and `PropagationService` (the
+fidelity-dispatch seam Phase 4 calls — `sgp4`/`numerical`; `cw` throws until
+Phase 5 — plus a uniform `sample()→StateVector` for both engines). `FrameService`
+v2 adds chief-centered `lvlh()`/`ric()` (Orekit `LOFType.LVLH`≡`QSW`, the
+glossary R/I/C — **not** `LVLH_CCSDS`), `toRelativeState`, a minimal static
+`body()` frame, and an `earth()` accessor. Tests pin frame orientation by signed
+axis (radial→+R, in-track→+I, cross-track→+C), a closed relative-orbit loop, and
+bit-identical numerical reruns (Decisions 19→20; SRS §5.4.1). See
+[docs/decisions.md](docs/decisions.md) Decision 20 and
+[docs/phase-3b-plan.md](docs/phase-3b-plan.md).
+
+**Phase 3A** (scenario composition on SGP4): backend `scenario` package — JPA
+entities mapped to `V1__init.sql` (+ V2 seed dev user, V3 soft-delete),
+repositories, `ScenarioService` (the single audited/versioned mutation path,
+Decision 16), `UserService`, `ScenarioBody` (jsonb body schema v1 with a frozen
+TLE snapshot per role), and `api/ScenarioController` + `@RestControllerAdvice`
+(404/409/422). `CatalogService` gained a NORAD→`TleSnapshot` resolver. Frontend:
+scenario store slice (calls the generated client), wired InfoPanel role buttons,
+and a real ScenarioPanel (list/save/load/delete, names via the catalog index).
+Tests: `@DataJpaTest` (Testcontainers Postgres), `ScenarioService` slice,
+`@WebMvcTest`. New deps: `spring-boot-starter-validation`, Testcontainers;
+springdoc bumped 2.6.0→2.8.9 (Spring Boot 3.5 compatibility — 2.6.0 500s on
+`/v3/api-docs` once a `@ControllerAdvice` exists).
 
 Phase 2 (still in place) on top of Phase 1's dual-container dev env:
 - **Orekit 13.1.5** propagation core: SGP4 via `SatellitePropagator` (wraps
@@ -63,12 +83,12 @@ Verified in-browser: ~15.5k dots render and animate smoothly; click-inspect,
 constellation filters, search-to-fly, and double-click focus all work (R7
 PointPrimitiveCollection fallback not needed; no FPS counter instrumented).
 
-**Phase 3B next:** high-fidelity numerical propagation (DP8(7), J4+, drag, SRP,
-third-body), per-scenario fidelity dispatch (`sgp4`/`numerical`), and the
-LVLH/RIC + per-spacecraft body frames (`FrameService` v2). Scenario CRUD +
-composer wiring already landed in Phase 3A. See
-[docs/architecture-and-roadmap.md §7](docs/architecture-and-roadmap.md) and
-[docs/phase-3-plan.md](docs/phase-3-plan.md).
+**Phase 4 next:** dual viewports + shared clock — three.js proximity view in
+the chief LVLH frame, the per-scenario relative-state stream (alongside CZML)
+that *consumes* the 3B engine, one shared clock slice, and the time controls.
+The numerical propagator + frame utility are in place and tested; nothing is
+user-visible until this phase wires the stream. See
+[docs/architecture-and-roadmap.md §7](docs/architecture-and-roadmap.md).
 
 ## Stack
 - **Frontend:** React + TS strict + Vite + CesiumJS (global view) + three.js

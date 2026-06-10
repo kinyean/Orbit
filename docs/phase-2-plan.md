@@ -1,5 +1,9 @@
 # Phase 2 plan: Orekit propagation + shared catalog stream
 
+> **✅ Historical — Phase 2 shipped.** Kept for the record. Current status lives
+> in [acceptance-criteria.md](./acceptance-criteria.md) and `CLAUDE.md`; the
+> authoritative roadmap is [architecture-and-roadmap.md](./architecture-and-roadmap.md).
+
 The execution roadmap for Phase 2, with a small Phase 1 closing-touches
 prefix. Companion to:
 - [acceptance-criteria.md §Phase 2](./acceptance-criteria.md) — the "done"

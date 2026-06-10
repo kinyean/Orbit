@@ -1,5 +1,10 @@
 # Phase 3 plan — from viewer to tool (scenarios + high-fidelity propagation)
 
+> **✅ Historical — Phase 3 complete (3A + 3B).** Kept for the record. The 3B
+> half was executed from the detailed [phase-3b-plan.md](./phase-3b-plan.md),
+> which supersedes the brief 3B sketch below. Current status lives in
+> [acceptance-criteria.md](./acceptance-criteria.md) and `CLAUDE.md`.
+
 > Planning artifact, written ahead of implementation (same workflow as
 > [phase-2-plan.md](./phase-2-plan.md)). Do not start coding from this until
 > picked up as active work.

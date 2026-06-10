@@ -31,6 +31,7 @@ considered**, **Consequences**.
 6. [Backend: Java + Spring Boot](#6-backend-java--spring-boot)
 7. [Propagation engine: Orekit, multi-fidelity](#7-propagation-engine-orekit-multi-fidelity)
 8. [Scenario store: PostgreSQL](#8-scenario-store-postgresql)
+20. [Numerical propagator: pinned settings + fidelity dispatch (Phase 3B)](#20-numerical-propagator-pinned-settings--fidelity-dispatch-phase-3b)
 
 **Architecture & contracts**
 9. [Four-component architecture, decoupled visualization](#9-four-component-architecture-decoupled-visualization)
@@ -673,6 +674,74 @@ the user):
 `ScenarioBody`. CCSDS OEM + Keplerian initial-state sources are deferred (later
 phase); live scenario streaming on load is Phase 4. The body schema is
 versioned (`schemaVersion`) so future shapes migrate forward additively.
+
+---
+
+## 20. Numerical propagator: pinned settings + fidelity dispatch (Phase 3B)
+
+**Context.** Phase 3B adds the high-fidelity numerical propagator Frank must
+trust (US-PROP-02; SRS §3.1.2–6) and the LVLH/RIC frames (US-FRAME-02;
+§3.2.3–4), and stands up the fidelity-selection seam (§3.1.8). It is
+**backend-only** — no UI, no streaming, no contract/schema change; Phase 4
+*consumes* this engine. Built on Orekit 13.1.5; the bundled `orekit-data`
+already carries the space-weather, gravity, and ephemeris files needed.
+
+**Decision.**
+- **Pinned settings, in code.** `PropagationSettings.DEFAULT` (500 kg, 1 m²,
+  Cd 2.2, Cr 1.8, gravity 16×16, DP8(7) position tolerance 1e-3 m, steps
+  1e-3…300 s) is a constant — never read from the environment — so propagation
+  is deterministic by construction (SRS §5.4.1, R11). These describe a generic
+  spacecraft and **move into the scenario body in Phase 4** (when they become
+  user-tunable + reproduced across users, R11's "settings in the body" applies).
+- **Force model.** Orekit `NumericalPropagator` + Hipparchus
+  `DormandPrince853Integrator`, Cartesian orbit type, seeded from the TLE's ECI
+  (EME2000) state at its own epoch. Forces: `HolmesFeatherstoneAttractionModel`
+  (≥J4), `NRLMSISE00` drag (CSSI space-weather), `SolarRadiationPressure`,
+  Sun+Moon `ThirdBodyAttraction`. The harmonic model supplies only the
+  **non-central** field; Orekit's `setInitialState` auto-adds the Newtonian
+  central term from `orbit.getMu()` — so the orbit is seeded with the **gravity
+  field's own μ** (not WGS84 μ) to keep the central and non-central parts
+  consistent (and the run reproducible). No double-counted central term.
+- **Fidelity enum lives in the propagation layer only.** `Fidelity.fromString`
+  parses the persisted `ScenarioBody.fidelity` **string** (untouched, Decision
+  19); unknown/blank → `SGP4` (safe default). `PropagationService.propagatorFor`
+  dispatches `SGP4`→SGP4, `NUMERICAL`→numerical; `CW` throws
+  `UnsupportedOperationException` (Phase 5). `sample()` returns a uniform ECI
+  `StateVector` for either engine, so downstream never branches on fidelity.
+- **Frames stay Orekit `Frame` objects** (Decision 12 holds — no enum/string
+  tag, no `StateVector` change). LVLH/RIC are `LocalOrbitalFrame`s. In Orekit
+  13.1.5 `LOFType.LVLH` ≡ `LOFType.QSW` (X = radial-out, Z = orbital momentum),
+  which **is** this project's glossary R/I/C — explicitly **not** `LVLH_CCSDS`
+  (the nadir-down convention CCSDS/Wertz/FreeFlyer use). The choice is pinned by
+  an orientation test that asserts a known displacement lands on the expected
+  **signed** axis (radial→+R, in-track→+I, cross-track→+C); a closed-loop test
+  alone is rotation-invariant and would not catch a flipped convention (R15).
+
+**Why.** Pinning settings in code is the cheapest path to determinism before
+they're user-facing. Keeping the `Fidelity` enum out of the persistence layer
+preserves the evolving-string body (Decision 19) and the `ddl-auto=validate`
+posture. Seeding with the field μ removes a silent central/non-central
+mismatch. Sign-pinned frame tests close the R15 gap the closed-loop test left
+open.
+
+**Alternatives considered.**
+- *Settings in the scenario body now.* Rejected — no per-scenario propagation
+  consumer until Phase 4; pinned constants are simpler and equally deterministic
+  meanwhile.
+- *Fidelity enum persisted in the body.* Rejected — fights the evolving
+  jsonb-string schema; parsing in the prop layer is additive.
+- *WGS84 μ for the seed orbit.* Rejected — inconsistent with the gravity
+  field's μ used by the harmonics; a small but avoidable error.
+- *Using `LOFType.LVLH_CCSDS` (or trusting the closed-loop test for
+  orientation).* Rejected — would silently flip R/I/C away from the glossary;
+  the signed-axis test makes the convention explicit.
+
+**Consequences.** `cw` is a known-but-unimplemented fidelity until Phase 5.
+Default fidelity stays `sgp4` for new scenarios through 3B (numerical-by-default
+flips when Phase 4 wires streaming, per US-PROP-03). The §5.2 golden-vector /
+AIAA conformance suite remains Phase 10; 3B is covered by invariant +
+determinism + orientation tests. `body()` is a minimal static-rotation frame
+until attitude profiles arrive with sensors (Phase 7).
 
 ---
 
