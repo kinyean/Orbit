@@ -169,40 +169,58 @@ against a metric. Phase done = every criterion passes.
 
 ## Phase 3 — High-fidelity propagation + scenario CRUD
 
-*(Filled in detail as Phase 3 begins; outline below.)*
+> Sliced into **3A** (scenario composition end-to-end on SGP4 — the shippable
+> Maya-facing slice) and **3B** (numerical propagator + LVLH/RIC frames — the
+> Frank-facing physics depth). See [phase-3-plan.md](./phase-3-plan.md).
+>
+> **Phase 3A complete & verified end-to-end** (2026-06-04). New backend package
+> `scenario` (entities/repos/`ScenarioService`/`UserService`/`ScenarioBody`),
+> `api/ScenarioController` + `@RestControllerAdvice`, migrations V2 (seed dev
+> user) + V3 (soft-delete), a NORAD→TLE-snapshot resolver on `CatalogService`,
+> and the frontend scenario store slice + wired InfoPanel + real ScenarioPanel.
+> Verified through the Vite proxy (`/api`) and `psql`: create → list → load →
+> rename→v2 → delete, with owner-tagged rows, immutable versions, an audit row
+> per mutation, and soft-delete preserving history. **3B items remain open.**
 
-**Propagator**
+**Propagator** *(Phase 3B)*
 - [ ] Numerical propagator (DP8(7), gravity ≥J4, NRLMSISE-00 drag, SRP,
       Sun + Moon third-body) implemented.
-- [ ] Per-scenario fidelity selection: `sgp4` / `numerical` / `cw`.
+- [~] Per-scenario fidelity selection: `sgp4` / `numerical` / `cw`. *(3A: the
+      scenario body carries `fidelity`, honored value is `sgp4`; `numerical`/`cw`
+      land in 3B/Phase 5.)*
 - [ ] Deterministic propagation: same inputs → same outputs, byte-compare.
 
-**Frames**
+**Frames** *(Phase 3B)*
 - [ ] `FrameService` v2: ECI↔LVLH(chief), ECI↔RIC(chief), ECI↔body(per-sat).
 - [ ] Round-trip tests for each frame pair.
 
-**Scenario CRUD**
-- [ ] `POST /scenarios`, `GET /scenarios`, `GET /scenarios/{id}`,
+**Scenario CRUD** *(Phase 3A ✅)*
+- [x] `POST /scenarios`, `GET /scenarios`, `GET /scenarios/{id}`,
       `GET /scenarios/{id}/versions/{v}`, `PUT /scenarios/{id}`,
-      `DELETE /scenarios/{id}` all implemented and OpenAPI-documented.
-- [ ] All mutations go through a single service layer; each emits an
-      `audit_log` entry.
-- [ ] Versioning: every PUT creates a new immutable version row.
+      `DELETE /scenarios/{id}` all implemented and OpenAPI-documented
+      (`/v3/api-docs` 200; client regenerated via `gen:api`).
+- [x] All mutations go through a single service layer (`ScenarioService`); each
+      emits exactly one `audit_log` entry in the same transaction.
+- [x] Versioning: every PUT creates a new immutable version row (`version_no`
+      monotonic; old versions never mutated). `DELETE` soft-deletes (sets
+      `deleted_at`); list/get filter `deleted_at IS NULL`; history preserved.
 
 **Initial-state sources**
-- [ ] TLE: catalog click → "Set as chief" / "Add as deputy" creates the
-      role with the satellite's TLE.
-- [ ] CCSDS OEM: import a file, scenario draft populated.
+- [x] TLE: catalog click → "Set as chief" / "Add as deputy" creates the role
+      with the satellite's TLE — backend freezes a TLE snapshot (line1/line2/
+      epoch) at compose time, so the scenario doesn't drift on catalog refresh.
+- [ ] CCSDS OEM: import a file, scenario draft populated. *(deferred — later phase)*
 - [ ] Keplerian: form-based creation works with unit-tagged inputs and
-      bounds validation.
+      bounds validation. *(deferred — later phase)*
 
-**Composer behavior**
-- [ ] "Set as chief" works; replacement prompts confirm.
-- [ ] "Add as deputy" disabled without chief; tooltip explains.
-- [ ] "Remove from scenario" visible when applicable.
-- [ ] Save creates v1; subsequent saves create new versions; scenario
-      panel lists them.
-- [ ] Load restores composer + view state correctly.
+**Composer behavior** *(Phase 3A ✅)*
+- [x] "Set as chief" works; replacement prompts confirm (UC-1 edge case).
+- [x] "Add as deputy" disabled without chief; tooltip "Designate a chief first".
+- [x] "Remove from scenario" visible when the selected sat is a member.
+- [x] Save creates v1; subsequent saves create new versions; scenario panel
+      lists them (with chief/deputy display names from the catalog index).
+- [x] Load restores composer state correctly. *(global/proximity view repopulation
+      is static in 3A; live scenario streaming is Phase 4.)*
 
 ---
 

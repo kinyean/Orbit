@@ -24,14 +24,27 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-security")
 	implementation("org.springframework.boot:spring-boot-starter-web")
 	implementation("org.springframework.boot:spring-boot-starter-websocket")
+	// Bean Validation (Phase 3A): @Valid on scenario request DTOs; constraints
+	// surface in the OpenAPI spec so the generated frontend client is contract-aware.
+	implementation("org.springframework.boot:spring-boot-starter-validation")
 	implementation("org.flywaydb:flyway-core")
 	implementation("org.flywaydb:flyway-database-postgresql")
-	implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0")
+	// springdoc 2.8.x targets Spring Boot 3.5 (Spring Framework 6.2). 2.6.0 was
+	// built against Spring 6.1 and throws NoSuchMethodError on ControllerAdviceBean
+	// the moment a @ControllerAdvice exists (it walks advice beans to compute
+	// generic responses) — which broke /v3/api-docs once the scenario advice landed.
+	implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.9")
 	// Orekit: flight-dynamics engine (Decision 7). SGP4 in Phase 2; numerical in Phase 3.
 	implementation("org.orekit:orekit:13.1.5")
 	runtimeOnly("org.postgresql:postgresql")
 	testImplementation("org.springframework.boot:spring-boot-starter-test")
 	testImplementation("org.springframework.security:spring-security-test")
+	// Testcontainers (Phase 3A): @DataJpaTest + full-context tests run against a
+	// real, ephemeral Postgres — the schema uses PG-only TEXT[] / jsonb /
+	// gen_random_uuid() that H2 can't emulate. Versions managed by the Boot BOM.
+	testImplementation("org.springframework.boot:spring-boot-testcontainers")
+	testImplementation("org.testcontainers:junit-jupiter")
+	testImplementation("org.testcontainers:postgresql")
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

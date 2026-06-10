@@ -24,8 +24,21 @@ pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
 ## Current phase
-**Phase 2 complete & verified in-browser.** On top of Phase 1's dual-container
-dev env:
+**Phase 3A complete & verified end-to-end** (scenario composition on SGP4).
+Backend `scenario` package — JPA entities mapped to `V1__init.sql` (+ V2 seed
+dev user, V3 soft-delete), repositories, `ScenarioService` (the single
+audited/versioned mutation path, Decision 16), `UserService`,
+`ScenarioBody` (jsonb body schema v1 with a frozen TLE snapshot per role), and
+`api/ScenarioController` + `@RestControllerAdvice` (404/409/422). `CatalogService`
+gained a NORAD→`TleSnapshot` resolver. Frontend: scenario store slice (calls the
+generated client), wired InfoPanel role buttons, and a real ScenarioPanel
+(list/save/load/delete, names via the catalog index). Tests: `@DataJpaTest`
+(Testcontainers Postgres), `ScenarioService` slice, `@WebMvcTest`. New deps:
+`spring-boot-starter-validation`, Testcontainers; springdoc bumped 2.6.0→2.8.9
+(Spring Boot 3.5 compatibility — 2.6.0 500s on `/v3/api-docs` once a
+`@ControllerAdvice` exists). **Phase 3B next** (see below).
+
+Phase 2 (still in place) on top of Phase 1's dual-container dev env:
 - **Orekit 13.1.5** propagation core: SGP4 via `SatellitePropagator` (wraps
   Orekit `TLEPropagator`), `FrameService` (ECI/ECEF/geodetic, frame-tagged
   `StateVector`), OMM→TLE conversion. The reachable catalog mirrors serve OMM
@@ -50,10 +63,12 @@ Verified in-browser: ~15.5k dots render and animate smoothly; click-inspect,
 constellation filters, search-to-fly, and double-click focus all work (R7
 PointPrimitiveCollection fallback not needed; no FPS counter instrumented).
 
-**Phase 3 next:** high-fidelity numerical propagation (DP8(7), J4+, drag, SRP,
-third-body), LVLH/RIC frames, scenario CRUD + persistence, and wiring the
-composer's Set-as-chief / Add-as-deputy actions. See
-[docs/architecture-and-roadmap.md §7](docs/architecture-and-roadmap.md).
+**Phase 3B next:** high-fidelity numerical propagation (DP8(7), J4+, drag, SRP,
+third-body), per-scenario fidelity dispatch (`sgp4`/`numerical`), and the
+LVLH/RIC + per-spacecraft body frames (`FrameService` v2). Scenario CRUD +
+composer wiring already landed in Phase 3A. See
+[docs/architecture-and-roadmap.md §7](docs/architecture-and-roadmap.md) and
+[docs/phase-3-plan.md](docs/phase-3-plan.md).
 
 ## Stack
 - **Frontend:** React + TS strict + Vite + CesiumJS (global view) + three.js

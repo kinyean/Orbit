@@ -285,13 +285,16 @@ get the smallest end-to-end pipeline running first, then deepen.
   Phase 3 with the rest of scenario CRUD.)
 
 ### Phase 3 — High-fidelity propagation + scenario CRUD
-- Add the numerical propagator (DP8(7), gravity ≥J4, drag, SRP, third-body).
-- Per-scenario fidelity selection.
-- Full frame management (LVLH / RIC + per-spacecraft body frames).
-- `Scenario` REST CRUD + versioning; initial states from TLE / CCSDS /
-  Keplerian.
-- Multiple deputies; scenario panel UI; load scenario → per-user scenario
-  stream.
+Sliced into **3A** (scenario composition on SGP4) then **3B** (physics depth).
+- **3A ✅ (done):** `Scenario` REST CRUD + immutable versioning + audit log
+  through one service layer (Decision 16); initial states from catalog TLE
+  (frozen snapshot per role, reproducible); multiple deputies; scenario panel UI
+  (list/save/load/delete) + wired composer (set-chief / add-deputy / remove).
+  Loading repopulates the composer statically (live scenario streaming is
+  Phase 4). CCSDS OEM + Keplerian initial-state sources deferred to a later phase.
+- **3B (next):** numerical propagator (DP8(7), gravity ≥J4, drag, SRP,
+  third-body); per-scenario fidelity selection (`sgp4`/`numerical`); full frame
+  management (LVLH / RIC + per-spacecraft body frames).
 
 ### Phase 4 — Dual viewports + shared clock
 - three.js proximity view scaffold in LVLH frame.

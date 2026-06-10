@@ -42,6 +42,7 @@ considered**, **Consequences**.
 **Data**
 14. [Scenario data model: chief + deputies](#14-scenario-data-model-chief--deputies)
 15. [Data formats: TLE, CCSDS, Keplerian, CZML](#15-data-formats-tle-ccsds-keplerian-czml)
+19. [Scenario body schema v1 + persistence design (Phase 3A)](#19-scenario-body-schema-v1--persistence-design-phase-3a)
 
 **Cross-cutting / enterprise**
 16. [Enterprise posture: professional-grade from the start](#16-enterprise-posture-professional-grade-from-the-start)
@@ -609,6 +610,69 @@ over a long pass as the satellite crosses latitudes (smooth, not a snap). If
 that becomes undesirable, switch the tracking frame to `VELOCITY` and match the
 animation target with `Transforms.rotationMatrixFromPositionVelocity` (the
 exact basis Cesium's velocity frame uses).
+
+---
+
+## 19. Scenario body schema v1 + persistence design (Phase 3A)
+
+**Context.** Phase 3A makes the scenario the real, persistent artifact (UC-1,
+US-SCN-03/11/12) on the existing SGP4 engine. The `V1__init.sql` schema (users /
+scenarios / scenario_versions / audit_log, jsonb body, the circular
+`scenarios.latest_version_id` ↔ `scenario_versions.id` FK) was already in place;
+this decision records how it's mapped and exercised.
+
+**Decision.**
+- **`jsonb` body schema v1** is an immutable typed record `ScenarioBody`:
+  `{ schemaVersion:1, fidelity, timeRange{start,end},
+  chief{role,noradId,name,initialState{kind:"tle",tle{line1,line2,epoch}}},
+  deputies[…] }`. Each role stores **both** the NORAD id (the composer's join
+  key → display names via the frontend catalog index) **and a frozen TLE
+  snapshot** captured at compose time, so a saved scenario is reproducible and
+  does not drift when the 6-h catalog refresh replaces the in-memory TLE (SRS
+  §5.4.1). The body is mapped as a raw `String` (`@JdbcTypeCode(JSON)`) so the
+  evolving schema stays out of the `ddl-auto=validate` entity; `ScenarioService`
+  owns (de)serialization.
+- **Single mutation path** (`ScenarioService`, Decision 16): create/update/
+  delete are each one `@Transactional` that writes the version row **and exactly
+  one `audit_log` row** together. Versions are immutable (`version_no = max+1`);
+  **delete is soft** (`deleted_at`, added by `V3`) so history + audit survive.
+  UUID PKs are **service-generated** (`UUID.randomUUID()`, entities implement
+  `Persistable` so `save()` does `persist()` not `merge()`) — we need ids before
+  insert to resolve the circular FK in one transaction.
+- **Fidelity dispatch seam:** the body carries `fidelity`; Phase 3A honors only
+  `"sgp4"`. `numerical` (3B) and `cw` (Phase 5) slot in without a schema change.
+
+**Why.** Freezing the TLE is the cheapest way to meet Frank's reproducibility
+bar without an OEM pipeline yet. One audited mutation path + immutable versions +
+soft-delete is the Decision-16 posture made concrete. Plain-UUID FK fields (not
+`@ManyToOne`) suit `open-in-view=false` and avoid lazy-association traps.
+
+**Alternatives considered.** Storing only the NORAD id (rejected — drifts on
+refresh); a typed `@Embeddable`/columns for the body (rejected — fights the
+evolving schema against `validate`); DB-generated UUIDs (rejected — can't
+resolve the circular FK before insert); hard delete (rejected — cascade-wipes
+versions and orphans the audit trail).
+
+**Phase-3A dependency decisions** (CLAUDE.md "ask before adding" — taken with
+the user):
+- **`spring-boot-starter-validation`** — `@Valid` request DTOs; field
+  constraints surface in OpenAPI so the generated client is contract-aware.
+  Semantic rules (deputies-require-chief, `end>start`, NORAD resolvable) stay in
+  the service → 422.
+- **Testcontainers (Postgres)** — `@DataJpaTest` + full-context tests run against
+  a real ephemeral Postgres (the schema uses PG-only `TEXT[]` / `jsonb` /
+  `gen_random_uuid()` that H2 can't emulate). `./gradlew test` now needs a Docker
+  daemon; the existing pure-JUnit prop/catalog tests are unaffected.
+- **springdoc-openapi 2.6.0 → 2.8.9** (version bump, not a new dep) — 2.6.0 is
+  built against Spring Framework 6.1 and throws `NoSuchMethodError` on
+  `ControllerAdviceBean` the moment a `@ControllerAdvice` exists (it walks advice
+  beans to compute generic responses), 500-ing `/v3/api-docs` under Spring Boot
+  3.5 (Spring 6.2). 2.8.x targets Boot 3.5.
+
+**Consequences.** The frontend `gen:api` produces typed scenario paths +
+`ScenarioBody`. CCSDS OEM + Keplerian initial-state sources are deferred (later
+phase); live scenario streaming on load is Phase 4. The body schema is
+versioned (`schemaVersion`) so future shapes migrate forward additively.
 
 ---
 

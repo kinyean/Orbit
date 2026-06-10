@@ -1,5 +1,11 @@
 import { create } from 'zustand';
 import { CONSTELLATIONS, type Constellation } from '../lib/constellations';
+import { api } from '../api/client';
+import type { components } from '../api/schema';
+
+/** A saved scenario as listed by GET /scenarios (generated from the backend contract). */
+export type ScenarioSummary = components['schemas']['ScenarioSummary'];
+type ScenarioRequest = components['schemas']['ScenarioRequest'];
 
 export interface Filters {
   /** Constellations currently shown. A constellation NOT in this set is hidden. */
@@ -50,6 +56,9 @@ export interface State {
   filters: Filters;
   composer: Composer;
 
+  // Saved scenarios (from the backend; US-SCN-03/11/12)
+  scenarios: ScenarioSummary[];
+
   // Catalog (from the backend stream)
   catalogTotal: number;
   catalogIndex: SatIndexEntry[];
@@ -73,6 +82,27 @@ export interface State {
   addDeputy: (id: number) => void;
   removeFromScenario: (id: number) => void;
   clearComposer: () => void;
+
+  // Scenario CRUD (calls the generated client)
+  loadScenarios: () => Promise<void>;
+  /** Create (no scenarioId yet) or save-a-new-version (existing id), optionally renaming. */
+  saveScenario: (name: string) => Promise<void>;
+  loadScenario: (id: string) => Promise<void>;
+  deleteScenario: (id: string) => Promise<void>;
+}
+
+/** Build a create/update request from the composer. Defaults to a 24-hour window
+ *  (the timeline editor lands in Phase 4); fidelity is sgp4 in Phase 3A. */
+function composerToRequest(name: string, composer: Composer): ScenarioRequest {
+  const start = new Date();
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  return {
+    name,
+    fidelity: 'sgp4',
+    timeRange: { start: start.toISOString(), end: end.toISOString() },
+    chief: { noradId: composer.chiefId ?? 0 },
+    deputies: composer.deputyIds.map((id) => ({ noradId: id })),
+  };
 }
 
 const FILTERS_STORAGE_KEY = 'orbit.filters.constellations';
@@ -105,7 +135,7 @@ const emptyComposer: Composer = {
   isDirty: false,
 };
 
-export const useStore = create<State>((set) => ({
+export const useStore = create<State>((set, get) => ({
   currentTime: new Date(),
   isPlaying: true,
   filters: {
@@ -114,6 +144,8 @@ export const useStore = create<State>((set) => ({
     showRocketBodies: false,
   },
   composer: emptyComposer,
+
+  scenarios: [],
 
   catalogTotal: 0,
   catalogIndex: [],
@@ -175,4 +207,59 @@ export const useStore = create<State>((set) => ({
       };
     }),
   clearComposer: () => set({ composer: emptyComposer }),
+
+  loadScenarios: async () => {
+    const { data, error } = await api.GET('/scenarios');
+    if (error) {
+      console.error('Failed to load scenarios', error);
+      return;
+    }
+    set({ scenarios: data ?? [] });
+  },
+
+  saveScenario: async (name) => {
+    const { composer } = get();
+    if (composer.chiefId === null) return; // guarded in the UI too
+    const body = composerToRequest(name, composer);
+
+    if (composer.scenarioId) {
+      const { error } = await api.PUT('/scenarios/{id}', {
+        params: { path: { id: composer.scenarioId } },
+        body,
+      });
+      if (error) throw error;
+    } else {
+      const { data, error } = await api.POST('/scenarios', { body });
+      if (error || !data) throw error ?? new Error('Create failed');
+      set((s) => ({ composer: { ...s.composer, scenarioId: data.id ?? null } }));
+    }
+    set((s) => ({ composer: { ...s.composer, isDirty: false } }));
+    await get().loadScenarios();
+  },
+
+  loadScenario: async (id) => {
+    const { data, error } = await api.GET('/scenarios/{id}', { params: { path: { id } } });
+    if (error || !data) {
+      console.error('Failed to load scenario', error);
+      return;
+    }
+    const chiefId = data.body?.chief?.noradId ?? null;
+    const deputyIds = (data.body?.deputies ?? [])
+      .map((d) => d.noradId)
+      .filter((n): n is number => typeof n === 'number');
+    set({
+      composer: { chiefId, deputyIds, scenarioId: data.id ?? id, isDirty: false },
+    });
+  },
+
+  deleteScenario: async (id) => {
+    const { error } = await api.DELETE('/scenarios/{id}', { params: { path: { id } } });
+    if (error) {
+      console.error('Failed to delete scenario', error);
+      return;
+    }
+    // If the deleted scenario is the one loaded in the composer, clear it.
+    set((s) => (s.composer.scenarioId === id ? { composer: emptyComposer } : {}));
+    await get().loadScenarios();
+  },
 }));

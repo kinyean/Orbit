@@ -11,7 +11,10 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import org.hipparchus.geometry.euclidean.threed.Vector3D;
 import org.orekit.propagation.analytical.tle.TLE;
 import org.orekit.propagation.analytical.tle.TLEPropagator;
@@ -63,6 +66,10 @@ public class CatalogService {
 
     private TimeScale utc;
     private volatile List<TrackedSatellite> tracked = List.of();
+    // NORAD id → frozen TLE snapshot, rebuilt with `tracked` each refresh. Lets
+    // the scenario composer resolve a clicked satellite to a reproducible
+    // initial state (Phase 3A, SRS §5.4.1) without re-reading the live catalog.
+    private volatile Map<Integer, TleSnapshot> snapshotsByNorad = Map.of();
 
     public CatalogService(CatalogProperties props,
                           GpCatalogParser parser,
@@ -178,6 +185,7 @@ public class CatalogService {
 
         int cap = props.maxSatellites();
         List<TrackedSatellite> built = new ArrayList<>(records.size());
+        Map<Integer, TleSnapshot> snapshots = new HashMap<>(records.size());
         int failed = 0;
         for (GpRecord r : records) {
             if (cap > 0 && built.size() >= cap) {
@@ -189,11 +197,17 @@ public class CatalogService {
                 double periodMinutes = (2.0 * Math.PI / tle.getMeanMotion()) / 60.0;
                 double inclinationDeg = Math.toDegrees(tle.getI());
                 built.add(new TrackedSatellite(r.noradId(), r.objectName(), inclinationDeg, periodMinutes, prop));
+                // Freeze the TLE lines + epoch now, while we hold the built TLE,
+                // so scenarios can capture a reproducible initial state.
+                snapshots.put(r.noradId(),
+                        new TleSnapshot(r.noradId(), r.objectName(),
+                                tle.getLine1(), tle.getLine2(), tle.getDate().toString()));
             } catch (RuntimeException e) {
                 failed++;
             }
         }
         tracked = List.copyOf(built);
+        snapshotsByNorad = Map.copyOf(snapshots);
         log.info("Catalog loaded from {}: {} satellites ({} skipped)", origin, built.size(), failed);
     }
 
@@ -241,5 +255,15 @@ public class CatalogService {
     /** Tracked-satellite count (for tests / diagnostics). */
     public int size() {
         return tracked.size();
+    }
+
+    /**
+     * Frozen TLE snapshot for a NORAD id, if it is in the current catalog. The
+     * scenario composer uses this to capture a reproducible initial state for a
+     * clicked satellite (Phase 3A). Empty for an id absent from the in-memory
+     * catalog — the caller turns that into a clear 422.
+     */
+    public Optional<TleSnapshot> findSnapshot(int noradId) {
+        return Optional.ofNullable(snapshotsByNorad.get(noradId));
     }
 }
