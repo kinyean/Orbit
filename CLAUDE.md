@@ -24,9 +24,36 @@ pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
 ## Current phase
-**Phase 4A complete — backend tests green (13 new) + frontend type-check/build
-green.** Phase 4B next (three.js proximity view + relative-state stream + view
-lockstep; see roadmap §7 and [docs/phase-4-plan.md](docs/phase-4-plan.md)).
+**Phase 4B complete — backend tests green + frontend build green (in-browser pass
+pending).** Phase 5 next (relative-state analysis readouts + initial maneuvers;
+see roadmap §7).
+
+**Phase 4B** (three.js proximity view + per-scenario `scenario-relative` stream):
+backend `stream` adds `RelativeStateEncoder` (plain-JSON `scenario-relative`
+envelope) + `RelativeSamples` DTO; `ScenarioStreamService.loadAndEncode` now also
+samples each deputy's LVLH R/I/C (and velocity) on the **same time grid** as the
+CZML and populates `EncodedScenario.relative` (the handler already sent it when
+non-null). **R15 (critical):** the LVLH transform is built **once** from the *live*
+chief propagator (`frames.lvlh(chiefProp)`) and applied per step
+(`eci.getTransformTo(lvlh,date).transformPVCoordinates(deputyEci)`) — **not**
+`FrameService.toRelativeState` (single-epoch constant provider → wrong relative
+velocity). Frontend: `three` + a `stream/relativeBuffer.ts` module singleton (outside
+Zustand, Decision 5) that Globe's `onRelative` fills and `views/ProximityView.tsx`
+reads each frame; the proximity render loop READS `store.currentTime` (never writes)
+→ lockstep by construction, mirroring Globe's `preRender`. Chief at the LVLH origin
+(amber); deputies as fixed-pixel color-matched points (R→+X, I→+Y, C→+Z, 1 unit=1 m);
+camera auto-frames. `App.tsx` is a **resizable split** (globe left / proximity right,
+draggable divider) that appears only when a scenario is loaded, with a toggle that
+**unmounts** the proximity pane (frees the 2nd WebGL context). One WebSocket serves
+both viewports. Display-only (no cross-view click yet). Contract stays `VERSION="1"`.
+See [docs/streaming-contract.md](docs/streaming-contract.md) (`scenario-relative`).
+A `SampleScenarioSeeder` (scenario pkg, on `ApplicationReadyEvent`, idempotent via
+`ScenarioService.seedIfAbsent`) seeds a demo **"Demo — close formation (NMC)"** for
+the dev user: two *synthetic* sats (NORAD 99001/99002) on a bounded NMC relative
+orbit (equal mean motion ⇒ no drift; small Δe/Δi → a ~2–4 km LVLH ellipse) so the
+proximity view shows a real circumnavigation out of the box. NOTE: TLE line
+serialization caps the NORAD id at 5 digits (`getLine1()`/`getLine2()` throw on
+6-digit) — the formation test exercises that round-trip.
 
 **Phase 4A** (authoritative shared clock + per-scenario CZML stream — the global
 view now *plays* a loaded scenario): backend `stream` gained a per-connection
@@ -142,16 +169,12 @@ Verified in-browser: ~15.5k dots render and animate smoothly; click-inspect,
 constellation filters, search-to-fly, and double-click focus all work (R7
 PointPrimitiveCollection fallback not needed; no FPS counter instrumented).
 
-**Phase 4B next:** the three.js proximity view in the chief LVLH frame + the
-per-scenario `scenario-relative` stream (R/I/C samples alongside the 4A
-`scenario-czml`) that *consumes* the 3B engine, both views reading the one shared
-clock in lockstep. Critical (R15): build **one** continuous `lvlh(chiefProp)`
-transform and sample it per step — do **not** call `FrameService.toRelativeState`
-per sample (its single-epoch provider drops the LVLH rotation rate → wrong
-relative *velocity*). 4A already stood up the shared clock + scenario CZML stream
-+ time controls (see above); 4B adds the second viewport. See
-[docs/architecture-and-roadmap.md §7](docs/architecture-and-roadmap.md) and
-[docs/phase-4-plan.md](docs/phase-4-plan.md).
+**Phase 5 next:** relative-state analysis (distance / range-rate / R-I-C readouts,
+closest-approach), the closed-form CW fidelity for close range, and initial
+impulsive ΔV maneuvers (+ templates) with re-propagation. The proximity view (4B)
+already renders the relative motion the 3B engine produces; Phase 5 adds the
+analysis + maneuver layer on top. See
+[docs/architecture-and-roadmap.md §7](docs/architecture-and-roadmap.md).
 
 ## Stack
 - **Frontend:** React + TS strict + Vite + CesiumJS (global view) + three.js

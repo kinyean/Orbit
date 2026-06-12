@@ -27,6 +27,7 @@ import { useStore, type SatIndexEntry, type SelectedSatellite } from '../store/u
 import { constellationOf } from '../lib/constellations';
 import { CatalogStreamClient } from '../stream/CatalogStreamClient';
 import { ScenarioStreamClient } from '../stream/ScenarioStreamClient';
+import { setRelativeData, clearRelativeData, parseRelativeMessage } from '../stream/relativeBuffer';
 import { STREAM_CONTRACT_VERSION } from '../api/contract';
 
 const cesiumToken = import.meta.env.VITE_CESIUM_ION_TOKEN;
@@ -586,6 +587,7 @@ export default function Globe() {
       releaseScenarioTracking();
       if (catalogDs) catalogDs.show = true;
       scenarioDs.entities.removeAll();
+      clearRelativeData(); // no scenario → proximity view has nothing to show
       return;
     }
 
@@ -614,6 +616,12 @@ export default function Globe() {
               console.error('Scenario CZML chunk failed to process; skipping it', err);
             });
         },
+        // Feed the proximity view's relative-state buffer (Phase 4B). One socket
+        // serves both viewports; ProximityView reads this buffer each frame.
+        onRelative: (msg) => {
+          const data = parseRelativeMessage(msg);
+          if (data) setRelativeData(data);
+        },
       },
     );
     // Defer connect one macrotask (matches the catalog client) so StrictMode's
@@ -629,6 +637,7 @@ export default function Globe() {
       client.close();
       releaseScenarioTracking();
       scenarioDs.entities.removeAll();
+      clearRelativeData(); // drop relative samples on (re)connect/close
       // Restore the catalog only if no scenario is active (id change A→B keeps it hidden).
       if (catalogDs && !useStore.getState().loadedScenario) catalogDs.show = true;
     };

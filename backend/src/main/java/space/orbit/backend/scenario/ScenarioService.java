@@ -79,6 +79,29 @@ public class ScenarioService {
         return toResponse(scenario, body, 1, 1);
     }
 
+    /**
+     * Seed a pre-built scenario body for {@code ownerId} if no live scenario of
+     * that name exists (idempotent). Used to ship demo/sample scenarios whose
+     * roles aren't catalog satellites (e.g. a synthetic close-formation), so the
+     * body is supplied directly rather than resolved from the catalog. Still goes
+     * through this single audited mutation path (Decision 16).
+     */
+    @Transactional
+    public void seedIfAbsent(UUID ownerId, String name, ScenarioBody body) {
+        if (scenarios.findByOwnerIdAndNameAndDeletedAtIsNull(ownerId, name).isPresent()) {
+            return;
+        }
+        String json = serialize(body);
+        UUID scenarioId = UUID.randomUUID();
+        UUID versionId = UUID.randomUUID();
+        scenarios.saveAndFlush(new Scenario(scenarioId, ownerId, name));
+        versions.saveAndFlush(new ScenarioVersion(versionId, scenarioId, 1, ownerId, json));
+        Scenario scenario = scenarios.findById(scenarioId).orElseThrow();
+        scenario.setLatestVersionId(versionId);
+        scenarios.saveAndFlush(scenario);
+        audit(scenarioId, versionId, ownerId, "SEED", "Seeded sample scenario \"" + name + "\"");
+    }
+
     @Transactional
     public ScenarioResponse update(UUID id, ScenarioDraft draft) {
         User author = userService.currentUser();

@@ -48,7 +48,8 @@ class ScenarioStreamServiceTests {
         frames.init();
         PropagationService prop = new PropagationService(
                 new SatellitePropagator(frames), new NumericalPropagation(frames), frames);
-        ScenarioStreamService svc = new ScenarioStreamService(scenarioService, prop, frames, new CzmlEncoder(), props);
+        ScenarioStreamService svc = new ScenarioStreamService(
+                scenarioService, prop, frames, new CzmlEncoder(), new RelativeStateEncoder(), props);
         svc.init();
         return svc;
     }
@@ -140,10 +141,74 @@ class ScenarioStreamServiceTests {
     @Test
     void encodingIsBitIdenticalOnRerun() {
         // R11: a pure function of the body — sequential ordered sampling, frozen
-        // TLEs, pinned settings, no wall-clock / RNG.
+        // TLEs, pinned settings, no wall-clock / RNG. Both payloads byte-identical.
         ScenarioBody body = body("numerical", "2024-06-01T12:00:00Z", "2024-06-01T12:30:00Z");
         ScenarioStreamService a = service(new ScenarioStreamProperties(30, 5000, true, true), mockBody(body));
         ScenarioStreamService b = service(new ScenarioStreamProperties(30, 5000, true, true), mockBody(body));
-        assertThat(a.loadAndEncode(ID, EMAIL).czml()).isEqualTo(b.loadAndEncode(ID, EMAIL).czml());
+        EncodedScenario ea = a.loadAndEncode(ID, EMAIL);
+        EncodedScenario eb = b.loadAndEncode(ID, EMAIL);
+        assertThat(ea.czml()).isEqualTo(eb.czml());
+        assertThat(ea.relative()).isEqualTo(eb.relative());
+    }
+
+    // --- relative-state (proximity view, 4B) ---------------------------------
+
+    @Test
+    void relativeBlockExcludesChiefAndMatchesTheCzmlGrid() throws Exception {
+        ScenarioBody body = body("sgp4", "2024-06-01T12:00:00Z", "2024-06-01T12:30:00Z");
+        ScenarioStreamService svc = service(new ScenarioStreamProperties(30, 5000, true, true), mockBody(body));
+        EncodedScenario encoded = svc.loadAndEncode(ID, EMAIL);
+
+        JsonNode rel = MAPPER.readTree(encoded.relative());
+        assertThat(rel.get("type").asText()).isEqualTo(StreamContract.MESSAGE_TYPE_SCENARIO_RELATIVE);
+        assertThat(rel.get("frame").asText()).isEqualTo("LVLH");
+        assertThat(rel.get("chiefId").asInt()).isEqualTo(25544);
+        assertThat(rel.get("stride").asInt()).isEqualTo(7); // includeVelocity true → t,R,I,C,vR,vI,vC
+
+        JsonNode deputies = rel.get("deputies");
+        assertThat(deputies.size()).as("chief excluded; one deputy").isEqualTo(1);
+        assertThat(deputies.get(0).get("noradId").asInt()).isEqualTo(25545);
+
+        // Same grid as the CZML pass: samples/stride == cartesian/4 (the step count).
+        int relCount = deputies.get(0).get("samples").size() / rel.get("stride").asInt();
+        int czmlCount = MAPPER.readTree(encoded.czml())
+                .get("czml").get(2).get("position").get("cartesian").size() / 4;
+        assertThat(relCount).isEqualTo(czmlCount);
+    }
+
+    @Test
+    void relativeVelocityToggleChangesStride() throws Exception {
+        ScenarioBody body = body("sgp4", "2024-06-01T12:00:00Z", "2024-06-01T12:30:00Z");
+        ScenarioStreamService svc = service(new ScenarioStreamProperties(30, 5000, false, true), mockBody(body));
+        JsonNode rel = MAPPER.readTree(svc.loadAndEncode(ID, EMAIL).relative());
+        assertThat(rel.get("includeVelocity").asBoolean()).isFalse();
+        assertThat(rel.get("stride").asInt()).isEqualTo(4); // t,R,I,C only
+        assertThat(rel.get("deputies").get(0).get("samples").size() % 4).isZero();
+    }
+
+    @Test
+    void relativeSeparationIsPlausibleAndVelocityCapturesRotationRate() throws Exception {
+        // A co-orbital deputy phased away from the chief: separation is bounded
+        // (not Earth-scale), and relative velocity is non-trivially non-zero — the
+        // latter proves the LVLH frame's rotation rate was carried (R15); the old
+        // single-epoch toRelativeState path would collapse that term.
+        ScenarioBody body = body("sgp4", "2024-06-01T12:00:00Z", "2024-06-01T12:30:00Z");
+        ScenarioStreamService svc = service(new ScenarioStreamProperties(30, 5000, true, true), mockBody(body));
+        JsonNode samples = MAPPER.readTree(svc.loadAndEncode(ID, EMAIL).relative())
+                .get("deputies").get(0).get("samples");
+
+        double r = samples.get(1).asDouble(), i = samples.get(2).asDouble(), c = samples.get(3).asDouble();
+        double sepKm = Math.sqrt(r * r + i * i + c * c) / 1000.0;
+        assertThat(sepKm).as("relative separation (km)").isGreaterThan(0.0).isLessThan(20000.0);
+
+        double maxSpeed = 0.0;
+        int stride = 7;
+        for (int base = 0; base + stride <= samples.size(); base += stride) {
+            double vr = samples.get(base + 4).asDouble();
+            double vi = samples.get(base + 5).asDouble();
+            double vc = samples.get(base + 6).asDouble();
+            maxSpeed = Math.max(maxSpeed, Math.sqrt(vr * vr + vi * vi + vc * vc));
+        }
+        assertThat(maxSpeed).as("relative speed carries LVLH rotation rate (m/s)").isGreaterThan(0.1);
     }
 }

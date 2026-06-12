@@ -8,11 +8,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.hipparchus.geometry.euclidean.threed.Vector3D;
+import org.orekit.frames.Frame;
 import org.orekit.propagation.Propagator;
 import org.orekit.propagation.analytical.tle.TLE;
 import org.orekit.time.AbsoluteDate;
 import org.orekit.time.TimeScale;
 import org.orekit.time.TimeScalesFactory;
+import org.orekit.utils.PVCoordinates;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Service;
 import space.orbit.backend.prop.Fidelity;
@@ -41,6 +43,7 @@ public class ScenarioStreamService {
     private final PropagationService propagationService;
     private final FrameService frames;
     private final CzmlEncoder encoder;
+    private final RelativeStateEncoder relativeEncoder;
     private final ScenarioStreamProperties props;
 
     private TimeScale utc;
@@ -49,11 +52,13 @@ public class ScenarioStreamService {
                                  PropagationService propagationService,
                                  FrameService frames,
                                  CzmlEncoder encoder,
+                                 RelativeStateEncoder relativeEncoder,
                                  ScenarioStreamProperties props) {
         this.scenarioService = scenarioService;
         this.propagationService = propagationService;
         this.frames = frames;
         this.encoder = encoder;
+        this.relativeEncoder = relativeEncoder;
         this.props = props;
     }
 
@@ -105,10 +110,57 @@ public class ScenarioStreamService {
         for (PreparedRole role : roles) {
             samples.add(sampleRole(role, startDate, firstT, effectiveStep, steps));
         }
-
         String czml = encoder.encodeScenario(start, effectiveStep, samples);
-        // Relative-state (proximity view) lands in slice 4B.
-        return new EncodedScenario(czml, null, effectiveStep);
+
+        // Relative-state (proximity view, 4B): chief-LVLH R/I/C per deputy, on the
+        // SAME time grid so both views interpolate to the same instants.
+        String relative = encodeRelative(roles, startDate, firstT, effectiveStep, steps, start);
+
+        return new EncodedScenario(czml, relative, effectiveStep);
+    }
+
+    /**
+     * Encode each deputy's position (and optionally velocity) in the chief's LVLH
+     * frame. R15: the frame is built ONCE from the <em>live</em> chief propagator
+     * and applied per step — never via {@code FrameService.toRelativeState}, whose
+     * single-epoch constant provider drops the frame rotation rate and would give
+     * a wrong relative <em>velocity</em>.
+     */
+    private String encodeRelative(List<PreparedRole> roles, AbsoluteDate startDate,
+                                  double firstT, int step, int steps, Instant epoch) {
+        PreparedRole chief = roles.get(0);
+        Frame eci = frames.eci();
+        Frame lvlh = frames.lvlh(chief.propagator()); // rotating LVLH over the live chief orbit
+        boolean withVel = props.includeRelativeVelocity();
+        int stride = withVel ? 7 : 4;
+        int degree = Math.max(1, Math.min(5, steps));
+
+        List<RelativeSamples> deputies = new ArrayList<>();
+        for (int i = 1; i < roles.size(); i++) { // skip chief (the LVLH origin)
+            Propagator depProp = roles.get(i).propagator();
+            double[] s = new double[(steps + 1) * stride];
+            for (int k = 0; k <= steps; k++) {
+                double t = firstT + (double) k * step;
+                AbsoluteDate date = startDate.shiftedBy(t);
+                PVCoordinates depEci = depProp.getPVCoordinates(date, eci);
+                PVCoordinates rel = eci.getTransformTo(lvlh, date).transformPVCoordinates(depEci);
+                Vector3D p = rel.getPosition();
+                int base = k * stride;
+                s[base] = t;
+                s[base + 1] = p.getX(); // radial
+                s[base + 2] = p.getY(); // in-track
+                s[base + 3] = p.getZ(); // cross-track
+                if (withVel) {
+                    Vector3D v = rel.getVelocity(); // carries the LVLH rotation rate (R15)
+                    s[base + 4] = v.getX();
+                    s[base + 5] = v.getY();
+                    s[base + 6] = v.getZ();
+                }
+            }
+            ScenarioBody.Role role = roles.get(i).role();
+            deputies.add(new RelativeSamples(role.noradId(), role.name(), degree, s));
+        }
+        return relativeEncoder.encodeRelative(epoch, step, chief.role().noradId(), deputies, withVel);
     }
 
     /** Total orbit-path length, in orbital periods (must match the encoder's lead+trail). */

@@ -1,13 +1,16 @@
 # Phase 4 plan — Dual viewports + shared clock
 
-> **Status (2026-06-11): Slice 4A shipped** — backend `./gradlew test` green (13
-> new stream tests, incl. a Testcontainers WebSocket close-code test) and
-> frontend `type-check` + `build` green. The per-scenario `/stream/scenario/{id}`
-> CZML stream, the single-writer shared clock, the time controls, and the scrub
-> bar are in; the catalog hides during scenario playback. **Slice 4B (three.js
-> proximity view + `scenario-relative` stream) is next** and remains as planned
-> below. In-browser end-to-end (`docker compose up`) is the outstanding manual
-> verification for 4A.
+> **Status (2026-06-12): Slices 4A + 4B shipped** — backend `./gradlew test` green
+> and frontend `build` green. 4A: the per-scenario `/stream/scenario/{id}` CZML
+> stream, the single-writer shared clock, time controls + scrub bar, catalog
+> hidden during playback (+ follow-ups: live catalog time-travel / play-from-time,
+> time-range editor, click-to-toggle orbit paths — see Decision 21). 4B: the
+> `scenario-relative` stream (LVLH R/I/C per deputy, built from a live
+> `lvlh(chiefProp)` transform — R15), a `three.js` proximity view
+> (`views/ProximityView.tsx`) reading the shared clock in lockstep, and a
+> resizable split-screen that appears only with a scenario (toggle unmounts it).
+> Outstanding: in-browser end-to-end over `docker compose up` (rebuild the
+> frontend image — `three` is a new dep). Phase 5 is next.
 >
 > Planning artifact, written ahead of implementation (same workflow as
 > [phase-2-plan.md](./phase-2-plan.md), [phase-3-plan.md](./phase-3-plan.md),

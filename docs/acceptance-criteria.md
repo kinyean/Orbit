@@ -283,13 +283,23 @@ against a metric. Phase done = every criterion passes.
       drive play/scrub/rate/reverse; live-catalog step/scrub/play-from-time;
       time-range edit; click-to-toggle orbit paths.
 
-**Phase 4B — three.js proximity view** *(next)*
-- [ ] three.js proximity view scene scaffold renders.
-- [ ] Chief at LVLH origin (placeholder marker).
-- [ ] Deputies render at relative positions from the `scenario-relative` stream.
-- [ ] Adjustable scale 1 m – 100 km.
-- [ ] Both views in lockstep (global + proximity render the same epoch).
-- [ ] Sync verification (manual + structural — no frontend test harness this phase).
+**Phase 4B — three.js proximity view** ✅ (backend tests green + frontend build green)
+- [x] three.js proximity view scene scaffold renders (`views/ProximityView.tsx`):
+      Scene / PerspectiveCamera / WebGLRenderer + OrbitControls, R/I/C axes + grid.
+- [x] Chief at LVLH origin (amber marker); deputies as fixed-pixel color-coded points.
+- [x] Deputies render at relative positions from the `scenario-relative` stream
+      (LVLH R/I/C; backend builds the rotating `lvlh(chiefProp)` transform once and
+      transforms per step — R15-correct velocity; chief excluded as the origin).
+- [x] Adjustable scale via OrbitControls (1 m min distance) with a distance readout;
+      the camera auto-frames the deputies on load (max distance widened for any
+      separation, since composed scenarios may be far apart).
+- [x] Both views in lockstep — the proximity render loop READS `store.currentTime`
+      each frame (never writes), mirroring Globe's preRender; one rAF clock writer.
+- [x] One WebSocket serves both viewports (Globe owns the client; the proximity view
+      reads a module buffer it fills). `scenario-relative` is the 2nd binary frame.
+- [ ] In-browser pass over the dev stack (`docker compose up -d --build` incl. the
+      frontend with the new `three` dep): load a ≥2-sat scenario, confirm split view +
+      lockstep play/scrub, divider resize, hide/show toggle.
 
 ---
 

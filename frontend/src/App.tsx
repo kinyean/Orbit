@@ -1,5 +1,6 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import Globe from './components/Globe';
+import ProximityView from './views/ProximityView';
 import TimeController from './components/TimeController';
 import Timeline from './components/Timeline';
 import InfoPanel from './components/InfoPanel';
@@ -14,6 +15,31 @@ import './App.css';
 export default function App() {
   const [query, setQuery] = useState('');
   const [notFound, setNotFound] = useState(false);
+
+  // Split-screen: the proximity view appears only when a scenario is loaded; a
+  // toggle unmounts it (frees the 2nd WebGL context). The divider sets the split.
+  const scenarioActive = useStore((s) => s.loadedScenario !== null);
+  const [proximityEnabled, setProximityEnabled] = useState(true);
+  const [splitPct, setSplitPct] = useState(55);
+  const viewportsRef = useRef<HTMLDivElement>(null);
+  const proximityVisible = scenarioActive && proximityEnabled;
+
+  function onDividerDown(e: ReactPointerEvent) {
+    e.preventDefault();
+    const el = viewportsRef.current;
+    if (!el) return;
+    const move = (ev: PointerEvent) => {
+      const rect = el.getBoundingClientRect();
+      const pct = ((ev.clientX - rect.left) / rect.width) * 100;
+      setSplitPct(Math.min(80, Math.max(20, pct)));
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
 
   // The single clock writer: one rAF loop advances currentTime; both views read
   // it (Decision 11). Started once for the app's lifetime.
@@ -46,8 +72,26 @@ export default function App() {
 
   return (
     <div className="app">
-      <div className="globe-container">
-        <Globe />
+      <div className="viewports" ref={viewportsRef}>
+        <div
+          className="viewport globe-pane"
+          style={proximityVisible ? { flex: `0 0 ${splitPct}%` } : { flex: '1 1 100%' }}
+        >
+          <Globe />
+        </div>
+        {proximityVisible && (
+          <>
+            <div
+              className="split-divider"
+              role="separator"
+              aria-label="Resize views"
+              onPointerDown={onDividerDown}
+            />
+            <div className="viewport proximity-pane">
+              <ProximityView />
+            </div>
+          </>
+        )}
       </div>
 
       <header className="top-bar">
@@ -78,6 +122,15 @@ export default function App() {
       >
         ⌂ Reset view
       </button>
+      {scenarioActive && (
+        <button
+          className="proximity-toggle"
+          onClick={() => setProximityEnabled((v) => !v)}
+          title={proximityEnabled ? 'Hide the proximity view' : 'Show the proximity view'}
+        >
+          {proximityEnabled ? '⊟ Hide proximity' : '⊞ Proximity view'}
+        </button>
+      )}
       <InfoPanel />
       <TimeController />
       <Timeline />

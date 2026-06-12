@@ -22,6 +22,17 @@ export default defineConfig(({ mode }) => {
     plugins: [react(), cesium()],
     server: {
       port: 5173,
+      // Use polling for the dev file-watcher instead of inotify. On Linux,
+      // Node's recursive watch creates one inotify INSTANCE per directory, and
+      // big deps (cesium + three) push past the host's low
+      // fs.inotify.max_user_instances (128 here) → the dev server crashes with
+      // EMFILE. Polling only src (node_modules ignored) is cheap and avoids
+      // inotify entirely. Dev-only; the production build has no watcher.
+      watch: {
+        usePolling: true,
+        interval: 300,
+        ignored: ['**/node_modules/**', '**/dist/**', '**/build/**'],
+      },
       proxy: {
         '/api': {
           target: proxyTarget,

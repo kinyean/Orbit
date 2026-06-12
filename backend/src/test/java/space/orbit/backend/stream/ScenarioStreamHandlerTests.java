@@ -9,12 +9,15 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.GZIPInputStream;
+import jakarta.websocket.ContainerProvider;
+import jakarta.websocket.WebSocketContainer;
 import org.junit.jupiter.api.Test;
 import org.orekit.propagation.analytical.tle.TLE;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -58,16 +61,10 @@ class ScenarioStreamHandlerTests {
     @Autowired private ObjectMapper objectMapper;
 
     private UUID seedScenario(boolean softDeleted) throws Exception {
-        TLE tle = tleFactory.fromGp(new GpRecord(
-                "ISS (ZARYA)", "1998-067A", "2024-06-01T12:00:00.000",
-                15.50125000, 0.0006703, 51.6416, 247.4627, 130.5360, 325.0288,
-                25544, 999, 45000, 0.00010270, "U", 0));
         ScenarioBody body = new ScenarioBody(1, "sgp4",
                 new ScenarioBody.TimeRange("2024-06-01T12:00:00Z", "2024-06-01T12:30:00Z"),
-                new ScenarioBody.Role("chief", 25544, "ISS (ZARYA)",
-                        new ScenarioBody.InitialState("tle",
-                                new ScenarioBody.Tle(tle.getLine1(), tle.getLine2(), tle.getDate().toString()))),
-                List.of());
+                role("chief", 25544, "ISS (ZARYA)", 325.0288),
+                List.of(role("deputy", 25545, "DEPUTY-1", 5.0)));
         String json = objectMapper.writeValueAsString(body);
 
         UUID scenarioId = UUID.randomUUID();
@@ -83,23 +80,43 @@ class ScenarioStreamHandlerTests {
         return scenarioId;
     }
 
+    private ScenarioBody.Role role(String roleName, int norad, String name, double meanAnomalyDeg) {
+        TLE tle = tleFactory.fromGp(new GpRecord(
+                name, "1998-067A", "2024-06-01T12:00:00.000",
+                15.50125000, 0.0006703, 51.6416, 247.4627, 130.5360, meanAnomalyDeg,
+                norad, 999, 45000, 0.00010270, "U", 0));
+        return new ScenarioBody.Role(roleName, norad, name,
+                new ScenarioBody.InitialState("tle",
+                        new ScenarioBody.Tle(tle.getLine1(), tle.getLine2(), tle.getDate().toString())));
+    }
+
     private CollectingHandler connect(String idSegment) throws Exception {
         CollectingHandler handler = new CollectingHandler();
         String uri = "ws://localhost:" + port + "/stream/scenario/" + idSegment;
-        new StandardWebSocketClient().execute(handler, uri).get(10, TimeUnit.SECONDS);
+        // The gzipped CZML/relative frames exceed the container's default 8 KB
+        // binary buffer; match the server's generous limit so frames aren't dropped.
+        WebSocketContainer container = ContainerProvider.getWebSocketContainer();
+        container.setDefaultMaxBinaryMessageBufferSize(8 * 1024 * 1024);
+        new StandardWebSocketClient(container).execute(handler, uri).get(10, TimeUnit.SECONDS);
         return handler;
     }
 
     @Test
-    void deliversScenarioCzmlForASeededScenario() throws Exception {
+    void deliversScenarioCzmlAndRelativeForASeededScenario() throws Exception {
         UUID id = seedScenario(false);
         CollectingHandler handler = connect(id.toString());
 
-        assertThat(handler.messageLatch.await(10, TimeUnit.SECONDS)).as("received a message").isTrue();
-        JsonNode root = objectMapper.readTree(handler.lastText.get());
-        assertThat(root.get("contractVersion").asText()).isEqualTo(StreamContract.VERSION);
-        assertThat(root.get("type").asText()).isEqualTo(StreamContract.MESSAGE_TYPE_SCENARIO_CZML);
-        assertThat(root.get("czml").isArray()).isTrue();
+        // Two binary frames on connect: scenario-czml, then scenario-relative.
+        assertThat(handler.messageLatch.await(10, TimeUnit.SECONDS)).as("received both frames").isTrue();
+
+        JsonNode czml = objectMapper.readTree(handler.byType.get(StreamContract.MESSAGE_TYPE_SCENARIO_CZML));
+        assertThat(czml.get("contractVersion").asText()).isEqualTo(StreamContract.VERSION);
+        assertThat(czml.get("czml").isArray()).isTrue();
+
+        JsonNode rel = objectMapper.readTree(handler.byType.get(StreamContract.MESSAGE_TYPE_SCENARIO_RELATIVE));
+        assertThat(rel.get("frame").asText()).isEqualTo("LVLH");
+        assertThat(rel.get("chiefId").asInt()).isEqualTo(25544);
+        assertThat(rel.get("deputies").get(0).get("noradId").asInt()).isEqualTo(25545);
     }
 
     @Test
@@ -124,16 +141,18 @@ class ScenarioStreamHandlerTests {
         assertThat(handler.closeCode.get()).isEqualTo(StreamContract.CLOSE_BAD_REQUEST);
     }
 
-    /** Collects the (gzipped) binary frame and the close status. */
-    private static final class CollectingHandler extends AbstractWebSocketHandler {
-        final CountDownLatch messageLatch = new CountDownLatch(1);
+    /** Collects the (gzipped) binary frames by message type, and the close status. */
+    private final class CollectingHandler extends AbstractWebSocketHandler {
+        final CountDownLatch messageLatch = new CountDownLatch(2); // czml + relative
         final CountDownLatch closeLatch = new CountDownLatch(1);
-        final AtomicReference<String> lastText = new AtomicReference<>();
+        final Map<String, String> byType = new ConcurrentHashMap<>();
         final AtomicInteger closeCode = new AtomicInteger(-1);
 
         @Override
         protected void handleBinaryMessage(WebSocketSession session, BinaryMessage message) throws Exception {
-            lastText.set(inflate(message.getPayload()));
+            String text = inflate(message.getPayload());
+            String type = objectMapper.readTree(text).path("type").asText();
+            byType.put(type, text);
             messageLatch.countDown();
         }
 

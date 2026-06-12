@@ -269,5 +269,34 @@ collision with catalog `sat-<NORAD>`).
 
 ### Message: `scenario-relative` (slice 4B — proximity view)
 
-Plain JSON (not CZML); LVLH (R/I/C) samples relative to the chief, consumed
-directly by the three.js proximity view. Documented when 4B lands.
+**Plain JSON, not CZML** — the three.js proximity view consumes it directly. Sent
+as the **second** gzip binary frame on connect (after `scenario-czml`), on the
+**same** socket. One per-deputy entry (the chief is the LVLH origin, excluded),
+on the **same time grid** as the CZML so both views interpolate to the same
+instants.
+
+```jsonc
+{
+  "contractVersion": "1",
+  "type": "scenario-relative",
+  "epoch": "2026-06-11T00:00:00Z",   // t=0 reference for the samples
+  "stepSeconds": 30,                 // effective step (matches the CZML grid)
+  "frame": "LVLH",                   // R = radial, I = in-track, C = cross-track
+  "chiefId": 25544,
+  "includeVelocity": true,           // gates the stride (orbit.scenario.include-relative-velocity)
+  "stride": 7,                       // 4 = [t,R,I,C]; 7 = [t,R,I,C,vR,vI,vC]
+  "deputies": [
+    { "noradId": 25545, "name": "DEPUTY-1", "interpolationDegree": 5,
+      "samples": [ t, R,I,C, vR,vI,vC,  t, R,I,C, vR,vI,vC,  … ] }
+  ]
+}
+```
+
+- **R/I/C** are metres in the chief's LVLH frame (radial-out / in-track / cross-track);
+  velocities (when present) are m/s. The client maps **R→+X, I→+Y, C→+Z** (1 unit = 1 m).
+- **Velocity correctness (R15):** the backend builds the LVLH frame **once** from the
+  *live* chief propagator and transforms each deputy's ECI state per step — so the
+  relative velocity carries the frame's rotation rate. It does **not** use the
+  single-epoch `FrameService.toRelativeState` (which would drop that term).
+- Positions rounded to whole metres; velocities to mm/s (whole-metre rounding would
+  zero out small relative velocities).
