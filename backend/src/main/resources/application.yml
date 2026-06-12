@@ -43,6 +43,16 @@ orbit:
     fetch-timeout-ms: ${CATALOG_FETCH_TIMEOUT_MS:20000}
     # 0 = no cap; set a smaller number to throttle for perf experiments.
     max-satellites: ${CATALOG_MAX_SATELLITES:0}
+  scenario:
+    # Per-scenario stream (Phase 4). On connect the backend precomputes the
+    # whole [start,end] ephemeris once and pushes it (gzipped); playback is then
+    # pure client-side clock math. step-seconds is the requested sample spacing;
+    # the service raises the EFFECTIVE step to keep samples-per-sat under the cap
+    # and echoes that effective step in the envelope (never silently truncates).
+    step-seconds: ${SCENARIO_STEP_SECONDS:30}
+    max-samples-per-sat: ${SCENARIO_MAX_SAMPLES_PER_SAT:5000}
+    include-relative-velocity: ${SCENARIO_INCLUDE_RELATIVE_VELOCITY:true}
+    include-paths: ${SCENARIO_INCLUDE_PATHS:true}
 
 springdoc:
   api-docs:

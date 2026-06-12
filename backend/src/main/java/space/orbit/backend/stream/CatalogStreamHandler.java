@@ -1,16 +1,17 @@
 package space.orbit.backend.stream;
 
-import java.io.ByteArrayOutputStream;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.zip.GZIPOutputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
@@ -35,17 +36,44 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 public class CatalogStreamHandler extends TextWebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(CatalogStreamHandler.class);
-
-    private static final int SEND_TIME_LIMIT_MS = 30_000;
-    private static final int SEND_BUFFER_LIMIT_BYTES = 32 * 1024 * 1024;
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final Set<WebSocketSession> sessions = ConcurrentHashMap.newKeySet();
     private volatile byte[] latestMessage;
 
+    /** Callback for a client time-travel request (Decision 21). */
+    @FunctionalInterface
+    public interface SeekHandler {
+        /** @param windowSeconds requested window (0 = server default). */
+        void onSeek(WebSocketSession session, Instant epoch, int windowSeconds);
+    }
+
+    /** Callback for a single-satellite orbit-path request (click-to-toggle). */
+    @FunctionalInterface
+    public interface OrbitHandler {
+        /** @param epoch the orbit's start instant, or {@code null} for server "now". */
+        void onOrbit(WebSocketSession session, int noradId, Instant epoch);
+    }
+
+    // Set by CatalogService at init: answer a client's "seek"/"orbit" by
+    // propagating and replying to that session. Kept as callbacks to avoid a
+    // CatalogService↔handler cycle.
+    private volatile SeekHandler seekHandler;
+    private volatile OrbitHandler orbitHandler;
+
+    public void setSeekHandler(SeekHandler seekHandler) {
+        this.seekHandler = seekHandler;
+    }
+
+    public void setOrbitHandler(OrbitHandler orbitHandler) {
+        this.orbitHandler = orbitHandler;
+    }
+
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
         WebSocketSession guarded =
-                new ConcurrentWebSocketSessionDecorator(session, SEND_TIME_LIMIT_MS, SEND_BUFFER_LIMIT_BYTES);
+                new ConcurrentWebSocketSessionDecorator(
+                        session, StreamContract.SEND_TIME_LIMIT_MS, StreamContract.SEND_BUFFER_LIMIT_BYTES);
         sessions.add(guarded);
         log.debug("Catalog stream connected: {} ({} total)", session.getId(), sessions.size());
 
@@ -62,9 +90,64 @@ public class CatalogStreamHandler extends TextWebSocketHandler {
         log.debug("Catalog stream closed: {} ({} remain)", session.getId(), sessions.size());
     }
 
+    /**
+     * Inbound client requests on the catalog socket:
+     * <ul>
+     *   <li>{@code {"kind":"seek","epoch":"<iso>","windowSeconds":N}} — live
+     *       time-travel (Decision 21): reply with a {@code catalog-snapshot};</li>
+     *   <li>{@code {"kind":"orbit","noradId":N}} — one satellite's orbit path:
+     *       reply with a {@code catalog-orbit}.</li>
+     * </ul>
+     * Unknown / malformed messages are ignored.
+     */
+    @Override
+    protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+        try {
+            JsonNode root = MAPPER.readTree(message.getPayload());
+            String kind = root.path("kind").asText();
+            if ("seek".equals(kind)) {
+                SeekHandler handler = seekHandler;
+                if (handler == null) {
+                    return;
+                }
+                String epochText = root.path("epoch").asText(null);
+                if (epochText == null || epochText.isBlank()) {
+                    return;
+                }
+                Instant epoch = Instant.parse(epochText);
+                int windowSeconds = root.path("windowSeconds").asInt(0); // 0 → server default
+                handler.onSeek(session, epoch, windowSeconds);
+            } else if ("orbit".equals(kind)) {
+                OrbitHandler handler = orbitHandler;
+                if (handler == null || !root.hasNonNull("noradId")) {
+                    return;
+                }
+                String epochText = root.path("epoch").asText(null);
+                Instant epoch = (epochText == null || epochText.isBlank()) ? null : Instant.parse(epochText);
+                handler.onOrbit(session, root.path("noradId").asInt(), epoch);
+            }
+        } catch (RuntimeException | IOException e) {
+            log.debug("Ignoring malformed catalog request from {}: {}", session.getId(), e.toString());
+        }
+    }
+
+    /**
+     * Send a one-off message to a single connected session (the time-travel
+     * snapshot reply). Routed through the stored {@link ConcurrentWebSocketSessionDecorator}
+     * for that session so it can't collide with a concurrent broadcast.
+     */
+    public void sendMessageTo(WebSocketSession session, String message) {
+        byte[] compressed = StreamGzip.gzip(message);
+        WebSocketSession target = sessions.stream()
+                .filter(s -> s.getId().equals(session.getId()))
+                .findFirst()
+                .orElse(session);
+        sendTo(target, compressed);
+    }
+
     /** Compress once, cache as the warm-start frame, and fan out to all sessions. */
     public void broadcast(String message) {
-        byte[] compressed = gzip(message);
+        byte[] compressed = StreamGzip.gzip(message);
         latestMessage = compressed;
         for (WebSocketSession session : sessions) {
             sendTo(session, compressed);
@@ -73,17 +156,6 @@ public class CatalogStreamHandler extends TextWebSocketHandler {
 
     public int connectionCount() {
         return sessions.size();
-    }
-
-    private static byte[] gzip(String message) {
-        byte[] raw = message.getBytes(StandardCharsets.UTF_8);
-        ByteArrayOutputStream bos = new ByteArrayOutputStream(Math.max(1024, raw.length / 8));
-        try (GZIPOutputStream gz = new GZIPOutputStream(bos)) {
-            gz.write(raw);
-        } catch (IOException e) {
-            throw new IllegalStateException("gzip of catalog message failed", e);
-        }
-        return bos.toByteArray();
     }
 
     private void sendTo(WebSocketSession session, byte[] compressed) {

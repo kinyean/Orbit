@@ -70,6 +70,8 @@ public class CatalogService {
     // the scenario composer resolve a clicked satellite to a reproducible
     // initial state (Phase 3A, SRS §5.4.1) without re-reading the live catalog.
     private volatile Map<Integer, TleSnapshot> snapshotsByNorad = Map.of();
+    // NORAD id → tracked satellite (with its propagator), for the orbit-path request.
+    private volatile Map<Integer, TrackedSatellite> trackedByNorad = Map.of();
 
     public CatalogService(CatalogProperties props,
                           GpCatalogParser parser,
@@ -92,6 +94,19 @@ public class CatalogService {
     @PostConstruct
     void init() {
         utc = TimeScalesFactory.getUTC(); // safe: @DependsOn orekitConfig
+        // Answer client time-travel requests on the catalog socket (Decision 21):
+        // propagate the whole tracked set to the requested epoch (over the
+        // requested window, for play-from-time prefetch) and reply to that session.
+        streamHandler.setSeekHandler((session, epoch, windowSeconds) ->
+                streamHandler.sendMessageTo(session, buildSnapshotMessage(epoch, windowSeconds)));
+        // Orbit-path request: propagate one satellite over one period and reply
+        // with a dashed-polyline message (click-to-toggle on the globe).
+        streamHandler.setOrbitHandler((session, noradId, epoch) -> {
+            String message = buildOrbitMessage(noradId, epoch);
+            if (message != null) {
+                streamHandler.sendMessageTo(session, message);
+            }
+        });
         loadSeed();
     }
 
@@ -116,7 +131,8 @@ public class CatalogService {
             return;
         }
         long t0 = System.nanoTime();
-        String message = buildCatalogMessage(Instant.now(), snapshot);
+        String message = buildCatalogMessage(Instant.now(), snapshot,
+                space.orbit.backend.stream.StreamContract.MESSAGE_TYPE_CATALOG);
         streamHandler.broadcast(message);
         double ms = (System.nanoTime() - t0) / 1e6;
         log.info("Catalog pass: {} sats, {} bytes, {} ms, {} clients",
@@ -186,6 +202,7 @@ public class CatalogService {
         int cap = props.maxSatellites();
         List<TrackedSatellite> built = new ArrayList<>(records.size());
         Map<Integer, TleSnapshot> snapshots = new HashMap<>(records.size());
+        Map<Integer, TrackedSatellite> byNorad = new HashMap<>(records.size());
         int failed = 0;
         for (GpRecord r : records) {
             if (cap > 0 && built.size() >= cap) {
@@ -196,7 +213,10 @@ public class CatalogService {
                 TLEPropagator prop = propagator.build(tle);
                 double periodMinutes = (2.0 * Math.PI / tle.getMeanMotion()) / 60.0;
                 double inclinationDeg = Math.toDegrees(tle.getI());
-                built.add(new TrackedSatellite(r.noradId(), r.objectName(), inclinationDeg, periodMinutes, prop));
+                TrackedSatellite sat =
+                        new TrackedSatellite(r.noradId(), r.objectName(), inclinationDeg, periodMinutes, prop);
+                built.add(sat);
+                byNorad.put(r.noradId(), sat);
                 // Freeze the TLE lines + epoch now, while we hold the built TLE,
                 // so scenarios can capture a reproducible initial state.
                 snapshots.put(r.noradId(),
@@ -208,19 +228,94 @@ public class CatalogService {
         }
         tracked = List.copyOf(built);
         snapshotsByNorad = Map.copyOf(snapshots);
+        trackedByNorad = Map.copyOf(byNorad);
         log.info("Catalog loaded from {}: {} satellites ({} skipped)", origin, built.size(), failed);
     }
 
     /** Build a message for the current tracked set (convenience for tests/diagnostics). */
     String buildCatalogMessage(Instant now) {
-        return buildCatalogMessage(now, tracked);
+        return buildCatalogMessage(now, tracked, space.orbit.backend.stream.StreamContract.MESSAGE_TYPE_CATALOG);
     }
 
-    /** Propagate every tracked satellite over the window and encode one CZML message. */
-    String buildCatalogMessage(Instant now, List<TrackedSatellite> snapshot) {
-        AbsoluteDate start = new AbsoluteDate(now, utc);
+    /** Largest snapshot window a client may request (bounds per-message size). */
+    private static final int MAX_SNAPSHOT_WINDOW_SECONDS = 2400;
+
+    /**
+     * On-demand catalog snapshot at an arbitrary epoch (live time-travel,
+     * Decision 21). Propagates the current tracked set to {@code epoch} — past or
+     * future — and tags the message {@code catalog-snapshot} so the client
+     * applies it even while ignoring the live broadcast.
+     */
+    public String buildSnapshotMessage(Instant epoch) {
+        return buildSnapshotMessage(epoch, 0);
+    }
+
+    /**
+     * Snapshot with a caller-chosen window (seconds). The client widens the
+     * window when playing forward from a traveled time so prefetch has headroom
+     * at high rates; {@code 0} means the default broadcast window. Clamped to
+     * {@link #MAX_SNAPSHOT_WINDOW_SECONDS}.
+     */
+    public String buildSnapshotMessage(Instant epoch, int windowSeconds) {
+        return buildCatalogMessage(epoch, tracked,
+                space.orbit.backend.stream.StreamContract.MESSAGE_TYPE_CATALOG_SNAPSHOT, windowSeconds);
+    }
+
+    /** Polyline segments per orbital period (kept constant so longer paths stay as smooth). */
+    private static final int ORBIT_SEGMENTS_PER_PERIOD = 180;
+    /** Orbit path length, in orbital periods (slightly more than one loop). */
+    private static final double ORBIT_PERIODS = 1.5;
+
+    /** Orbit path from server "now" (convenience for tests/diagnostics). */
+    public String buildOrbitMessage(int noradId) {
+        return buildOrbitMessage(noradId, null);
+    }
+
+    /**
+     * Orbit path for one satellite: one orbital period of ECEF positions from
+     * {@code epoch} (or "now" if null), as a flat {@code [X,Y,Z, ...]} array
+     * (click-to-toggle dashed polyline). The client re-requests at the current
+     * clock as time advances to keep the path live. Returns {@code null} if the
+     * NORAD id isn't in the catalog.
+     */
+    public String buildOrbitMessage(int noradId, Instant epoch) {
+        TrackedSatellite sat = trackedByNorad.get(noradId);
+        if (sat == null) {
+            return null;
+        }
+        double periodSec = Math.max(60.0, sat.periodMinutes() * 60.0);
+        int segments = (int) Math.round(ORBIT_SEGMENTS_PER_PERIOD * ORBIT_PERIODS);
+        double step = (periodSec * ORBIT_PERIODS) / segments; // ≈ periodSec / ORBIT_SEGMENTS_PER_PERIOD
+        AbsoluteDate start = new AbsoluteDate(epoch != null ? epoch : Instant.now(), utc);
+        double[] xyz = new double[(segments + 1) * 3];
+        for (int k = 0; k <= segments; k++) {
+            Vector3D ecef = propagator.ecefPosition(sat.propagator(), start.shiftedBy(k * step));
+            int base = k * 3;
+            xyz[base] = ecef.getX();
+            xyz[base + 1] = ecef.getY();
+            xyz[base + 2] = ecef.getZ();
+        }
+        return encoder.encodeOrbit(noradId, xyz);
+    }
+
+    /** Propagate every tracked satellite over the default window from {@code epoch}. */
+    String buildCatalogMessage(Instant epoch, List<TrackedSatellite> snapshot, String messageType) {
+        return buildCatalogMessage(epoch, snapshot, messageType, 0);
+    }
+
+    /**
+     * Propagate every tracked satellite over a window from {@code epoch} and
+     * encode one CZML message. {@code windowSecondsOverride <= 0} uses the
+     * configured broadcast window; otherwise it's clamped to
+     * {@code [step, MAX_SNAPSHOT_WINDOW_SECONDS]}.
+     */
+    String buildCatalogMessage(Instant epoch, List<TrackedSatellite> snapshot, String messageType,
+                               int windowSecondsOverride) {
+        AbsoluteDate start = new AbsoluteDate(epoch, utc);
         int step = Math.max(1, props.stepSeconds());
-        int window = Math.max(step, props.windowSeconds());
+        int window = windowSecondsOverride > 0
+                ? Math.min(MAX_SNAPSHOT_WINDOW_SECONDS, Math.max(step, windowSecondsOverride))
+                : Math.max(step, props.windowSeconds());
         int steps = window / step;
 
         List<CatalogSatelliteSamples> samples = snapshot.parallelStream()
@@ -228,7 +323,7 @@ public class CatalogService {
                 .filter(java.util.Objects::nonNull)
                 .toList();
 
-        return encoder.encodeCatalog(now, samples);
+        return encoder.encodeCatalog(epoch, samples, messageType);
     }
 
     private CatalogSatelliteSamples sampleSatellite(TrackedSatellite sat, AbsoluteDate start, int step, int steps) {

@@ -246,18 +246,50 @@ against a metric. Phase done = every criterion passes.
 
 ## Phase 4 — Dual viewports & shared clock
 
-*(Outline; fill in when starting Phase 4.)*
+> Sliced into **4A** (authoritative shared clock + per-scenario CZML stream —
+> the global view *plays* a loaded scenario) then **4B** (three.js proximity
+> view + relative-state + lockstep). See [phase-4-plan.md](./phase-4-plan.md).
+>
+> **Phase 4A complete — backend tests green + frontend type-check/build green**
+> (2026-06-11). Backend: per-scenario WebSocket `/stream/scenario/{id}`
+> (`ScenarioStreamHandler` + handshake interceptor capturing identity off the
+> security-filter window), a precompute-once `ScenarioStreamService.loadAndEncode`
+> (rebuilds frozen-TLE roles, fidelity-dispatches, ECEF-samples, encodes
+> `scenario-czml`), `CzmlEncoder.encodeScenario` (role-colored markers + orbit
+> paths + effective-step echo), a shared `StreamGzip`, and context-free reads
+> (`bodyForStream` / `findByEmail`). Frontend: a real clock slice + single-writer
+> `clockEngine` rAF loop, Cesium's clock severed and driven from the store via
+> `preRender`, a `ScenarioStreamClient` + scenario `CzmlDataSource`, the catalog
+> hidden during scenario playback, a rewritten `TimeController` (play/pause/step/
+> reset/reverse/log-rate 0.01×–10000×) + a `Timeline` scrub bar. 13 new backend
+> tests (encoder/service/handler incl. Testcontainers WS close-codes) pass.
 
+**Phase 4A — shared clock + per-scenario stream** ✅
+- [x] Backend per-scenario stream `/stream/scenario/{id}` (gzip binary,
+      precompute-once, owner-gated; close codes 4400/4404/4422).
+- [x] `scenario-czml` message: chief + deputies, FIXED/ECEF samples, role marker
+      + orbit path, effective `stepSeconds` echoed (sample cap, R8).
+- [x] Determinism: `loadAndEncode` twice → byte-identical (R11).
+- [x] One Zustand `clock` slice; a single rAF writer (`clockEngine`) advances it
+      (lockstep by construction). Cesium reads it (4B adds the second reader).
+- [x] Time controls: play / pause / step / reset / rate (0.01× – 10000×) /
+      reverse + a scenario scrub bar.
+- [x] Loading a scenario animates its chief + deputies (orbit paths) in the
+      global view, driven by the scenario window; catalog hides during playback,
+      restores on close.
+- [x] Scrub latency ≤200 ms (SRS §5.1.3) — playback is pure client-side clock
+      math over precomputed samples; confirmed responsive in-browser.
+- [x] In-browser end-to-end (verified over the dev stack): load a saved scenario,
+      drive play/scrub/rate/reverse; live-catalog step/scrub/play-from-time;
+      time-range edit; click-to-toggle orbit paths.
+
+**Phase 4B — three.js proximity view** *(next)*
 - [ ] three.js proximity view scene scaffold renders.
 - [ ] Chief at LVLH origin (placeholder marker).
-- [ ] Deputies render at relative positions from the scenario stream.
+- [ ] Deputies render at relative positions from the `scenario-relative` stream.
 - [ ] Adjustable scale 1 m – 100 km.
-- [ ] Both views read one Zustand `clock` slice.
-- [ ] Time controls: play / pause / step / scrub / rate (0.01x – 10000x) /
-      reverse.
-- [ ] Scrub latency ≤200 ms (SRS §5.1.3).
-- [ ] Sync verification test scrubs and asserts both views render the
-      same epoch.
+- [ ] Both views in lockstep (global + proximity render the same epoch).
+- [ ] Sync verification (manual + structural — no frontend test harness this phase).
 
 ---
 

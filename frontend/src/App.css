@@ -190,7 +190,12 @@
   margin-bottom: 12px;
 }
 
-.scenario-save-btn {
+.scenario-header-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.scenario-save-btn, .scenario-close-btn {
   height: 24px;
   padding: 0 10px;
   background: rgba(56, 189, 248, 0.16);
@@ -201,9 +206,21 @@
   cursor: pointer;
 }
 
+.scenario-close-btn {
+  background: rgba(71, 85, 105, 0.2);
+  border-color: rgba(71, 85, 105, 0.5);
+}
+
 .scenario-save-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.scenario-playing {
+  font-size: 11px;
+  color: #ffd166;
+  margin-bottom: 10px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
 .scenario-empty {
@@ -332,6 +349,39 @@
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
+.composer-timerange {
+  margin-top: 10px;
+}
+
+.tr-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 0;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.tr-field input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  background: rgba(30, 41, 59, 0.6);
+  border: 1px solid rgba(71, 85, 105, 0.4);
+  border-radius: 5px;
+  color: #e2e8f0;
+  font-size: 11px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+
+.tr-field input:focus {
+  outline: none;
+  border-color: #38bdf8;
+}
+
 .info-panel {
   position: absolute;
   top: 72px;
@@ -445,22 +495,22 @@
 
 .time-controller {
   position: absolute;
-  bottom: 20px;
+  bottom: 64px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   padding: 8px 16px;
   background: rgba(19, 24, 38, 0.85);
   border: 1px solid rgba(71, 85, 105, 0.3);
   border-radius: 24px;
   backdrop-filter: blur(12px);
   z-index: 10;
-  min-width: 480px;
+  min-width: 560px;
 }
 
-.play-btn, .speed-btn {
+.play-btn, .ctrl-btn {
   background: transparent;
   border: 1px solid rgba(71, 85, 105, 0.4);
   color: #e2e8f0;
@@ -469,6 +519,35 @@
   border-radius: 16px;
   cursor: pointer;
   font-size: 14px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ctrl-btn:hover, .play-btn:hover {
+  border-color: #38bdf8;
+}
+
+.ctrl-btn.active {
+  border-color: #38bdf8;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+}
+
+/* "● LIVE" toggle — text button (auto width); green + glow while following real time. */
+.ctrl-btn.live {
+  width: auto;
+  padding: 0 12px;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  color: #94a3b8;
+}
+
+.ctrl-btn.live.active {
+  color: #22c55e;
+  border-color: rgba(34, 197, 94, 0.6);
+  background: rgba(34, 197, 94, 0.12);
 }
 
 .time-display {
@@ -479,7 +558,14 @@
   text-align: center;
 }
 
-.scrubber {
+.rate-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.rate-slider {
   flex: 1;
   appearance: none;
   height: 4px;
@@ -488,7 +574,59 @@
   outline: none;
 }
 
-.scrubber::-webkit-slider-thumb {
+.rate-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: #38bdf8;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.rate-readout {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: #e2e8f0;
+  min-width: 64px;
+  text-align: right;
+}
+
+/* Scenario scrub bar (US-VIEW-04) — full-width strip below the controls pill. */
+.timeline {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 640px;
+  max-width: 80vw;
+  padding: 8px 16px;
+  background: rgba(19, 24, 38, 0.85);
+  border: 1px solid rgba(71, 85, 105, 0.3);
+  border-radius: 16px;
+  backdrop-filter: blur(12px);
+  z-index: 10;
+}
+
+.timeline-label {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+
+.timeline-scrub {
+  flex: 1;
+  appearance: none;
+  height: 4px;
+  background: rgba(71, 85, 105, 0.4);
+  border-radius: 2px;
+  outline: none;
+}
+
+.timeline-scrub::-webkit-slider-thumb {
   appearance: none;
   width: 14px;
   height: 14px;

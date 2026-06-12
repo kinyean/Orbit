@@ -39,6 +39,7 @@ considered**, **Consequences**.
 11. [Single authoritative simulation clock](#11-single-authoritative-simulation-clock)
 12. [Frame management: canonical utility, frame-tagged states](#12-frame-management-canonical-utility-frame-tagged-states)
 13. [Two propagation/streaming modes: shared catalog + per-user scenarios](#13-two-propagationstreaming-modes-shared-catalog--per-user-scenarios)
+21. [Phase-4 clock model + live catalog time-travel (Phase 4A)](#21-phase-4-clock-model--live-catalog-time-travel-phase-4a)
 
 **Data**
 14. [Scenario data model: chief + deputies](#14-scenario-data-model-chief--deputies)
@@ -742,6 +743,73 @@ flips when Phase 4 wires streaming, per US-PROP-03). The §5.2 golden-vector /
 AIAA conformance suite remains Phase 10; 3B is covered by invariant +
 determinism + orientation tests. `body()` is a minimal static-rotation frame
 until attitude profiles arrive with sensors (Phase 7).
+
+---
+
+## 21. Phase-4 clock model + live catalog time-travel (Phase 4A)
+
+**Context.** Phase 4A gave the app one authoritative simulation clock (Decision
+11). A *scenario* has a finite `[start,end]` window, so its whole ephemeris is
+precomputed on connect and streamed once (`scenario-czml`), and playback is pure
+client-side clock math. The *catalog*, by contrast, is a shared broadcast of a
+rolling ~180 s window around "now" (Decision 13) — so stepping/scrubbing the
+clock in catalog mode ran off the available data and the dots froze. Users want
+to step/scrub the live catalog too ("propagate the real satellites to another
+time").
+
+**Decision.**
+- **One clock, two regimes.** A single rAF `clockEngine` is the only writer of
+  `currentTime`; both viewports read it. The clock slice carries `bounds` and a
+  catalog-only `catalogLive` flag:
+  - *Scenario mode* (a scenario is loaded): full transport (play/pause/step/
+    reset/reverse/rate 0.01×–10000×) inside the scenario window; the catalog
+    layer is hidden.
+  - *Catalog mode* (no scenario): `catalogLive=true` follows real time via the
+    shared broadcast. A `● LIVE` toggle plus step ± and a ±12 h scrub bar let the
+    user leave "now"; doing so sets `catalogLive=false` ("frozen").
+- **Live time-travel = on-demand catalog snapshots.** When frozen, the client
+  sends `{kind:"seek",epoch,windowSeconds?}` on the *same* catalog socket; the
+  backend propagates the **whole** tracked set over `[epoch, epoch+window]` (past
+  or future) and replies to that one session with a `catalog-snapshot` message
+  (same CZML body as the broadcast, tagged distinctly). The client applies
+  `catalog-snapshot` always but ignores the live `catalog-czml` broadcast while
+  frozen, so the traveled view isn't yanked back to "now". Returning to live
+  requests an immediate "now" snapshot, then resumes the broadcast.
+- **Play-from-a-traveled-time = rolling prefetched snapshots, capped at 100×.**
+  Each snapshot covers a window; when the user plays forward/backward from a
+  traveled instant, the client widens the requested window with the rate (so
+  there's prefetch headroom) and re-requests the next window *before* the clock
+  reaches the current one's edge — continuous motion without per-frame requests.
+  The live playback rate is **capped at 100×** (vs 10000× for scenarios) so the
+  per-user bandwidth stays bounded (≲1 MB/s at the cap).
+
+**Why.** Snapshots are the cheap, correct fit for *stepping* (one pass per jump,
+~1 MB gz) and, rolled with a rate-scaled window + prefetch, also give smooth
+*play-from-a-point* at realtime up to 100× without a standing per-frame stream.
+The shared realtime broadcast stays the default "everyone watching now" path
+(Decision 13 intact for the common case). **Uncapped** fast-forward of the whole
+catalog was rejected — beyond ~100× the window/refresh rate needed to keep up is
+multi-MB/s for ~15.5 k sats, more than the value of it.
+
+**Alternatives considered.**
+- *Widen the broadcast window so steps stay client-side.* Rejected — a useful
+  ±hours window at a fine step is tens of MB per broadcast, and a coarse step
+  makes LEO interpolation inaccurate.
+- *Per-user continuous catalog propagation over the whole window.* Rejected —
+  the payload/compute the shared-broadcast model (Decision 13) was designed to
+  avoid; snapshots give time-travel without it.
+- *Re-center the shared broadcast for a seeking user.* Rejected — the broadcast
+  is shared; one user's time-travel must not move everyone's "now".
+
+**Consequences.** This adds a **per-user** catalog computation path — a bounded,
+deliberate extension of Decision 13 (the broadcast still serves the live default).
+Stepping/scrubbing shows a static snapshot; playing from a traveled time animates
+via rolling windowed snapshots up to the 100× cap (above that you'd return to
+live). The inbound `seek` carries an optional `windowSeconds` (clamped server-side
+to ≤2400 s) and is handled on the catalog socket via a callback the catalog
+service registers (no service↔handler cycle). Verified end-to-end: a seek returns
+a `catalog-snapshot` at the chosen epoch, and a wider `windowSeconds` yields
+proportionally more samples.
 
 ---
 

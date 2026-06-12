@@ -24,18 +24,29 @@ import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry
 public class WebSocketConfig implements WebSocketConfigurer {
 
     private final CatalogStreamHandler catalogStreamHandler;
+    private final ScenarioStreamHandler scenarioStreamHandler;
+    private final ScenarioHandshakeInterceptor scenarioHandshakeInterceptor;
     private final String[] allowedOrigins;
 
     public WebSocketConfig(
             CatalogStreamHandler catalogStreamHandler,
+            ScenarioStreamHandler scenarioStreamHandler,
+            ScenarioHandshakeInterceptor scenarioHandshakeInterceptor,
             @Value("${orbit.stream.allowed-origins:*}") String allowedOrigins) {
         this.catalogStreamHandler = catalogStreamHandler;
+        this.scenarioStreamHandler = scenarioStreamHandler;
+        this.scenarioHandshakeInterceptor = scenarioHandshakeInterceptor;
         this.allowedOrigins = allowedOrigins.split(",");
     }
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         registry.addHandler(catalogStreamHandler, StreamContract.CATALOG_ENDPOINT)
+                .setAllowedOrigins(allowedOrigins);
+        // Per-scenario stream: single-segment wildcard (raw handlers don't
+        // template {id}); the interceptor parses the id + caller at handshake.
+        registry.addHandler(scenarioStreamHandler, StreamContract.SCENARIO_ENDPOINT_PATTERN)
+                .addInterceptors(scenarioHandshakeInterceptor)
                 .setAllowedOrigins(allowedOrigins);
     }
 }

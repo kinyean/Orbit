@@ -19,10 +19,13 @@ export default function ScenarioPanel() {
   const composer = useStore((s) => s.composer);
   const scenarios = useStore((s) => s.scenarios);
   const catalogIndex = useStore((s) => s.catalogIndex);
+  const loadedScenario = useStore((s) => s.loadedScenario);
   const loadScenarios = useStore((s) => s.loadScenarios);
   const loadScenario = useStore((s) => s.loadScenario);
   const deleteScenario = useStore((s) => s.deleteScenario);
   const saveScenario = useStore((s) => s.saveScenario);
+  const closeScenario = useStore((s) => s.closeScenario);
+  const setComposerTimeRange = useStore((s) => s.setComposerTimeRange);
 
   useEffect(() => {
     void loadScenarios();
@@ -30,6 +33,24 @@ export default function ScenarioPanel() {
 
   const nameFor = (id: number) =>
     catalogIndex.find((s) => s.noradId === id)?.name ?? `NORAD ${id}`;
+
+  // The scenario time window (UTC). <input type="datetime-local"> has no
+  // timezone, so we treat its value as UTC: slice the ISO for display, append
+  // ":00Z" to parse back. Editing either field marks the composer dirty;
+  // saving creates a new version and re-streams (US-SCN time range, Phase 4).
+  const toInput = (iso: string | null) => (iso ? iso.slice(0, 16) : '');
+  function fromInput(value: string): string | null {
+    if (!value) return null;
+    const d = new Date(`${value}:00Z`);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  function onRangeChange(which: 'start' | 'end', value: string) {
+    const iso = fromInput(value);
+    if (!iso) return;
+    const curStart = composer.start ?? new Date().toISOString();
+    const curEnd = composer.end ?? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    setComposerTimeRange(which === 'start' ? iso : curStart, which === 'end' ? iso : curEnd);
+  }
 
   const canSave = composer.isDirty && composer.chiefId !== null;
 
@@ -52,15 +73,29 @@ export default function ScenarioPanel() {
     <aside className="scenario-panel">
       <div className="scenario-header">
         <h3>Scenarios</h3>
-        <button
-          className="scenario-save-btn"
-          onClick={onSave}
-          disabled={!canSave}
-          title={canSave ? 'Save the current composer' : 'Designate a chief and make a change to save'}
-        >
-          Save
-        </button>
+        <div className="scenario-header-actions">
+          {loadedScenario && (
+            <button
+              className="scenario-close-btn"
+              onClick={closeScenario}
+              title="Stop playback and return to the live catalog"
+            >
+              Close
+            </button>
+          )}
+          <button
+            className="scenario-save-btn"
+            onClick={onSave}
+            disabled={!canSave}
+            title={canSave ? 'Save the current composer' : 'Designate a chief and make a change to save'}
+          >
+            Save
+          </button>
+        </div>
       </div>
+      {loadedScenario && (
+        <div className="scenario-playing">▶ Playing: {loadedScenario.name}</div>
+      )}
 
       {scenarios.length === 0 ? (
         <div className="scenario-empty">No saved scenarios</div>
@@ -118,6 +153,25 @@ export default function ScenarioPanel() {
                 </ul>
               </div>
             )}
+            <div className="composer-timerange">
+              <span className="composer-role">Time range (UTC)</span>
+              <label className="tr-field">
+                <span>Start</span>
+                <input
+                  type="datetime-local"
+                  value={toInput(composer.start)}
+                  onChange={(e) => onRangeChange('start', e.target.value)}
+                />
+              </label>
+              <label className="tr-field">
+                <span>End</span>
+                <input
+                  type="datetime-local"
+                  value={toInput(composer.end)}
+                  onChange={(e) => onRangeChange('end', e.target.value)}
+                />
+              </label>
+            </div>
           </>
         )}
       </div>

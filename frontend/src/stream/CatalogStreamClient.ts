@@ -17,6 +17,8 @@ export type StreamStatus = 'connecting' | 'open' | 'closed' | 'version-mismatch'
 
 export interface CatalogStreamHandlers {
   onMessage: (msg: CatalogMessage) => void;
+  /** A single satellite's orbit path (one period of ECEF positions). */
+  onOrbit?: (noradId: number, cartesian: number[]) => void;
   onStatus?: (status: StreamStatus) => void;
 }
 
@@ -44,6 +46,35 @@ export class CatalogStreamClient {
   connect(): void {
     this.closedByUser = false;
     this.open();
+  }
+
+  /**
+   * Request an on-demand catalog snapshot at an arbitrary epoch (live
+   * time-travel — Decision 21). The backend replies on this same socket with a
+   * `catalog-snapshot` covering `[epoch, epoch+windowSeconds]`. A larger window
+   * gives play-from-time prefetch headroom at high rates; omit it for the
+   * default window. No-op if the socket isn't open yet.
+   */
+  seek(epochIso: string, windowSeconds?: number): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const msg =
+        windowSeconds && windowSeconds > 0
+          ? { kind: 'seek', epoch: epochIso, windowSeconds: Math.round(windowSeconds) }
+          : { kind: 'seek', epoch: epochIso };
+      this.ws.send(JSON.stringify(msg));
+    }
+  }
+
+  /**
+   * Request one satellite's orbit path at a given epoch (defaults to server
+   * "now" if omitted); the backend replies with `catalog-orbit`. The client
+   * re-requests at the current clock as time advances to keep the path live.
+   */
+  requestOrbit(noradId: number, epochIso?: string): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const msg = epochIso ? { kind: 'orbit', noradId, epoch: epochIso } : { kind: 'orbit', noradId };
+      this.ws.send(JSON.stringify(msg));
+    }
   }
 
   close(): void {
@@ -100,9 +131,9 @@ export class CatalogStreamClient {
   }
 
   private handleText(text: string, ws: WebSocket): void {
-    let msg: CatalogMessage;
+    let msg: CatalogMessage & { noradId?: number; cartesian?: number[] };
     try {
-      msg = JSON.parse(text) as CatalogMessage;
+      msg = JSON.parse(text);
     } catch {
       return; // ignore unparseable frames
     }
@@ -111,6 +142,10 @@ export class CatalogStreamClient {
       this.closedByUser = true;
       this.handlers.onStatus?.('version-mismatch');
       ws.close();
+      return;
+    }
+    if (msg.type === 'catalog-orbit') {
+      this.handlers.onOrbit?.(msg.noradId ?? -1, msg.cartesian ?? []);
       return;
     }
     this.handlers.onMessage(msg);

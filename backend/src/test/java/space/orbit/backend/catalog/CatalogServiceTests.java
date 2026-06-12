@@ -106,4 +106,63 @@ class CatalogServiceTests {
         double radiusKm = Math.sqrt(x * x + y * y + z * z) / 1000.0;
         assertThat(radiusKm).isBetween(6500.0, 7200.0);
     }
+
+    @Test
+    void snapshotMessageIsTaggedAndPropagatesToTheRequestedEpoch() throws Exception {
+        service.loadFromGpJson(TWO_SATS.getBytes(StandardCharsets.UTF_8), "test");
+
+        // Two epochs a quarter-orbit apart → the ISS ECEF position must differ,
+        // proving the snapshot actually propagates to the requested instant
+        // (live time-travel, Decision 21) rather than echoing "now".
+        String near = service.buildSnapshotMessage(Instant.parse("2024-06-01T12:00:00Z"));
+        String later = service.buildSnapshotMessage(Instant.parse("2024-06-01T12:23:00Z"));
+
+        JsonNode nearRoot = mapper.readTree(near);
+        assertThat(nearRoot.get("type").asText()).isEqualTo(StreamContract.MESSAGE_TYPE_CATALOG_SNAPSHOT);
+        assertThat(nearRoot.get("epoch").asText()).isEqualTo("2024-06-01T12:00:00Z");
+        assertThat(nearRoot.get("satelliteCount").asInt()).isEqualTo(2);
+
+        JsonNode nearIss = nearRoot.get("czml").get(1).get("position").get("cartesian");
+        JsonNode laterIss = mapper.readTree(later).get("czml").get(1).get("position").get("cartesian");
+        double dx = nearIss.get(1).asDouble() - laterIss.get(1).asDouble();
+        double dy = nearIss.get(2).asDouble() - laterIss.get(2).asDouble();
+        double dz = nearIss.get(3).asDouble() - laterIss.get(3).asDouble();
+        double movedKm = Math.sqrt(dx * dx + dy * dy + dz * dz) / 1000.0;
+        assertThat(movedKm).as("ISS moved between the two snapshot epochs").isGreaterThan(1000.0);
+    }
+
+    @Test
+    void orbitMessageHasPlausibleLeoPathOrNullForUnknown() throws Exception {
+        service.loadFromGpJson(TWO_SATS.getBytes(StandardCharsets.UTF_8), "test");
+
+        JsonNode orbit = mapper.readTree(service.buildOrbitMessage(25544));
+        assertThat(orbit.get("type").asText()).isEqualTo(StreamContract.MESSAGE_TYPE_CATALOG_ORBIT);
+        assertThat(orbit.get("noradId").asInt()).isEqualTo(25544);
+
+        JsonNode cart = orbit.get("cartesian");
+        // 1.5 periods → round(180 × 1.5) = 270 segments → 271 points × 3 coords.
+        assertThat(cart.size()).isEqualTo((270 + 1) * 3);
+        // Every point should be a plausible LEO radius (~6.6–7.2 Mm).
+        for (int i = 0; i < cart.size(); i += 3) {
+            double x = cart.get(i).asDouble(), y = cart.get(i + 1).asDouble(), z = cart.get(i + 2).asDouble();
+            double rKm = Math.sqrt(x * x + y * y + z * z) / 1000.0;
+            assertThat(rKm).isBetween(6500.0, 7200.0);
+        }
+
+        // Unknown NORAD id → no message.
+        assertThat(service.buildOrbitMessage(99999)).isNull();
+    }
+
+    @Test
+    void widerSnapshotWindowYieldsMoreSamples() throws Exception {
+        service.loadFromGpJson(TWO_SATS.getBytes(StandardCharsets.UTF_8), "test");
+        // Default window is 180 s / 60 s step → 4 samples (16 numbers). A 600 s
+        // window must produce more samples — the play-from-time prefetch lever.
+        JsonNode dflt = mapper.readTree(service.buildSnapshotMessage(Instant.parse("2024-06-01T12:00:00Z")));
+        JsonNode wide = mapper.readTree(service.buildSnapshotMessage(Instant.parse("2024-06-01T12:00:00Z"), 600));
+        int dfltN = dflt.get("czml").get(1).get("position").get("cartesian").size();
+        int wideN = wide.get("czml").get(1).get("position").get("cartesian").size();
+        assertThat(dfltN).isEqualTo(16);
+        assertThat(wideN).isGreaterThan(dfltN); // 600/60 + 1 = 11 samples → 44 numbers
+    }
 }

@@ -24,8 +24,67 @@ pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
 ## Current phase
-**Phase 3 complete (3A + 3B) — backend tests green.** Phase 4 next (dual
-viewports + shared clock; see roadmap §7).
+**Phase 4A complete — backend tests green (13 new) + frontend type-check/build
+green.** Phase 4B next (three.js proximity view + relative-state stream + view
+lockstep; see roadmap §7 and [docs/phase-4-plan.md](docs/phase-4-plan.md)).
+
+**Phase 4A** (authoritative shared clock + per-scenario CZML stream — the global
+view now *plays* a loaded scenario): backend `stream` gained a per-connection
+WebSocket `/stream/scenario/{id}` (`ScenarioStreamHandler` extends
+`TextWebSocketHandler`; **not** broadcast). Identity is captured at handshake by
+`ScenarioHandshakeInterceptor` (the WS thread runs outside the security-filter
+window, where `DevUserAuthenticationFilter` has cleared the context).
+`ScenarioStreamService.loadAndEncode` is **precompute-once** (Decision 11): rebuild
+each role's TLE from the body's frozen line strings (`new TLE(l1,l2,utc)`),
+`Fidelity.fromString`-dispatch (CW→4422), sample ECEF per step, encode one
+`scenario-czml` message — sequential/ordered/no-RNG so it's byte-identical on
+rerun (R11). `CzmlEncoder.encodeScenario` reuses the catalog FIXED-position block
++ role-colored markers + orbit `path` + an **effective `stepSeconds` echo** (the
+`max-samples-per-sat` clamp raises the step, never silently truncates — R8).
+Shared `StreamGzip`; context-free reads `ScenarioService.bodyForStream` /
+`UserService.findByEmail` (no user provisioning on connect; not-owned collapses
+to 4404 to avoid id enumeration). Close codes 4400/4404/4422. New
+`ScenarioStreamProperties` (`orbit.scenario.*`). Contract stays `VERSION="1"`
+(additive, R12). Frontend: a real clock slice (`rate`/`direction`/`bounds`) + a
+single-writer `clockEngine` rAF loop (the sole `currentTime` writer → lockstep by
+construction); Cesium's autonomous clock severed (`shouldAnimate=false`,
+`multiplier=0`, `targetFrameRate=30`) and driven from the store in a `preRender`
+listener (which also hosts the selection-position updater moved off the
+now-silent `onTick`); a `ScenarioStreamClient` (fatal close codes 44xx → no
+reconnect) feeding a second `CzmlDataSource('scenario')`; the catalog layer hidden
+during scenario playback; a rewritten `TimeController` (play/pause/step/reset/
+reverse/log-rate 0.01×–10000×) + a `Timeline` scrub bar. **No three.js yet** —
+that + `scenario-relative` is 4B. See
+[docs/phase-4-plan.md](docs/phase-4-plan.md) and
+[docs/streaming-contract.md](docs/streaming-contract.md).
+
+**Phase 4A follow-ups (Decision 21):** (1) **Live catalog time-travel** — the
+clock slice gained a `catalogLive` flag; stepping/scrubbing in catalog mode
+freezes the globe and sends `{kind:"seek",epoch}` on the catalog socket, and the
+backend replies with a per-session `catalog-snapshot` (whole catalog propagated
+to that instant; `CatalogService.buildSnapshotMessage` via a seek-handler
+callback registered on `CatalogStreamHandler` — no service↔handler cycle). The
+client applies snapshots always but ignores the live broadcast while frozen.
+Playing **from** a traveled time is supported via **rolling rate-scaled prefetched
+snapshots** (seek carries `windowSeconds`; the client widens it with the rate and
+refetches before the window edge), **capped at 100×** so per-user bandwidth stays
+bounded; a `● LIVE` toggle returns to realtime. (2) **Time-range editor** — the
+composer carries `start`/`end`;
+the scenario panel has UTC `datetime-local` inputs (used on create *and* when
+editing a loaded scenario), and saving an edit reloads via a `scenarioReloadNonce`
+so the per-scenario stream recomputes for the new window. See Decision 21.
+(3) **Orbit paths** — single-clicking a catalog satellite toggles a dashed
+orbit-path polyline on the globe (multiple at once; click again to remove). The
+client sends `{kind:"orbit",noradId,epoch}` on the catalog socket; the backend
+propagates that one sat over **one period** from `epoch` and replies with
+`catalog-orbit` (ECEF positions only, `CatalogService.buildOrbitMessage` via an
+orbit-handler callback). The path is **live** — the client re-requests at the
+current sim clock as time advances (drift threshold), so it precesses with the
+moving dots. Colors are **round-robin** (next palette slot, avoiding ones in use)
+for max distinctness. The toggle is **debounced + cancelled by double-click**, so
+double-click stays pure focus (Decision 18) and never draws a path; paths clear
+when a scenario loads (catalog hidden). Drawn as a `PolylineDashMaterialProperty`
+line (`arcType NONE`).
 
 **Phase 3B** (numerical propagation + relative frames, backend-only — no UI/
 contract change, proven by `./gradlew test`): new in `prop` — `Fidelity` enum
@@ -83,12 +142,16 @@ Verified in-browser: ~15.5k dots render and animate smoothly; click-inspect,
 constellation filters, search-to-fly, and double-click focus all work (R7
 PointPrimitiveCollection fallback not needed; no FPS counter instrumented).
 
-**Phase 4 next:** dual viewports + shared clock — three.js proximity view in
-the chief LVLH frame, the per-scenario relative-state stream (alongside CZML)
-that *consumes* the 3B engine, one shared clock slice, and the time controls.
-The numerical propagator + frame utility are in place and tested; nothing is
-user-visible until this phase wires the stream. See
-[docs/architecture-and-roadmap.md §7](docs/architecture-and-roadmap.md).
+**Phase 4B next:** the three.js proximity view in the chief LVLH frame + the
+per-scenario `scenario-relative` stream (R/I/C samples alongside the 4A
+`scenario-czml`) that *consumes* the 3B engine, both views reading the one shared
+clock in lockstep. Critical (R15): build **one** continuous `lvlh(chiefProp)`
+transform and sample it per step — do **not** call `FrameService.toRelativeState`
+per sample (its single-epoch provider drops the LVLH rotation rate → wrong
+relative *velocity*). 4A already stood up the shared clock + scenario CZML stream
++ time controls (see above); 4B adds the second viewport. See
+[docs/architecture-and-roadmap.md §7](docs/architecture-and-roadmap.md) and
+[docs/phase-4-plan.md](docs/phase-4-plan.md).
 
 ## Stack
 - **Frontend:** React + TS strict + Vite + CesiumJS (global view) + three.js

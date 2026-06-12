@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import {
   Viewer,
   Ion,
+  ArcType,
   CzmlDataSource,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
@@ -16,6 +17,7 @@ import {
   Math as CesiumMath,
   Matrix4,
   NearFarScalar,
+  PolylineDashMaterialProperty,
   TrackingReferenceFrame,
   Transforms,
   defined,
@@ -24,6 +26,7 @@ import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { useStore, type SatIndexEntry, type SelectedSatellite } from '../store/useStore';
 import { constellationOf } from '../lib/constellations';
 import { CatalogStreamClient } from '../stream/CatalogStreamClient';
+import { ScenarioStreamClient } from '../stream/ScenarioStreamClient';
 import { STREAM_CONTRACT_VERSION } from '../api/contract';
 
 const cesiumToken = import.meta.env.VITE_CESIUM_ION_TOKEN;
@@ -33,11 +36,59 @@ if (cesiumToken) {
 
 const HIT_PAD_PX = 5;
 
-/** Parse "sat-25544" → 25544, or null. */
+// Live time-travel tuning (Decision 21). A paused/stepped catalog snapshot uses
+// a short window; playing forward from a traveled time uses a window that scales
+// with the rate so prefetch has headroom, and prefetches when this many seconds
+// of real time remain before the window edge.
+const LIVE_FROZEN_WINDOW_S = 180;
+const PREFETCH_LEAD_S = 2.5;
+function travelWindowSeconds(rate: number): number {
+  // Cover ≥ ~8 s of real time at the current rate; min the broadcast window, capped.
+  return Math.min(2400, Math.max(180, Math.ceil(rate * 8)));
+}
+
+// Orbit-path toggle (single click). The toggle is debounced so a double-click
+// (= two clicks, used for focus) never draws a path.
+const CLICK_TOGGLE_DELAY_MS = 250;
+// Re-request a shown orbit when the sim clock has advanced this far from its
+// last fetch, so the path stays current as time runs (live update).
+const ORBIT_REFRESH_SIM_MS = 30_000;
+// Round-robin palette so consecutive orbit paths are maximally distinct.
+const ORBIT_PALETTE = [
+  Color.CYAN,
+  Color.ORANGE,
+  Color.LIME,
+  Color.MAGENTA,
+  Color.YELLOW,
+  Color.DEEPSKYBLUE,
+  Color.HOTPINK,
+  Color.SPRINGGREEN,
+];
+
+/** Parse "sat-25544" or "scn-25544" → 25544, or null. */
 function noradFromEntityId(id: unknown): number | null {
-  if (typeof id !== 'string' || !id.startsWith('sat-')) return null;
+  if (typeof id !== 'string') return null;
+  if (!id.startsWith('sat-') && !id.startsWith('scn-')) return null;
   const n = Number.parseInt(id.slice(4), 10);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * The entity to track / inspect / focus for a NORAD id. Prefers the scenario
+ * layer ("scn-<id>", visible during playback) over the catalog ("sat-<id>",
+ * hidden while a scenario is active) so the ring, info panel, and camera follow
+ * the on-screen dot — not a hidden catalog entity frozen at its live position.
+ */
+function entityForNorad(
+  norad: number,
+  scenarioSrc: CzmlDataSource | null,
+  catalogSrc: CzmlDataSource | null,
+): Entity | undefined {
+  return (
+    scenarioSrc?.entities.getById(`scn-${norad}`) ??
+    catalogSrc?.entities.getById(`sat-${norad}`) ??
+    undefined
+  );
 }
 
 /** Apply constellation filters to all catalog entities (show/hide). */
@@ -127,12 +178,25 @@ export default function Globe() {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Viewer | null>(null);
   const dataSourceRef = useRef<CzmlDataSource | null>(null);
+  const scenarioSourceRef = useRef<CzmlDataSource | null>(null);
   const indexBuiltRef = useRef(false);
+  const clockSeededRef = useRef(false);
+  // Orbit paths shown on the globe (click-to-toggle, multiple at once): which
+  // NORAD ids, their round-robin color, the sim-time each was last fetched at
+  // (for live refresh), and the next palette index to hand out.
+  const orbitsRef = useRef<{
+    shown: Set<number>;
+    colors: Map<number, Color>;
+    lastFetchMs: Map<number, number>;
+    nextColor: number;
+  }>({ shown: new Set(), colors: new Map(), lastFetchMs: new Map(), nextColor: 0 });
 
   // Reactive store slices that drive imperative Cesium updates.
   const activeConstellations = useStore((s) => s.filters.constellations);
   const focus = useStore((s) => s.focus);
   const cameraResetNonce = useStore((s) => s.cameraResetNonce);
+  const loadedScenarioId = useStore((s) => s.loadedScenario?.id ?? null);
+  const scenarioReloadNonce = useStore((s) => s.scenarioReloadNonce);
 
   // --- mount: viewer + stream + click handler ------------------------------
   useEffect(() => {
@@ -154,12 +218,32 @@ export default function Globe() {
     if (viewer.scene.sun) viewer.scene.sun.show = true;
     if (viewer.scene.moon) viewer.scene.moon.show = true;
     viewer.scene.globe.enableLighting = true;
-    viewer.clock.shouldAnimate = true; // advance through the streamed samples
+    // Sever Cesium's autonomous clock (Phase 4, Decision 11): the store's
+    // clockEngine is the sole time authority. We copy store.currentTime into
+    // viewer.clock every frame (preRender below); with shouldAnimate=false +
+    // multiplier=0, clock.tick() leaves that value untouched, so the scene
+    // renders at the shared simulation time. Cap Cesium at 30 fps (SRS §5.1.2).
+    viewer.clock.shouldAnimate = false;
+    viewer.clock.multiplier = 0;
+    viewer.targetFrameRate = 30;
+    // Decision 18: we own the camera. Remove Cesium's default double-click
+    // handler (pickAndTrackObject), which snaps + auto-zooms to a satellite's
+    // bounding sphere — disastrous for a scenario entity whose orbit-path
+    // bounding sphere spans the whole orbit ("hard to zoom out"). Our custom
+    // double-click handler drives the smooth, zoom-preserving focus instead.
+    viewer.screenSpaceEventHandler.removeInputAction(ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
     viewerRef.current = viewer;
 
     const dataSource = new CzmlDataSource('catalog');
     viewer.dataSources.add(dataSource);
     dataSourceRef.current = dataSource;
+
+    // Scenario layer (Phase 4): chief + deputies of the loaded scenario, fed by
+    // the per-scenario stream. Separate source so chunk processing/clearing
+    // never touches the catalog. Packet ids are "scn-<norad>" (no collision).
+    const scenarioDataSource = new CzmlDataSource('scenario');
+    viewer.dataSources.add(scenarioDataSource);
+    scenarioSourceRef.current = scenarioDataSource;
 
     // Selection highlight: a yellow ring that live-tracks the selected
     // satellite's position (via a CallbackProperty, so it follows the moving
@@ -171,7 +255,7 @@ export default function Globe() {
       position: new CallbackPositionProperty(() => {
         const sel = useStore.getState().selectedSatellite;
         if (!sel) return undefined;
-        const e = dataSourceRef.current?.entities.getById(`sat-${sel.noradId}`);
+        const e = entityForNorad(sel.noradId, scenarioSourceRef.current, dataSourceRef.current);
         return e?.position?.getValue(viewer.clock.currentTime) ?? undefined;
       }, false),
       point: {
@@ -192,14 +276,42 @@ export default function Globe() {
     // instead of throwing an unhandled rejection (the stream self-heals: the
     // next good chunk merges by id).
     let processChain: Promise<void> = Promise.resolve();
+    // Live time-travel state (Decision 21): the coverage window of the latest
+    // requested snapshot, and whether one is in flight (so playback prefetches
+    // the next window without spamming requests).
+    let coverStartMs = 0;
+    let coverEndMs = 0;
+    let snapshotPending = false;
+    let snapshotSafetyTimer = 0;
     const stream = new CatalogStreamClient(CatalogStreamClient.defaultUrl(), STREAM_CONTRACT_VERSION, {
       onMessage: (msg) => {
         const ds = dataSourceRef.current;
         if (!ds) return;
-        if (!indexBuiltRef.current && msg.epoch) {
-          // Align the viewer clock with the first data epoch.
-          viewer.clock.currentTime = JulianDate.fromIso8601(msg.epoch);
+        const st = useStore.getState();
+        // A "catalog-snapshot" is an on-demand time-travel reply (Decision 21):
+        // apply it always. The live "catalog-czml" broadcast is applied only
+        // while actually live (no scenario + catalogLive) — otherwise it would
+        // yank the frozen/traveled view back to "now".
+        const isSnapshot = msg.type === 'catalog-snapshot';
+        if (isSnapshot) {
+          snapshotPending = false;
+          window.clearTimeout(snapshotSafetyTimer);
         }
+
+        // Build the searchable index + seed the live clock once, from the first
+        // live broadcast (≈ server "now"); never reseed over a loaded scenario.
+        if (!isSnapshot && !indexBuiltRef.current) {
+          st.setCatalog(msg.satelliteCount, buildIndex(msg.czml));
+          indexBuiltRef.current = true;
+        }
+        if (!isSnapshot && !clockSeededRef.current && msg.epoch && !st.loadedScenario) {
+          st.goLive(new Date(msg.epoch));
+          clockSeededRef.current = true;
+        }
+
+        const live = !st.loadedScenario && st.catalogLive;
+        if (!isSnapshot && !live) return;
+
         processChain = processChain
           .then(() => ds.process(msg.czml as unknown as object))
           .then(() => {
@@ -209,12 +321,81 @@ export default function Globe() {
             // eslint-disable-next-line no-console
             console.error('Catalog CZML chunk failed to process; skipping it', err);
           });
-        if (!indexBuiltRef.current) {
-          useStore.getState().setCatalog(msg.satelliteCount, buildIndex(msg.czml));
-          indexBuiltRef.current = true;
-        }
       },
+      onOrbit: (norad, cartesian) => addOrbitPath(norad, cartesian),
     });
+
+    // --- orbit paths (single-click toggle; multiple at once) ----------------
+    // A dashed polyline of one orbital period (ECEF positions from the backend),
+    // drawn in viewer.entities under id "orbit-<norad>". The toggle just tracks
+    // membership + asks the backend; the polyline is materialised when the
+    // response arrives (and only if still toggled on — so a cancelled toggle,
+    // e.g. from a double-click, never leaves a stray path).
+    // Round-robin: hand out the next palette color, preferring one not currently
+    // in use so simultaneous paths stay maximally distinct.
+    function assignOrbitColor(norad: number): Color {
+      const orbits = orbitsRef.current;
+      const existing = orbits.colors.get(norad);
+      if (existing) return existing;
+      const inUse = new Set(orbits.colors.values());
+      let chosen = ORBIT_PALETTE[orbits.nextColor % ORBIT_PALETTE.length];
+      for (let i = 0; i < ORBIT_PALETTE.length; i++) {
+        const c = ORBIT_PALETTE[(orbits.nextColor + i) % ORBIT_PALETTE.length];
+        if (!inUse.has(c)) {
+          chosen = c;
+          orbits.nextColor = orbits.nextColor + i + 1;
+          break;
+        }
+        if (i === ORBIT_PALETTE.length - 1) orbits.nextColor += 1; // all in use → just advance
+      }
+      orbits.colors.set(norad, chosen);
+      return chosen;
+    }
+    function addOrbitPath(norad: number, cartesian: number[]): void {
+      if (!orbitsRef.current.shown.has(norad)) return; // toggled off before arrival
+      const positions: Cartesian3[] = [];
+      for (let i = 0; i + 2 < cartesian.length; i += 3) {
+        positions.push(new Cartesian3(cartesian[i], cartesian[i + 1], cartesian[i + 2]));
+      }
+      if (positions.length < 2) return;
+      const color = orbitsRef.current.colors.get(norad) ?? ORBIT_PALETTE[0];
+      viewer.entities.removeById(`orbit-${norad}`); // replace (live refresh) or first draw
+      viewer.entities.add({
+        id: `orbit-${norad}`,
+        polyline: {
+          positions,
+          width: 1.5,
+          arcType: ArcType.NONE, // straight segments at altitude, not clamped to the surface
+          material: new PolylineDashMaterialProperty({ color: color.withAlpha(0.9), dashLength: 16 }),
+        },
+      });
+    }
+    // Request a shown orbit at the current sim clock and record when (for refresh).
+    function fetchOrbit(norad: number): void {
+      orbitsRef.current.lastFetchMs.set(norad, useStore.getState().currentTime.getTime());
+      stream.requestOrbit(norad, useStore.getState().currentTime.toISOString());
+    }
+    function toggleOrbitPath(norad: number): void {
+      const orbits = orbitsRef.current;
+      if (orbits.shown.has(norad)) {
+        orbits.shown.delete(norad);
+        orbits.colors.delete(norad);
+        orbits.lastFetchMs.delete(norad);
+        viewer.entities.removeById(`orbit-${norad}`);
+      } else {
+        orbits.shown.add(norad);
+        assignOrbitColor(norad);
+        fetchOrbit(norad); // path appears when the response lands
+      }
+    }
+    // In scenario mode the chief/deputy trails are part of the CZML and on by
+    // default; clicking a satellite toggles its own trail's visibility.
+    function toggleScenarioPath(norad: number): void {
+      const ent = scenarioSourceRef.current?.entities.getById(`scn-${norad}`);
+      if (!ent?.path) return;
+      const visible = ent.path.show?.getValue(viewer.clock.currentTime) ?? true;
+      ent.path.show = new ConstantProperty(!visible);
+    }
     // Defer connect to the next macrotask so React StrictMode's dev
     // mount→unmount→remount doesn't open then immediately close a socket
     // (which logs "WebSocket is closed before the connection is established").
@@ -224,19 +405,100 @@ export default function Globe() {
       if (!connectCancelled) stream.connect();
     }, 0);
 
-    // Keep the selected satellite's lat/lon/alt live as the clock advances
-    // (the dot moves; the info panel must show "current" position, not a frozen
-    // click-time snapshot). Throttled so the panel updates a few times a second.
+    // Live time-travel (Decision 21). A non-React store subscription (so the
+    // clock ticking can't re-render this component) drives on-demand catalog
+    // snapshots:
+    //   - frozen (paused/stepped/scrubbed): one snapshot at the chosen instant;
+    //   - playing-from-a-traveled-time: ROLLING prefetched snapshots — a window
+    //     scaled to the rate, re-requested before the clock reaches its edge so
+    //     motion stays continuous (up to the 100× live cap);
+    //   - returning to live (or closing a scenario): an immediate "now" snapshot,
+    //     then the live broadcast resumes.
+    let snapshotTimer = 0;
+    const requestCatalogSnapshot = (centerMs: number, windowSec: number, direction: 1 | -1) => {
+      // Cover the travel direction: forward [t, t+w], reverse [t-w, t].
+      const epochMs = direction < 0 ? centerMs - windowSec * 1000 : centerMs;
+      coverStartMs = epochMs;
+      coverEndMs = epochMs + windowSec * 1000;
+      snapshotPending = true;
+      window.clearTimeout(snapshotSafetyTimer);
+      snapshotSafetyTimer = window.setTimeout(() => {
+        snapshotPending = false; // unstick if a reply never arrives
+      }, 5000);
+      stream.seek(new Date(epochMs).toISOString(), windowSec);
+    };
+    const unsubscribeTravel = useStore.subscribe((state, prev) => {
+      if (state.loadedScenario) return; // a scenario owns the (hidden) catalog layer
+
+      // Live-refresh shown orbit paths: re-fetch at the current sim time once the
+      // clock has drifted past the threshold (updating lastFetchMs at request
+      // time prevents duplicate requests on the next tick).
+      const orbits = orbitsRef.current;
+      if (orbits.shown.size > 0) {
+        const nowMs = state.currentTime.getTime();
+        orbits.shown.forEach((norad) => {
+          if (Math.abs(nowMs - (orbits.lastFetchMs.get(norad) ?? 0)) > ORBIT_REFRESH_SIM_MS) {
+            fetchOrbit(norad);
+          }
+        });
+      }
+
+      const justWentLive = state.catalogLive && !prev.catalogLive;
+      const justClosedScenario = !state.loadedScenario && !!prev.loadedScenario;
+      if (justWentLive || justClosedScenario) {
+        requestCatalogSnapshot(Date.now(), LIVE_FROZEN_WINDOW_S, 1); // instant "now"
+        return;
+      }
+      if (!state.catalogLive && prev.catalogLive) {
+        // Just left live (pause / step / scrub) → freeze at the current instant.
+        requestCatalogSnapshot(state.currentTime.getTime(), LIVE_FROZEN_WINDOW_S, state.direction);
+        return;
+      }
+      if (state.catalogLive) return; // live: the shared broadcast drives the globe
+
+      const clockMs = state.currentTime.getTime();
+      if (!state.isPlaying) {
+        // Frozen: debounce a snapshot at the scrubbed/stepped instant.
+        if (state.currentTime !== prev.currentTime) {
+          window.clearTimeout(snapshotTimer);
+          const dir = state.direction;
+          snapshotTimer = window.setTimeout(
+            () => requestCatalogSnapshot(clockMs, LIVE_FROZEN_WINDOW_S, dir),
+            120,
+          );
+        }
+        return;
+      }
+      // Playing forward/backward from a traveled time → rolling prefetch.
+      const rate = state.rate;
+      const dir = state.direction;
+      const leadMs = PREFETCH_LEAD_S * 1000 * rate;
+      const remainingMs = dir < 0 ? clockMs - coverStartMs : coverEndMs - clockMs;
+      const outside = clockMs < coverStartMs || clockMs > coverEndMs;
+      if (!snapshotPending && (outside || remainingMs < leadMs)) {
+        requestCatalogSnapshot(clockMs, travelWindowSeconds(rate), dir);
+      }
+    });
+
+    // Drive Cesium from the shared simulation clock every frame, and keep the
+    // selected satellite's lat/lon/alt live. This runs in preRender (not
+    // clock.onTick, which stops firing once shouldAnimate=false) — it's the seam
+    // that makes both views read one clock (Decision 11). The selection-ring
+    // CallbackPositionProperty and the Decision-18 focus/track code read
+    // viewer.clock.currentTime, kept fresh here.
+    const clockScratch = new JulianDate();
     let lastPosUpdate = 0;
-    const removeTick = viewer.clock.onTick.addEventListener((clock) => {
+    const removeClockSync = viewer.scene.preRender.addEventListener(() => {
+      JulianDate.fromDate(useStore.getState().currentTime, clockScratch);
+      viewer.clock.currentTime = clockScratch;
+
       const selected = useStore.getState().selectedSatellite;
       if (!selected) return;
       const now = performance.now();
       if (now - lastPosUpdate < 250) return;
       lastPosUpdate = now;
-      const ds = dataSourceRef.current;
-      const entity = ds?.entities.getById(`sat-${selected.noradId}`);
-      const pos = entity?.position?.getValue(clock.currentTime);
+      const entity = entityForNorad(selected.noradId, scenarioSourceRef.current, dataSourceRef.current);
+      const pos = entity?.position?.getValue(viewer.clock.currentTime);
       if (!pos) return;
       const carto = Cartographic.fromCartesian(pos);
       if (!carto) return;
@@ -248,16 +510,28 @@ export default function Globe() {
     });
 
     const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
-    // Single click = inspect only (select + info panel + highlight ring, no
-    // camera move).
+    // Single click = inspect (select + info panel + ring, no camera move) AND
+    // toggle the satellite's orbit path on/off. The path toggle is debounced and
+    // cancelled by a double-click, so double-click stays pure focus (never a path).
+    let toggleTimer = 0;
     handler.setInputAction((click: { position: Cartesian2 }) => {
       const entity = pickSatellite(viewer, click.position);
       if (!entity) return;
       useStore.getState().setSelectedSatellite(describeEntity(entity, viewer.clock.currentTime));
+      const norad = noradFromEntityId(entity.id);
+      if (norad === null) return;
+      // Single-click toggles the orbit path: in a scenario, toggle that
+      // satellite's built-in CZML trail; otherwise the on-demand catalog path.
+      window.clearTimeout(toggleTimer);
+      toggleTimer = window.setTimeout(() => {
+        if (useStore.getState().loadedScenario) toggleScenarioPath(norad);
+        else toggleOrbitPath(norad);
+      }, CLICK_TOGGLE_DELAY_MS);
     }, ScreenSpaceEventType.LEFT_CLICK);
-    // Double click = focus (track the satellite: 360° orbit, centered, zoom
-    // toward it). Routed through requestFocus → the focus effect below.
+    // Double click = focus (track the satellite: centered, zoom-preserving).
+    // Cancel any pending single-click path toggle so it doesn't fire too.
     handler.setInputAction((click: { position: Cartesian2 }) => {
+      window.clearTimeout(toggleTimer);
       const entity = pickSatellite(viewer, click.position);
       if (!entity) return;
       const norad = noradFromEntityId(entity.id);
@@ -267,13 +541,19 @@ export default function Globe() {
     return () => {
       connectCancelled = true;
       window.clearTimeout(connectTimer);
+      window.clearTimeout(snapshotTimer);
+      window.clearTimeout(snapshotSafetyTimer);
+      window.clearTimeout(toggleTimer);
+      unsubscribeTravel();
       stream.close();
-      removeTick();
+      removeClockSync();
       handler.destroy();
       viewer.destroy();
       viewerRef.current = null;
       dataSourceRef.current = null;
+      scenarioSourceRef.current = null;
       indexBuiltRef.current = false;
+      clockSeededRef.current = false;
     };
   }, []);
 
@@ -282,6 +562,79 @@ export default function Globe() {
     const ds = dataSourceRef.current;
     if (ds) applyFilters(ds, activeConstellations);
   }, [activeConstellations]);
+
+  // --- loaded scenario: open its stream + dim the catalog -------------------
+  // The catalog feed is a live ~180 s window around "now"; it can't represent a
+  // scenario's (arbitrary/historical) epoch — its dots would hold at the window
+  // edge. So while a scenario plays we hide the catalog layer and show only the
+  // scenario's chief + deputies, restoring the catalog when the scenario closes.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    const scenarioDs = scenarioSourceRef.current;
+    const catalogDs = dataSourceRef.current;
+    if (!scenarioDs) return;
+
+    // Don't leave the camera tracking a scenario entity we're about to remove.
+    const releaseScenarioTracking = () => {
+      const tracked = viewer?.trackedEntity;
+      if (viewer && tracked && typeof tracked.id === 'string' && tracked.id.startsWith('scn-')) {
+        viewer.trackedEntity = undefined;
+      }
+    };
+
+    if (!loadedScenarioId) {
+      releaseScenarioTracking();
+      if (catalogDs) catalogDs.show = true;
+      scenarioDs.entities.removeAll();
+      return;
+    }
+
+    if (catalogDs) catalogDs.show = false;
+    // Catalog orbit paths belong to catalog dots (now hidden) — clear them.
+    const orbits = orbitsRef.current;
+    if (viewer) {
+      orbits.shown.forEach((n) => viewer.entities.removeById(`orbit-${n}`));
+    }
+    orbits.shown.clear();
+    orbits.colors.clear();
+    orbits.lastFetchMs.clear();
+    scenarioDs.entities.removeAll();
+
+    let processChain: Promise<void> = Promise.resolve();
+    const client = new ScenarioStreamClient(
+      ScenarioStreamClient.urlForScenario(loadedScenarioId),
+      STREAM_CONTRACT_VERSION,
+      {
+        onCzml: (czml) => {
+          processChain = processChain
+            .then(() => scenarioDs.process(czml as unknown as object))
+            .then(() => undefined)
+            .catch((err) => {
+              // eslint-disable-next-line no-console
+              console.error('Scenario CZML chunk failed to process; skipping it', err);
+            });
+        },
+      },
+    );
+    // Defer connect one macrotask (matches the catalog client) so StrictMode's
+    // dev mount→unmount→remount doesn't open-then-close a socket.
+    let connectCancelled = false;
+    const connectTimer = window.setTimeout(() => {
+      if (!connectCancelled) client.connect();
+    }, 0);
+
+    return () => {
+      connectCancelled = true;
+      window.clearTimeout(connectTimer);
+      client.close();
+      releaseScenarioTracking();
+      scenarioDs.entities.removeAll();
+      // Restore the catalog only if no scenario is active (id change A→B keeps it hidden).
+      if (catalogDs && !useStore.getState().loadedScenario) catalogDs.show = true;
+    };
+    // scenarioReloadNonce forces a reconnect when the same scenario is re-loaded
+    // (e.g. after a time-range edit) so the stream recomputes for the new window.
+  }, [loadedScenarioId, scenarioReloadNonce]);
 
   // --- focus request: blend into the LIVE tracked pose (double-click/search)
   // Two parts make this twist-free:
@@ -300,9 +653,8 @@ export default function Globe() {
   //      current ENU offset).
   useEffect(() => {
     const viewer = viewerRef.current;
-    const ds = dataSourceRef.current;
-    if (!viewer || !ds || !focus) return;
-    const entity = ds.entities.getById(`sat-${focus.noradId}`);
+    if (!viewer || !focus) return;
+    const entity = entityForNorad(focus.noradId, scenarioSourceRef.current, dataSourceRef.current);
     if (!entity) return;
     const camera = viewer.camera;
     const scene = viewer.scene;
@@ -337,7 +689,7 @@ export default function Globe() {
       const t = Math.min(1, (tNow - startMs) / durationMs);
       const eased = t * t * (3 - 2 * t); // smoothstep
 
-      const ent = dataSourceRef.current?.entities.getById(`sat-${targetNorad}`);
+      const ent = entityForNorad(targetNorad, scenarioSourceRef.current, dataSourceRef.current);
       const sp = ent?.position?.getValue(time);
       if (!ent || !sp) return;
 

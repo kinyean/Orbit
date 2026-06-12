@@ -6,6 +6,20 @@ import type { components } from '../api/schema';
 /** A saved scenario as listed by GET /scenarios (generated from the backend contract). */
 export type ScenarioSummary = components['schemas']['ScenarioSummary'];
 type ScenarioRequest = components['schemas']['ScenarioRequest'];
+type ScenarioBodyT = components['schemas']['ScenarioBody'];
+
+/** The scenario currently loaded for playback (Phase 4): its id, name, and body. */
+export interface LoadedScenario {
+  id: string;
+  name: string;
+  body: ScenarioBodyT;
+}
+
+/** The simulation clock's playback window (Decision 11). Null = catalog "live" regime. */
+export interface ClockBounds {
+  start: Date;
+  end: Date;
+}
 
 export interface Filters {
   /** Constellations currently shown. A constellation NOT in this set is hidden. */
@@ -48,13 +62,31 @@ export interface Composer {
   deputyIds: number[];
   scenarioId: string | null;
   isDirty: boolean;
+  /** Scenario time window (ISO-8601 UTC). null until set/loaded → save defaults to now…+24h. */
+  start: string | null;
+  end: string | null;
 }
 
 export interface State {
+  // --- Simulation clock (Decision 11; US-VIEW-02/03). The clockEngine rAF loop
+  // is the SOLE writer of currentTime during playback; views only read it.
   currentTime: Date;
   isPlaying: boolean;
+  rate: number;                 // playback multiplier magnitude (≥0); 1 = realtime
+  direction: 1 | -1;            // forward / reverse
+  bounds: ClockBounds | null;   // active time window (scenario range, or the live ± travel window)
+  // Catalog-mode only: true = following real time (live broadcast); false =
+  // "frozen" at currentTime, showing an on-demand propagated snapshot (Decision 21).
+  catalogLive: boolean;
+
   filters: Filters;
   composer: Composer;
+
+  // The scenario currently loaded for playback (null = catalog-only / live).
+  loadedScenario: LoadedScenario | null;
+  // Bumped on every (re)load so the Globe reopens the scenario stream even when
+  // the id is unchanged — e.g. after editing the time range of a loaded scenario.
+  scenarioReloadNonce: number;
 
   // Saved scenarios (from the backend; US-SCN-03/11/12)
   scenarios: ScenarioSummary[];
@@ -68,8 +100,20 @@ export interface State {
   focus: FocusRequest | null;
   cameraResetNonce: number;
 
+  // Clock control (frontend owns playback — Decision 11)
   setCurrentTime: (t: Date) => void;
   togglePlay: () => void;
+  setRate: (rate: number) => void;
+  toggleDirection: () => void;
+  seek: (t: Date) => void;
+  step: (deltaSec: number) => void;
+  resetClock: () => void;
+  setBounds: (start: Date, end: Date) => void;
+  /** Catalog mode: snap back to real time + the live broadcast (re-centers the travel window). */
+  goLive: (at?: Date) => void;
+  /** Catalog mode play/pause: pause also freezes the catalog; play runs from the current instant. */
+  toggleCatalogPlayback: () => void;
+
   toggleConstellation: (name: string) => void;
   setCatalog: (total: number, index: SatIndexEntry[]) => void;
   setSelectedSatellite: (sat: SelectedSatellite | null) => void;
@@ -81,6 +125,7 @@ export interface State {
   setChief: (id: number) => void;
   addDeputy: (id: number) => void;
   removeFromScenario: (id: number) => void;
+  setComposerTimeRange: (start: string, end: string) => void;
   clearComposer: () => void;
 
   // Scenario CRUD (calls the generated client)
@@ -89,17 +134,19 @@ export interface State {
   saveScenario: (name: string) => Promise<void>;
   loadScenario: (id: string) => Promise<void>;
   deleteScenario: (id: string) => Promise<void>;
+  /** Stop streaming the loaded scenario and return to the live catalog regime. */
+  closeScenario: () => void;
 }
 
 /** Build a create/update request from the composer. Defaults to a 24-hour window
  *  (the timeline editor lands in Phase 4); fidelity is sgp4 in Phase 3A. */
 function composerToRequest(name: string, composer: Composer): ScenarioRequest {
-  const start = new Date();
-  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  const start = composer.start ?? new Date().toISOString();
+  const end = composer.end ?? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   return {
     name,
     fidelity: 'sgp4',
-    timeRange: { start: start.toISOString(), end: end.toISOString() },
+    timeRange: { start, end },
     chief: { noradId: composer.chiefId ?? 0 },
     deputies: composer.deputyIds.map((id) => ({ noradId: id })),
   };
@@ -133,17 +180,35 @@ const emptyComposer: Composer = {
   deputyIds: [],
   scenarioId: null,
   isDirty: false,
+  start: null,
+  end: null,
 };
+
+/** Live-mode time-travel half-window: the scrub bar spans ±this around "now". */
+const LIVE_WINDOW_MS = 12 * 60 * 60 * 1000;
+function liveBounds(center: Date): ClockBounds {
+  return {
+    start: new Date(center.getTime() - LIVE_WINDOW_MS),
+    end: new Date(center.getTime() + LIVE_WINDOW_MS),
+  };
+}
 
 export const useStore = create<State>((set, get) => ({
   currentTime: new Date(),
   isPlaying: true,
+  rate: 1,
+  direction: 1,
+  bounds: null,
+  catalogLive: true,
   filters: {
     constellations: loadConstellations(),
     showDebris: false,
     showRocketBodies: false,
   },
   composer: emptyComposer,
+
+  loadedScenario: null,
+  scenarioReloadNonce: 0,
 
   scenarios: [],
 
@@ -156,6 +221,46 @@ export const useStore = create<State>((set, get) => ({
 
   setCurrentTime: (t) => set({ currentTime: t }),
   togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),
+  setRate: (rate) => set({ rate: Math.max(0, rate) }),
+  toggleDirection: () => set((s) => ({ direction: s.direction === 1 ? -1 : 1 })),
+  // Scrubbing/seeking leaves the catalog's live regime (catalogLive=false) so
+  // the globe shows an on-demand snapshot at the chosen instant rather than the
+  // rolling live window. Harmless/ignored in scenario mode.
+  seek: (t) => {
+    const { bounds } = get();
+    const ms = bounds
+      ? Math.min(bounds.end.getTime(), Math.max(bounds.start.getTime(), t.getTime()))
+      : t.getTime();
+    // Scrubbing locates-and-pauses (so the engine doesn't fight the drag) and
+    // leaves the catalog's live regime (a frozen snapshot is shown there).
+    set({ currentTime: new Date(ms), catalogLive: false, isPlaying: false });
+  },
+  step: (deltaSec) =>
+    set((s) => {
+      let ms = s.currentTime.getTime() + deltaSec * 1000;
+      if (s.bounds) {
+        ms = Math.min(s.bounds.end.getTime(), Math.max(s.bounds.start.getTime(), ms));
+      }
+      // Stepping is frame-by-frame → pause; and it freezes the catalog at the new instant.
+      return { currentTime: new Date(ms), isPlaying: false, catalogLive: false };
+    }),
+  resetClock: () => {
+    // Live mode: reset means "go live now". Scenario mode: jump to the window start, paused.
+    if (!get().loadedScenario) {
+      get().goLive();
+      return;
+    }
+    set((s) => ({ currentTime: s.bounds ? new Date(s.bounds.start) : new Date(), isPlaying: false }));
+  },
+  setBounds: (start, end) => set({ bounds: { start, end } }),
+  goLive: (at) => {
+    const t = at ?? new Date();
+    set({ currentTime: t, catalogLive: true, isPlaying: true, rate: 1, direction: 1, bounds: liveBounds(t) });
+  },
+  toggleCatalogPlayback: () =>
+    // Pause → also freeze the catalog (drop the live broadcast). Play → run from
+    // the current instant via rolling snapshots (catalogLive stays false).
+    set((s) => (s.isPlaying ? { isPlaying: false, catalogLive: false } : { isPlaying: true })),
 
   toggleConstellation: (name) =>
     set((s) => {
@@ -206,6 +311,8 @@ export const useStore = create<State>((set, get) => ({
         },
       };
     }),
+  setComposerTimeRange: (start, end) =>
+    set((s) => ({ composer: { ...s.composer, start, end, isDirty: true } })),
   clearComposer: () => set({ composer: emptyComposer }),
 
   loadScenarios: async () => {
@@ -235,6 +342,14 @@ export const useStore = create<State>((set, get) => ({
     }
     set((s) => ({ composer: { ...s.composer, isDirty: false } }));
     await get().loadScenarios();
+
+    // If we just saved the scenario that's currently loaded for playback (e.g.
+    // a time-range edit), reload it so the clock window + stream pick up the new
+    // version. A fresh create (nothing loaded) just lands in the list.
+    const savedId = get().composer.scenarioId;
+    if (savedId && get().loadedScenario?.id === savedId) {
+      await get().loadScenario(savedId);
+    }
   },
 
   loadScenario: async (id) => {
@@ -243,12 +358,56 @@ export const useStore = create<State>((set, get) => ({
       console.error('Failed to load scenario', error);
       return;
     }
-    const chiefId = data.body?.chief?.noradId ?? null;
-    const deputyIds = (data.body?.deputies ?? [])
+    const body = data.body;
+    const chiefId = body?.chief?.noradId ?? null;
+    const deputyIds = (body?.deputies ?? [])
       .map((d) => d.noradId)
       .filter((n): n is number => typeof n === 'number');
+    const scenarioId = data.id ?? id;
+    const startStr = body?.timeRange?.start;
+    const endStr = body?.timeRange?.end;
+
     set({
-      composer: { chiefId, deputyIds, scenarioId: data.id ?? id, isDirty: false },
+      composer: {
+        chiefId,
+        deputyIds,
+        scenarioId,
+        isDirty: false,
+        start: startStr ?? null,
+        end: endStr ?? null,
+      },
+      loadedScenario: body ? { id: scenarioId, name: data.name ?? '', body } : null,
+      scenarioReloadNonce: get().scenarioReloadNonce + 1,
+      // Drop any catalog selection — its dot is hidden during playback, so a
+      // stale ring would track an invisible entity ("circles empty").
+      selectedSatellite: null,
+    });
+
+    // Drive the shared clock from the scenario's time range and start playing
+    // from the beginning (Globe opens the per-scenario stream off loadedScenario;
+    // Decision 11 — frontend owns playback control).
+    if (startStr && endStr) {
+      const start = new Date(startStr);
+      const end = new Date(endStr);
+      if (Number.isFinite(start.getTime()) && Number.isFinite(end.getTime())) {
+        set({ bounds: { start, end }, currentTime: start, rate: 1, direction: 1, isPlaying: true });
+      }
+    }
+  },
+
+  closeScenario: () => {
+    // Back to the live catalog: drop the scenario, re-center the travel window on now.
+    const now = new Date();
+    set({
+      loadedScenario: null,
+      bounds: liveBounds(now),
+      composer: emptyComposer,
+      selectedSatellite: null,
+      currentTime: now,
+      catalogLive: true,
+      rate: 1,
+      direction: 1,
+      isPlaying: true,
     });
   },
 
@@ -258,8 +417,10 @@ export const useStore = create<State>((set, get) => ({
       console.error('Failed to delete scenario', error);
       return;
     }
-    // If the deleted scenario is the one loaded in the composer, clear it.
-    set((s) => (s.composer.scenarioId === id ? { composer: emptyComposer } : {}));
+    // If the deleted scenario is the one loaded, return to the live catalog.
+    if (get().loadedScenario?.id === id || get().composer.scenarioId === id) {
+      get().closeScenario();
+    }
     await get().loadScenarios();
   },
 }));

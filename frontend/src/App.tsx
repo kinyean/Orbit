@@ -1,17 +1,23 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import Globe from './components/Globe';
 import TimeController from './components/TimeController';
+import Timeline from './components/Timeline';
 import InfoPanel from './components/InfoPanel';
 import StatsOverlay from './components/StatsOverlay';
 import FilterPanel from './components/FilterPanel';
 import StatusChip from './components/StatusChip';
 import ScenarioPanel from './scenario/ScenarioPanel';
 import { useStore } from './store/useStore';
+import { startClockEngine } from './store/clockEngine';
 import './App.css';
 
 export default function App() {
   const [query, setQuery] = useState('');
   const [notFound, setNotFound] = useState(false);
+
+  // The single clock writer: one rAF loop advances currentTime; both views read
+  // it (Decision 11). Started once for the app's lifetime.
+  useEffect(() => startClockEngine(), []);
 
   function onSearch(e: FormEvent) {
     e.preventDefault();
@@ -74,6 +80,7 @@ export default function App() {
       </button>
       <InfoPanel />
       <TimeController />
+      <Timeline />
     </div>
   );
 }

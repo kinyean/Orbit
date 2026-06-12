@@ -130,6 +130,24 @@ public class ScenarioService {
                 (int) versions.countByScenarioId(id));
     }
 
+    /**
+     * Latest-version body for the per-scenario WebSocket stream (Phase 4),
+     * resolved by caller <em>email</em> off the request thread. Same gate as
+     * {@link #activeScenario} (exists ∧ not soft-deleted ∧ owned); a missing
+     * user or scenario both collapse to {@link ScenarioNotFoundException} (the
+     * handler maps it to close 4404 — no owned/not-found distinction, so ids
+     * can't be enumerated). Read-only: never provisions a user (unlike
+     * {@link #get}, which runs on the request thread via {@link UserService#currentUser}).
+     */
+    @Transactional(readOnly = true)
+    public ScenarioBody bodyForStream(UUID id, String callerEmail) {
+        User caller = userService.findByEmail(callerEmail)
+                .orElseThrow(() -> new ScenarioNotFoundException(id));
+        Scenario scenario = activeScenario(id, caller);
+        ScenarioVersion latest = latestVersion(scenario);
+        return parse(latest.getBody());
+    }
+
     @Transactional(readOnly = true)
     public ScenarioVersionResponse getVersion(UUID id, int versionNo) {
         User me = userService.currentUser();

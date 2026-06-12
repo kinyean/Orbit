@@ -10,13 +10,13 @@ import org.orekit.data.DirectoryCrawler;
  * (build/orekit-data/orekit-data-main). Idempotent — safe to call from each
  * test class's {@code @BeforeAll}.
  */
-final class OrekitTestData {
+public final class OrekitTestData {
 
     private static boolean loaded = false;
 
     private OrekitTestData() {}
 
-    static synchronized void ensureLoaded() {
+    public static synchronized void ensureLoaded() {
         if (loaded) {
             return;
         }

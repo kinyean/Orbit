@@ -1,6 +1,7 @@
 package space.orbit.backend.scenario;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -36,6 +37,16 @@ public class UserService {
     public User getOrCreateByEmail(String email) {
         return users.findByEmail(email)
                 .orElseGet(() -> users.save(new User(UUID.randomUUID(), email, List.of())));
+    }
+
+    /**
+     * Resolve a user by email <em>without</em> provisioning a row — for the
+     * scenario WebSocket path, which must not create users as a side effect of a
+     * stream connect. Empty when no such user exists.
+     */
+    @Transactional(readOnly = true)
+    public Optional<User> findByEmail(String email) {
+        return users.findByEmail(email);
     }
 
     /** The principal name — {@code dev@orbit.local} in dev (the email). */
