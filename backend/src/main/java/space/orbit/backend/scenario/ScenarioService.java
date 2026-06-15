@@ -125,6 +125,95 @@ public class ScenarioService {
         return toResponse(scenario, body, nextNo, (int) versions.countByScenarioId(id));
     }
 
+    /**
+     * Add an impulsive ΔV maneuver to a deputy (Phase 5B, US-MAN-01). Like every
+     * other mutation it writes a new immutable version + one audit row (Decision
+     * 16) — re-propagation happens when the client reopens the scenario stream.
+     */
+    @Transactional
+    public ScenarioResponse addManeuver(UUID id, ManeuverDraft draft) {
+        User author = userService.currentUser();
+        Scenario scenario = activeScenario(id, author);
+        ScenarioBody body = parse(latestVersion(scenario).getBody());
+
+        validateManeuver(body, draft);
+        ScenarioBody.Maneuver maneuver = new ScenarioBody.Maneuver(
+                UUID.randomUUID().toString(), "delta_v", draft.epoch(), "ric",
+                new ScenarioBody.DeltaV(draft.r(), draft.i(), draft.c()));
+
+        ScenarioBody updated = withDeputyManeuvers(body, draft.deputyNoradId(), existing -> {
+            List<ScenarioBody.Maneuver> next = new ArrayList<>(existing);
+            next.add(maneuver);
+            return next;
+        });
+
+        int nextNo = saveVersion(scenario, updated, author,
+                "MANEUVER_ADD", "Added Δv to deputy " + draft.deputyNoradId() + " at " + draft.epoch());
+        return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    /**
+     * Insert several maneuvers in ONE version + audit row (Phase 5C templates —
+     * Hohmann/Lambert produce two impulses that are one logical edit). All drafts
+     * are validated before any is applied.
+     */
+    @Transactional
+    public ScenarioResponse addManeuvers(UUID id, List<ManeuverDraft> drafts, String summary) {
+        if (drafts == null || drafts.isEmpty()) {
+            throw new ScenarioValidationException("No maneuvers to add");
+        }
+        User author = userService.currentUser();
+        Scenario scenario = activeScenario(id, author);
+        ScenarioBody body = parse(latestVersion(scenario).getBody());
+
+        for (ManeuverDraft draft : drafts) {
+            validateManeuver(body, draft);
+        }
+        ScenarioBody updated = body;
+        for (ManeuverDraft draft : drafts) {
+            ScenarioBody.Maneuver maneuver = new ScenarioBody.Maneuver(
+                    UUID.randomUUID().toString(), "delta_v", draft.epoch(), "ric",
+                    new ScenarioBody.DeltaV(draft.r(), draft.i(), draft.c()));
+            updated = withDeputyManeuvers(updated, draft.deputyNoradId(), existing -> {
+                List<ScenarioBody.Maneuver> next = new ArrayList<>(existing);
+                next.add(maneuver);
+                return next;
+            });
+        }
+        int nextNo = saveVersion(scenario, updated, author, "MANEUVER_TEMPLATE", summary);
+        return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    /** Remove a maneuver by its id (Phase 5B). New version + audit, as with any edit. */
+    @Transactional
+    public ScenarioResponse removeManeuver(UUID id, String maneuverId) {
+        User author = userService.currentUser();
+        Scenario scenario = activeScenario(id, author);
+        ScenarioBody body = parse(latestVersion(scenario).getBody());
+
+        boolean[] removed = {false};
+        List<ScenarioBody.Role> deputies = body.deputies().stream()
+                .map(d -> {
+                    if (d.maneuvers().stream().noneMatch(m -> m.id().equals(maneuverId))) {
+                        return d;
+                    }
+                    removed[0] = true;
+                    List<ScenarioBody.Maneuver> kept = d.maneuvers().stream()
+                            .filter(m -> !m.id().equals(maneuverId))
+                            .toList();
+                    return new ScenarioBody.Role(d.role(), d.noradId(), d.name(), d.initialState(), kept);
+                })
+                .toList();
+        if (!removed[0]) {
+            throw new ScenarioValidationException("No maneuver " + maneuverId + " in this scenario");
+        }
+        ScenarioBody updated = new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
+                body.fidelity(), body.timeRange(), body.chief(), deputies);
+
+        int nextNo = saveVersion(scenario, updated, author, "MANEUVER_REMOVE", "Removed maneuver " + maneuverId);
+        return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
     @Transactional
     public void delete(UUID id) {
         User actor = userService.currentUser();
@@ -206,6 +295,54 @@ public class ScenarioService {
         auditLog.save(new AuditLog(UUID.randomUUID(), scenarioId, versionId, actorId, action, summary));
     }
 
+    /** Write {@code body} as the next immutable version of {@code scenario} + one audit row. */
+    private int saveVersion(Scenario scenario, ScenarioBody body, User author, String action, String summary) {
+        UUID id = scenario.getId();
+        int nextNo = versions.findMaxVersionNo(id).orElse(0) + 1;
+        UUID versionId = UUID.randomUUID();
+        versions.saveAndFlush(new ScenarioVersion(versionId, id, nextNo, author.getId(), serialize(body)));
+        scenario.setLatestVersionId(versionId);
+        scenarios.saveAndFlush(scenario);
+        audit(id, versionId, author.getId(), action, summary);
+        return nextNo;
+    }
+
+    /** Replace one deputy's maneuver list (by NORAD id), re-stamping the schema version. */
+    private ScenarioBody withDeputyManeuvers(ScenarioBody body, int deputyNoradId,
+                                             java.util.function.UnaryOperator<List<ScenarioBody.Maneuver>> edit) {
+        List<ScenarioBody.Role> deputies = body.deputies().stream()
+                .map(d -> d.noradId() == deputyNoradId
+                        ? new ScenarioBody.Role(d.role(), d.noradId(), d.name(), d.initialState(),
+                                edit.apply(d.maneuvers()))
+                        : d)
+                .toList();
+        return new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
+                body.fidelity(), body.timeRange(), body.chief(), deputies);
+    }
+
+    private void validateManeuver(ScenarioBody body, ManeuverDraft draft) {
+        if (body.chief() != null && body.chief().noradId() == draft.deputyNoradId()) {
+            throw new ScenarioValidationException("The chief cannot carry maneuvers; it is the LVLH reference");
+        }
+        boolean isDeputy = body.deputies().stream().anyMatch(d -> d.noradId() == draft.deputyNoradId());
+        if (!isDeputy) {
+            throw new ScenarioValidationException("Deputy " + draft.deputyNoradId() + " is not in this scenario");
+        }
+        if (draft.frame() != null && !"ric".equalsIgnoreCase(draft.frame())) {
+            throw new ScenarioValidationException(
+                    "Only RIC-frame maneuvers are supported in this phase (got \"" + draft.frame() + "\")");
+        }
+        if (!Double.isFinite(draft.r()) || !Double.isFinite(draft.i()) || !Double.isFinite(draft.c())) {
+            throw new ScenarioValidationException("ΔV components must be finite");
+        }
+        Instant epoch = parseInstant(draft.epoch(), "maneuver.epoch");
+        Instant start = parseInstant(body.timeRange().start(), "timeRange.start");
+        Instant end = parseInstant(body.timeRange().end(), "timeRange.end");
+        if (epoch.isBefore(start) || epoch.isAfter(end)) {
+            throw new ScenarioValidationException("maneuver.epoch must fall within the scenario time range");
+        }
+    }
+
     private ScenarioBody buildBody(ScenarioDraft d) {
         validateSemantics(d);
         String fidelity = (d.fidelity() == null || d.fidelity().isBlank()) ? "sgp4" : d.fidelity();
@@ -213,7 +350,8 @@ public class ScenarioService {
         List<ScenarioBody.Role> deputies = d.deputyNoradIds().stream()
                 .map(n -> role("deputy", n))
                 .toList();
-        return new ScenarioBody(1, fidelity, new ScenarioBody.TimeRange(d.start(), d.end()), chief, deputies);
+        return new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION, fidelity,
+                new ScenarioBody.TimeRange(d.start(), d.end()), chief, deputies);
     }
 
     private ScenarioBody.Role role(String role, int noradId) {
@@ -281,7 +419,15 @@ public class ScenarioService {
 
     private ScenarioBody parse(String json) {
         try {
-            return objectMapper.readValue(json, ScenarioBody.class);
+            ScenarioBody body = objectMapper.readValue(json, ScenarioBody.class);
+            // Forward-migrate a v1 body: maneuver lists are already null-coalesced by
+            // the Role constructor; here we re-stamp the schema version so callers see
+            // a consistent v2 (the stored JSON is rewritten on the next save).
+            if (body.schemaVersion() != ScenarioBody.CURRENT_SCHEMA_VERSION) {
+                body = new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
+                        body.fidelity(), body.timeRange(), body.chief(), body.deputies());
+            }
+            return body;
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Corrupt scenario body", e);
         }

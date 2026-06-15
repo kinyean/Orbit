@@ -15,10 +15,13 @@ import org.orekit.time.AbsoluteDate;
 import org.orekit.time.TimeScale;
 import org.orekit.time.TimeScalesFactory;
 import org.orekit.utils.PVCoordinates;
+import org.orekit.utils.PVCoordinatesProvider;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Service;
+import space.orbit.backend.prop.CwPropagation;
 import space.orbit.backend.prop.Fidelity;
 import space.orbit.backend.prop.FrameService;
+import space.orbit.backend.prop.Impulse;
 import space.orbit.backend.prop.PropagationService;
 import space.orbit.backend.scenario.ScenarioBody;
 import space.orbit.backend.scenario.ScenarioService;
@@ -72,26 +75,29 @@ public class ScenarioStreamService {
      * its time range at the effective step, and encode the global-view CZML.
      *
      * @throws space.orbit.backend.scenario.ScenarioNotFoundException missing / soft-deleted / not owned
-     * @throws ScenarioStreamUnprocessableException CW fidelity, non-TLE state, or a TLE that won't parse
+     * @throws ScenarioStreamUnprocessableException non-TLE state, or a TLE that won't parse
      */
     public EncodedScenario loadAndEncode(UUID id, String callerEmail) {
         ScenarioBody body = scenarioService.bodyForStream(id, callerEmail);
 
         Fidelity fidelity = Fidelity.fromString(body.fidelity());
-        if (fidelity == Fidelity.CW) {
-            throw new ScenarioStreamUnprocessableException(
-                    "CW fidelity is not streamable until Phase 5");
-        }
-
         Instant start = parseInstant(body.timeRange().start());
         Instant end = parseInstant(body.timeRange().end());
         long durationSec = Math.max(1, end.getEpochSecond() - start.getEpochSecond());
+        AbsoluteDate startDate = new AbsoluteDate(start, utc);
 
-        // Prepare each role up front so we know the periods before sampling.
+        // Prepare each role up front so we know the periods before sampling. In CW
+        // mode (US-REL-03, Phase 5C) the chief propagates normally (SGP4 — CW models
+        // the *relative* dynamics) and each deputy is a closed-form CW provider
+        // seeded from its own state at the start epoch.
+        Fidelity chiefFidelity = fidelity == Fidelity.CW ? Fidelity.SGP4 : fidelity;
+        PreparedRole chief = prepareRole(body.chief(), chiefFidelity);
         List<PreparedRole> roles = new ArrayList<>();
-        roles.add(prepareRole(body.chief(), fidelity));
+        roles.add(chief);
         for (ScenarioBody.Role deputy : body.deputies()) {
-            roles.add(prepareRole(deputy, fidelity));
+            roles.add(fidelity == Fidelity.CW
+                    ? prepareCwDeputy(deputy, chief, startDate)
+                    : prepareRole(deputy, fidelity));
         }
 
         // Sample a margin (the longest half-trail) before start and after end so
@@ -104,7 +110,6 @@ public class ScenarioStreamService {
         int effectiveStep = effectiveStep(spanSec);
         int steps = (int) (spanSec / effectiveStep);
         double firstT = -marginSec; // seconds relative to the scenario start (the CZML epoch)
-        AbsoluteDate startDate = new AbsoluteDate(start, utc);
 
         List<ScenarioSatelliteSamples> samples = new ArrayList<>();
         for (PreparedRole role : roles) {
@@ -113,8 +118,11 @@ public class ScenarioStreamService {
         String czml = encoder.encodeScenario(start, effectiveStep, samples);
 
         // Relative-state (proximity view, 4B): chief-LVLH R/I/C per deputy, on the
-        // SAME time grid so both views interpolate to the same instants.
-        String relative = encodeRelative(roles, startDate, firstT, effectiveStep, steps, start);
+        // SAME time grid so both views interpolate to the same instants. Also carries
+        // each deputy's closest approach over [start,end] (US-REL-02, Phase 5A) and a
+        // CW validity hint (US-REL-03, Phase 5C).
+        String relative = encodeRelative(roles, startDate, firstT, effectiveStep, steps, start,
+                durationSec, body.fidelity(), chief.eccentricity());
 
         return new EncodedScenario(czml, relative, effectiveStep);
     }
@@ -127,18 +135,25 @@ public class ScenarioStreamService {
      * a wrong relative <em>velocity</em>.
      */
     private String encodeRelative(List<PreparedRole> roles, AbsoluteDate startDate,
-                                  double firstT, int step, int steps, Instant epoch) {
+                                  double firstT, int step, int steps, Instant epoch,
+                                  long durationSec, String fidelity, double chiefEccentricity) {
         PreparedRole chief = roles.get(0);
         Frame eci = frames.eci();
-        Frame lvlh = frames.lvlh(chief.propagator()); // rotating LVLH over the live chief orbit
+        Frame lvlh = frames.lvlh(chief.provider()); // rotating LVLH over the live chief orbit
         boolean withVel = props.includeRelativeVelocity();
         int stride = withVel ? 7 : 4;
         int degree = Math.max(1, Math.min(5, steps));
 
+        double maxSeparation = 0.0; // over all deputies, within the scenario window (CW hint)
         List<RelativeSamples> deputies = new ArrayList<>();
         for (int i = 1; i < roles.size(); i++) { // skip chief (the LVLH origin)
-            Propagator depProp = roles.get(i).propagator();
+            PVCoordinatesProvider depProp = roles.get(i).provider();
             double[] s = new double[(steps + 1) * stride];
+            // Coarse closest-approach bracket comes free from the sampling loop:
+            // |rel| is the chief-relative range (frame-invariant). Restrict to the
+            // scenario window [0, durationSec] (the sampled span also has margin).
+            double coarseMinDist = Double.POSITIVE_INFINITY;
+            double coarseMinT = 0.0;
             for (int k = 0; k <= steps; k++) {
                 double t = firstT + (double) k * step;
                 AbsoluteDate date = startDate.shiftedBy(t);
@@ -156,25 +171,133 @@ public class ScenarioStreamService {
                     s[base + 5] = v.getY();
                     s[base + 6] = v.getZ();
                 }
+                if (t >= 0.0 && t <= durationSec) {
+                    double d = p.getNorm();
+                    if (d < coarseMinDist) {
+                        coarseMinDist = d;
+                        coarseMinT = t;
+                    }
+                    maxSeparation = Math.max(maxSeparation, d);
+                }
             }
+            // Refine the closest approach on the live propagators around the coarse
+            // bracket (US-REL-02). Distance is frame-invariant — compute it in ECI.
+            double[] tca = refineTca(depProp, chief.provider(), eci, startDate,
+                    Math.max(0.0, coarseMinT - step), Math.min((double) durationSec, coarseMinT + step),
+                    coarseMinT, coarseMinDist);
+            Instant tcaEpoch = epoch.plusMillis(Math.round(tca[0] * 1000.0));
+
             ScenarioBody.Role role = roles.get(i).role();
-            deputies.add(new RelativeSamples(role.noradId(), role.name(), degree, s));
+            deputies.add(new RelativeSamples(role.noradId(), role.name(), degree, s, tcaEpoch, tca[1]));
         }
-        return relativeEncoder.encodeRelative(epoch, step, chief.role().noradId(), deputies, withVel);
+        return relativeEncoder.encodeRelative(epoch, step, chief.role().noradId(), deputies, withVel,
+                fidelity, maxSeparation, chiefEccentricity);
+    }
+
+    /**
+     * Golden-section refine of the chief-relative minimum range over {@code [lo,hi]}
+     * (seconds relative to {@code startDate}). Fixed iteration count → deterministic
+     * (R11). Falls back to the coarse bracket when the interval is degenerate.
+     *
+     * @return {@code [tBestSeconds, minDistanceMetres]}
+     */
+    private double[] refineTca(PVCoordinatesProvider dep, PVCoordinatesProvider chief, Frame eci,
+                               AbsoluteDate startDate, double lo, double hi, double coarseT, double coarseDist) {
+        if (!(hi > lo)) {
+            return new double[] {coarseT, coarseDist};
+        }
+        final double gr = (Math.sqrt(5.0) - 1.0) / 2.0; // 0.6180339887...
+        double a = lo;
+        double b = hi;
+        double c = b - gr * (b - a);
+        double d = a + gr * (b - a);
+        double fc = relRange(dep, chief, eci, startDate, c);
+        double fd = relRange(dep, chief, eci, startDate, d);
+        for (int it = 0; it < 60; it++) {
+            if (fc < fd) {
+                b = d;
+                d = c;
+                fd = fc;
+                c = b - gr * (b - a);
+                fc = relRange(dep, chief, eci, startDate, c);
+            } else {
+                a = c;
+                c = d;
+                fc = fd;
+                d = a + gr * (b - a);
+                fd = relRange(dep, chief, eci, startDate, d);
+            }
+        }
+        double tBest = 0.5 * (a + b);
+        double fBest = relRange(dep, chief, eci, startDate, tBest);
+        // Keep the coarse grid point if the refine somehow overshot it.
+        return fBest <= coarseDist ? new double[] {tBest, fBest} : new double[] {coarseT, coarseDist};
+    }
+
+    /** Chief-relative range (metres) at {@code t} seconds after {@code startDate}, in ECI. */
+    private double relRange(PVCoordinatesProvider dep, PVCoordinatesProvider chief, Frame eci,
+                            AbsoluteDate startDate, double t) {
+        AbsoluteDate date = startDate.shiftedBy(t);
+        Vector3D pDep = dep.getPVCoordinates(date, eci).getPosition();
+        Vector3D pChief = chief.getPVCoordinates(date, eci).getPosition();
+        return Vector3D.distance(pDep, pChief);
     }
 
     /** Total orbit-path length, in orbital periods (must match the encoder's lead+trail). */
     private static final double PATH_PERIODS = 1.5;
 
-    /** A role with its built propagator + period, prepared before sampling. */
-    private record PreparedRole(ScenarioBody.Role role, Propagator propagator, double periodSeconds) {}
+    /**
+     * A role with its built state provider + period (+ eccentricity for the CW
+     * validity hint), prepared before sampling. The provider is a {@link Propagator}
+     * for SGP4/numerical and a closed-form CW provider for a CW deputy — sampling
+     * only needs the {@link PVCoordinatesProvider} interface, so both fit uniformly.
+     */
+    private record PreparedRole(ScenarioBody.Role role, PVCoordinatesProvider provider,
+                                double periodSeconds, double eccentricity) {}
 
     private PreparedRole prepareRole(ScenarioBody.Role role, Fidelity fidelity) {
         TLE tle = rebuildTle(role);
-        Propagator propagator = propagationService.propagatorFor(tle, fidelity);
+        // A maneuvered role is propagated numerically with the impulses attached
+        // (Phase 5B); the 3-arg overload no-ops to the plain dispatch when empty.
+        Propagator propagator = propagationService.propagatorFor(tle, fidelity, toImpulses(role.maneuvers()));
         // Orbital period from the TLE mean motion (rad/s); ≥60 s guards odd elements.
         double periodSeconds = Math.max(60.0, 2.0 * Math.PI / tle.getMeanMotion());
-        return new PreparedRole(role, propagator, periodSeconds);
+        return new PreparedRole(role, propagator, periodSeconds, tle.getE());
+    }
+
+    /**
+     * Prepare a CW deputy (Phase 5C, US-REL-03): seed its relative state at the start
+     * epoch from its own SGP4 state — transformed into the chief's live LVLH frame so
+     * the relative <em>velocity</em> carries the frame rotation rate (R15) — then
+     * advance it with the closed-form CW STM about the chief's mean motion.
+     */
+    private PreparedRole prepareCwDeputy(ScenarioBody.Role role, PreparedRole chief, AbsoluteDate startDate) {
+        TLE tle = rebuildTle(role);
+        Propagator depSgp4 = propagationService.propagatorFor(tle, Fidelity.SGP4);
+        Frame eci = frames.eci();
+        Frame lvlh = frames.lvlh(chief.provider());
+        PVCoordinates rel0 = eci.getTransformTo(lvlh, startDate)
+                .transformPVCoordinates(depSgp4.getPVCoordinates(startDate, eci));
+        double n = 2.0 * Math.PI / chief.periodSeconds(); // chief mean motion (rad/s)
+        PVCoordinatesProvider cw = CwPropagation.deputyProvider(
+                lvlh, startDate, rel0, n, toImpulses(role.maneuvers()));
+        return new PreparedRole(role, cw, chief.periodSeconds(), 0.0);
+    }
+
+    /** Convert a role's persisted maneuvers (RIC ΔV) into prop-layer impulses (Phase 5B). */
+    private List<Impulse> toImpulses(List<ScenarioBody.Maneuver> maneuvers) {
+        if (maneuvers == null || maneuvers.isEmpty()) {
+            return List.of();
+        }
+        List<Impulse> impulses = new ArrayList<>(maneuvers.size());
+        for (ScenarioBody.Maneuver m : maneuvers) {
+            if (m.deltaV() == null || m.epoch() == null) {
+                continue;
+            }
+            AbsoluteDate epoch = new AbsoluteDate(parseInstant(m.epoch()), utc);
+            impulses.add(new Impulse(epoch, m.deltaV().r(), m.deltaV().i(), m.deltaV().c()));
+        }
+        return impulses;
     }
 
     /**
@@ -192,12 +315,12 @@ public class ScenarioStreamService {
 
     private ScenarioSatelliteSamples sampleRole(PreparedRole role, AbsoluteDate startDate,
                                                 double firstT, int step, int steps) {
-        Propagator propagator = role.propagator();
+        PVCoordinatesProvider provider = role.provider();
         double[] cartesian = new double[(steps + 1) * 4];
         for (int k = 0; k <= steps; k++) {
             double t = firstT + (double) k * step; // relative to startDate; negative before start
             AbsoluteDate date = startDate.shiftedBy(t);
-            Vector3D ecef = propagator.getPVCoordinates(date, frames.ecef()).getPosition();
+            Vector3D ecef = provider.getPVCoordinates(date, frames.ecef()).getPosition();
             int base = k * 4;
             cartesian[base] = t;
             cartesian[base + 1] = ecef.getX();

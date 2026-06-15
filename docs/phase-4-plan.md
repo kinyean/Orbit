@@ -9,8 +9,9 @@
 > `lvlh(chiefProp)` transform — R15), a `three.js` proximity view
 > (`views/ProximityView.tsx`) reading the shared clock in lockstep, and a
 > resizable split-screen that appears only with a scenario (toggle unmounts it).
-> Outstanding: in-browser end-to-end over `docker compose up` (rebuild the
-> frontend image — `three` is a new dep). Phase 5 is next.
+> Done: in-browser end-to-end verified on the dev stack 2026-06-15 (scenario
+> load → split view, scrub lockstep, divider resize, proximity hide/show toggle).
+> Phase 5 is next (see [phase-5-plan.md](./phase-5-plan.md)).
 >
 > Planning artifact, written ahead of implementation (same workflow as
 > [phase-2-plan.md](./phase-2-plan.md), [phase-3-plan.md](./phase-3-plan.md),

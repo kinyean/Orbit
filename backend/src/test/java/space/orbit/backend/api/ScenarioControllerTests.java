@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.UUID;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -19,6 +20,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import space.orbit.backend.scenario.DuplicateScenarioNameException;
+import space.orbit.backend.scenario.ManeuverTemplateService;
 import space.orbit.backend.scenario.ScenarioBody;
 import space.orbit.backend.scenario.ScenarioNotFoundException;
 import space.orbit.backend.scenario.ScenarioResponse;
@@ -40,6 +42,9 @@ class ScenarioControllerTests {
 
     @MockitoBean
     private ScenarioService service;
+
+    @MockitoBean
+    private ManeuverTemplateService templates;
 
     private static final String VALID_BODY = """
             {"name":"Rendezvous","fidelity":"sgp4",
@@ -112,5 +117,27 @@ class ScenarioControllerTests {
         mvc.perform(get("/scenarios"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$").isArray());
+    }
+
+    @Test
+    void addManeuverReturnsUpdatedScenario() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(service.addManeuver(any(), any())).thenReturn(sampleResponse());
+        String body = "{\"deputyNoradId\":33591,\"epoch\":\"2024-06-01T06:00:00Z\","
+                + "\"frame\":\"ric\",\"r\":0.0,\"i\":1.5,\"c\":0.0}";
+        mvc.perform(post("/scenarios/{id}/maneuvers", id)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.body.fidelity").value("sgp4"));
+    }
+
+    @Test
+    void hohmannTemplateReturnsUpdatedScenario() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(templates.hohmann(any(), Mockito.anyInt(), Mockito.anyDouble())).thenReturn(sampleResponse());
+        String body = "{\"deputyNoradId\":33591,\"targetAltitudeKm\":600.0}";
+        mvc.perform(post("/scenarios/{id}/maneuvers/hohmann", id)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
     }
 }

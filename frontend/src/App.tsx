@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import Globe from './components/Globe';
 import ProximityView from './views/ProximityView';
+import RelativeReadout from './components/RelativeReadout';
 import TimeController from './components/TimeController';
 import Timeline from './components/Timeline';
 import InfoPanel from './components/InfoPanel';
@@ -8,6 +9,7 @@ import StatsOverlay from './components/StatsOverlay';
 import FilterPanel from './components/FilterPanel';
 import StatusChip from './components/StatusChip';
 import ScenarioPanel from './scenario/ScenarioPanel';
+import ManeuverPanel from './scenario/ManeuverPanel';
 import { useStore } from './store/useStore';
 import { startClockEngine } from './store/clockEngine';
 import './App.css';
@@ -114,6 +116,7 @@ export default function App() {
 
       <FilterPanel />
       <ScenarioPanel />
+      {scenarioActive && <ManeuverPanel />}
       <StatsOverlay />
       <button
         className="reset-view-btn"
@@ -132,6 +135,7 @@ export default function App() {
         </button>
       )}
       <InfoPanel />
+      {scenarioActive && <RelativeReadout />}
       <TimeController />
       <Timeline />
     </div>

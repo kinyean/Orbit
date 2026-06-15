@@ -283,7 +283,8 @@ against a metric. Phase done = every criterion passes.
       drive play/scrub/rate/reverse; live-catalog step/scrub/play-from-time;
       time-range edit; click-to-toggle orbit paths.
 
-**Phase 4B — three.js proximity view** ✅ (backend tests green + frontend build green)
+**Phase 4B — three.js proximity view** ✅ (backend tests green + frontend build green
++ in-browser pass verified 2026-06-15)
 - [x] three.js proximity view scene scaffold renders (`views/ProximityView.tsx`):
       Scene / PerspectiveCamera / WebGLRenderer + OrbitControls, R/I/C axes + grid.
 - [x] Chief at LVLH origin (amber marker); deputies as fixed-pixel color-coded points.
@@ -297,28 +298,66 @@ against a metric. Phase done = every criterion passes.
       each frame (never writes), mirroring Globe's preRender; one rAF clock writer.
 - [x] One WebSocket serves both viewports (Globe owns the client; the proximity view
       reads a module buffer it fills). `scenario-relative` is the 2nd binary frame.
-- [ ] In-browser pass over the dev stack (`docker compose up -d --build` incl. the
+- [x] In-browser pass over the dev stack (`docker compose up -d --build` incl. the
       frontend with the new `three` dep): load a ≥2-sat scenario, confirm split view +
-      lockstep play/scrub, divider resize, hide/show toggle.
+      lockstep play/scrub, divider resize, hide/show toggle. **Manually verified
+      2026-06-15** — scenario load → split view, scrub lockstep, divider resize, and
+      the proximity hide/show toggle all confirmed in-browser.
 
 ---
 
 ## Phase 5 — Relative motion + initial maneuvers
 
-*(Outline; fill in when starting Phase 5.)*
+> Sliced **5A / 5B / 5C** (see [phase-5-plan.md](./phase-5-plan.md)).
+>
+> **5A complete — backend tests green + frontend build green** (2026-06-15):
+> live relative readout + backend-computed closest approach.
+> **5B complete — backend tests green + frontend build green** (2026-06-15):
+> impulsive ΔV maneuvers (RIC), schema v2 + audited mutation + numerical
+> re-propagation via Orekit `ImpulseManeuver`, ΔV glyphs + budget.
+> **5C complete — backend tests green + frontend build green** (2026-06-15): CW
+> fidelity (closed-form STM relative propagator) + Hohmann/Lambert templates.
+> **Dev-stack verified (2026-06-15):** backend image rebuilt, `gen:api` regenerated
+> from the live spec, and all maneuver endpoints round-trip 200 against the seeded
+> demo (add Δv; Hohmann → two prograde impulses; Lambert rendezvous). A full visual
+> click-through (CW animation / glyphs / transfer paths) is the remaining nicety.
 
-- [ ] Relative-state readout (distance, range-rate, R/I/C components) per
-      deputy, updated per frame.
-- [ ] Closest-approach time + distance computed and annotated on the
-      timeline.
-- [ ] CW fidelity option works for close-range scenarios.
-- [ ] Impulsive ΔV maneuver: add via UI, scenario versioned, propagation
-      re-runs.
-- [ ] Hohmann transfer template: target altitude → two impulses inserted.
-- [ ] Two-impulse rendezvous template (Lambert): target epoch → ΔV
-      computed.
-- [ ] ΔV vectors annotated in proximity view at maneuver epochs.
-- [ ] Cumulative ΔV budget per spacecraft visible.
+**5A — relative-state analysis** ✅ (backend tests green + frontend build green)
+- [x] Relative-state readout (distance, range-rate, R/I/C components) per
+      deputy, updated per frame (`RelativeReadout.tsx`; throttled rAF off the
+      relative buffer, ≤10 rows, color-keyed to the proximity view).
+- [x] Closest-approach time + distance computed (backend, full-resolution
+      golden-section refine in `ScenarioStreamService`; carried additively in the
+      `scenario-relative` envelope) and annotated on the timeline + readout.
+
+**5B — impulsive ΔV maneuvers** ✅ (backend tests green + frontend build green)
+- [x] Impulsive ΔV maneuver: add via UI (`ManeuverPanel.tsx`), scenario
+      versioned (schema v2, one audit row, `MANEUVER_ADD`/`MANEUVER_REMOVE`),
+      propagation re-runs (reload nonce reopens the stream). Maneuvered deputies
+      propagate **numerically** via `ImpulseManeuver` (SGP4 can't be reset).
+- [x] ΔV vectors annotated in proximity view at maneuver epochs (`ProximityView`
+      ΔV `ArrowHelper` glyphs, shown within a scrub window of the epoch).
+- [x] Cumulative ΔV budget per spacecraft visible (`ManeuverPanel` Σ|ΔV| per
+      deputy).
+- [x] Dev-stack round-trip (5A + 5B): backend rebuilt + `gen:api` regenerated; add
+      Δv returns 200 and persists a new version; `scenario-relative` carries TCA.
+      (Full visual click-through — readout live, timeline tick, glyph/budget — is the
+      remaining nicety.)
+
+**5C — CW fidelity + transfer templates** ✅ (backend tests green + frontend build green)
+- [x] CW fidelity works for close-range scenarios (`CwPropagation` closed-form STM
+      relative provider; chief on SGP4, deputies seeded R15-correctly from the live
+      LVLH frame; piecewise impulses). The fidelity selector offers `cw`; a banner
+      warns when separation > ~10 km or the chief isn't near-circular (envelope
+      `fidelity`/`maxSeparationM`/`chiefEccentricity`). No longer 4422.
+- [x] Hohmann transfer template: target altitude → two prograde impulses inserted
+      (`POST /scenarios/{id}/maneuvers/hohmann`; vis-viva; via the audited path).
+- [x] Two-impulse rendezvous template (Lambert): arrival epoch → two ΔV computed
+      (`POST /scenarios/{id}/maneuvers/rendezvous`; Orekit `IodLambert`).
+- [x] Dev-stack round-trip (5C): Hohmann + rendezvous endpoints return 200 and
+      insert two impulses each via the audited path; CW scenarios stream (no 4422)
+      with the validity hint. (Full visual click-through — CW animation, transfer
+      render, budget — is the remaining nicety.)
 
 ---
 

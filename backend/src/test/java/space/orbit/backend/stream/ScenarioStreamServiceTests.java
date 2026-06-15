@@ -74,7 +74,22 @@ class ScenarioStreamServiceTests {
     private static ScenarioBody body(String fidelity, String start, String end) {
         ScenarioBody.Role chief = role("chief", leoTle(25544, "ISS (ZARYA)", 325.0), "ISS (ZARYA)");
         ScenarioBody.Role deputy = role("deputy", leoTle(25545, "DEPUTY-1", 5.0), "DEPUTY-1");
-        return new ScenarioBody(1, fidelity, new ScenarioBody.TimeRange(start, end), chief, List.of(deputy));
+        return new ScenarioBody(2, fidelity, new ScenarioBody.TimeRange(start, end), chief, List.of(deputy));
+    }
+
+    /** Same as {@link #body} but the deputy carries a single prograde ΔV maneuver. */
+    private static ScenarioBody bodyWithManeuver(String start, String maneuverEpoch, double dvInTrack) {
+        ScenarioBody.Role chief = role("chief", leoTle(25544, "ISS (ZARYA)", 325.0), "ISS (ZARYA)");
+        TLE depTle = leoTle(25545, "DEPUTY-1", 5.0);
+        ScenarioBody.Maneuver m = new ScenarioBody.Maneuver(
+                "m-1", "delta_v", maneuverEpoch, "ric", new ScenarioBody.DeltaV(0.0, dvInTrack, 0.0));
+        ScenarioBody.Role deputy = new ScenarioBody.Role("deputy", 25545, "DEPUTY-1",
+                new ScenarioBody.InitialState("tle",
+                        new ScenarioBody.Tle(depTle.getLine1(), depTle.getLine2(), depTle.getDate().toString())),
+                List.of(m));
+        // 90 min window so the post-burn arc has time to climb to a higher apogee.
+        return new ScenarioBody(2, "sgp4", new ScenarioBody.TimeRange(start, "2024-06-01T13:30:00Z"),
+                chief, List.of(deputy));
     }
 
     private static ScenarioService mockBody(ScenarioBody body) {
@@ -114,11 +129,23 @@ class ScenarioStreamServiceTests {
     }
 
     @Test
-    void cwFidelityIsUnprocessable() {
+    void cwFidelityStreamsWithValidityHint() throws Exception {
+        // Phase 5C: CW is now streamable (no longer 4422). It encodes both views and
+        // carries the validity hint (fidelity + max separation + chief eccentricity).
         ScenarioBody body = body("cw", "2024-06-01T12:00:00Z", "2024-06-01T12:30:00Z");
         ScenarioStreamService svc = service(new ScenarioStreamProperties(30, 5000, true, true), mockBody(body));
-        assertThatThrownBy(() -> svc.loadAndEncode(ID, EMAIL))
-                .isInstanceOf(ScenarioStreamUnprocessableException.class);
+
+        EncodedScenario encoded = svc.loadAndEncode(ID, EMAIL);
+        JsonNode czml = MAPPER.readTree(encoded.czml());
+        assertThat(czml.get("satelliteCount").asInt()).isEqualTo(2);
+
+        JsonNode rel = MAPPER.readTree(encoded.relative());
+        assertThat(rel.get("fidelity").asText()).isEqualTo("cw");
+        assertThat(rel.has("maxSeparationM")).isTrue();
+        assertThat(rel.has("chiefEccentricity")).isTrue();
+        // The CW deputy renders at a bounded LVLH separation (not Earth-scale).
+        double sepKm = rel.get("maxSeparationM").asDouble() / 1000.0;
+        assertThat(sepKm).isGreaterThan(0.0).isLessThan(20000.0);
     }
 
     @Test
@@ -136,6 +163,48 @@ class ScenarioStreamServiceTests {
         // samples per sat = steps + 1 must stay within the cap.
         int samples = root.get("czml").get(1).get("position").get("cartesian").size() / 4;
         assertThat(samples).isLessThanOrEqualTo(100);
+    }
+
+    // --- maneuvers (Phase 5B, US-MAN-01) -------------------------------------
+
+    /** Max geocentric radius (km) of the deputy across its CZML cartesian samples. */
+    private static double maxDeputyRadiusKm(JsonNode czmlRoot) {
+        JsonNode cart = czmlRoot.get("czml").get(2).get("position").get("cartesian");
+        double max = 0.0;
+        for (int base = 0; base + 4 <= cart.size(); base += 4) {
+            double x = cart.get(base + 1).asDouble();
+            double y = cart.get(base + 2).asDouble();
+            double z = cart.get(base + 3).asDouble();
+            max = Math.max(max, Math.sqrt(x * x + y * y + z * z) / 1000.0);
+        }
+        return max;
+    }
+
+    @Test
+    void progradeManeuverRaisesDeputyApogee() throws Exception {
+        // A maneuvered deputy is forced numerical; compare a +50 m/s in-track burn
+        // against a zero-ΔV burn (same numerical engine) so it's apples-to-apples.
+        ScenarioStreamProperties props = new ScenarioStreamProperties(30, 5000, true, true);
+        ScenarioStreamService base = service(props,
+                mockBody(bodyWithManeuver("2024-06-01T12:00:00Z", "2024-06-01T12:15:00Z", 0.0)));
+        ScenarioStreamService burned = service(props,
+                mockBody(bodyWithManeuver("2024-06-01T12:00:00Z", "2024-06-01T12:15:00Z", 50.0)));
+
+        double rBase = maxDeputyRadiusKm(MAPPER.readTree(base.loadAndEncode(ID, EMAIL).czml()));
+        double rBurn = maxDeputyRadiusKm(MAPPER.readTree(burned.loadAndEncode(ID, EMAIL).czml()));
+        assertThat(rBurn).as("apogee raised by a +50 m/s prograde burn (km)").isGreaterThan(rBase + 20.0);
+    }
+
+    @Test
+    void maneuveredScenarioIsBitIdenticalOnRerun() {
+        // R11 holds with maneuvers: the impulse is a frozen input, event location is
+        // pinned, ordering is stable — both runs produce byte-identical payloads.
+        ScenarioStreamProperties props = new ScenarioStreamProperties(30, 5000, true, true);
+        ScenarioBody body = bodyWithManeuver("2024-06-01T12:00:00Z", "2024-06-01T12:15:00Z", 30.0);
+        EncodedScenario a = service(props, mockBody(body)).loadAndEncode(ID, EMAIL);
+        EncodedScenario b = service(props, mockBody(body)).loadAndEncode(ID, EMAIL);
+        assertThat(a.czml()).isEqualTo(b.czml());
+        assertThat(a.relative()).isEqualTo(b.relative());
     }
 
     @Test
@@ -174,6 +243,44 @@ class ScenarioStreamServiceTests {
         int czmlCount = MAPPER.readTree(encoded.czml())
                 .get("czml").get(2).get("position").get("cartesian").size() / 4;
         assertThat(relCount).isEqualTo(czmlCount);
+    }
+
+    @Test
+    void deputyCarriesClosestApproachWithinTheWindow() throws Exception {
+        // US-REL-02 (Phase 5A): each deputy reports a TCA epoch + distance. The
+        // co-orbital deputy's closest approach must fall inside [start,end] and the
+        // distance must be ≤ every streamed sample's range (the refine never makes
+        // it worse than the coarse grid minimum).
+        String start = "2024-06-01T12:00:00Z";
+        String end = "2024-06-01T13:30:00Z"; // ~1 rev so a clear minimum exists
+        ScenarioBody body = body("sgp4", start, end);
+        ScenarioStreamService svc = service(new ScenarioStreamProperties(30, 5000, true, true), mockBody(body));
+        JsonNode dep = MAPPER.readTree(svc.loadAndEncode(ID, EMAIL).relative()).get("deputies").get(0);
+
+        assertThat(dep.has("tcaEpoch")).isTrue();
+        java.time.Instant tca = java.time.Instant.parse(dep.get("tcaEpoch").asText());
+        assertThat(tca).isBetween(java.time.Instant.parse(start), java.time.Instant.parse(end));
+
+        double tcaDist = dep.get("tcaDistanceM").asDouble();
+        assertThat(tcaDist).as("TCA distance (m)").isGreaterThan(0.0);
+
+        // Min over the streamed samples (within the window) — refine must be ≤ this.
+        JsonNode s = dep.get("samples");
+        int stride = 7;
+        long endSec = java.time.Duration.between(
+                java.time.Instant.parse(start), java.time.Instant.parse(end)).getSeconds();
+        double sampledMin = Double.POSITIVE_INFINITY;
+        for (int base = 0; base + stride <= s.size(); base += stride) {
+            double t = s.get(base).asDouble();
+            if (t < 0 || t > endSec) {
+                continue;
+            }
+            double r = s.get(base + 1).asDouble();
+            double i = s.get(base + 2).asDouble();
+            double c = s.get(base + 3).asDouble();
+            sampledMin = Math.min(sampledMin, Math.sqrt(r * r + i * i + c * c));
+        }
+        assertThat(tcaDist).as("refined TCA ≤ coarse sample minimum").isLessThanOrEqualTo(sampledMin + 1.0);
     }
 
     @Test

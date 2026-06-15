@@ -126,6 +126,139 @@ class ScenarioServiceTests {
         verify(auditLog, never()).save(any());
     }
 
+    // --- maneuvers (Phase 5B, US-MAN-01) -------------------------------------
+
+    private static final String DEPUTY_TLE_BODY_V2 =
+            // a v2 body: chief 25544 + deputy 33591, no maneuvers yet
+            "{\"schemaVersion\":2,\"fidelity\":\"sgp4\","
+            + "\"timeRange\":{\"start\":\"2024-06-01T00:00:00Z\",\"end\":\"2024-06-02T00:00:00Z\"},"
+            + "\"chief\":{\"role\":\"chief\",\"noradId\":25544,\"name\":\"ISS\","
+            + "\"initialState\":{\"kind\":\"tle\",\"tle\":{\"line1\":\"1\",\"line2\":\"2\",\"epoch\":\"e\"}},\"maneuvers\":[]},"
+            + "\"deputies\":[{\"role\":\"deputy\",\"noradId\":33591,\"name\":\"NOAA\","
+            + "\"initialState\":{\"kind\":\"tle\",\"tle\":{\"line1\":\"1\",\"line2\":\"2\",\"epoch\":\"e\"}},\"maneuvers\":[]}]}";
+
+    /** A v1 body (no maneuvers field anywhere) — the forward-migration fixture. */
+    private static final String BODY_V1 =
+            "{\"schemaVersion\":1,\"fidelity\":\"sgp4\","
+            + "\"timeRange\":{\"start\":\"2024-06-01T00:00:00Z\",\"end\":\"2024-06-02T00:00:00Z\"},"
+            + "\"chief\":{\"role\":\"chief\",\"noradId\":25544,\"name\":\"ISS\","
+            + "\"initialState\":{\"kind\":\"tle\",\"tle\":{\"line1\":\"1\",\"line2\":\"2\",\"epoch\":\"e\"}}},"
+            + "\"deputies\":[{\"role\":\"deputy\",\"noradId\":33591,\"name\":\"NOAA\","
+            + "\"initialState\":{\"kind\":\"tle\",\"tle\":{\"line1\":\"1\",\"line2\":\"2\",\"epoch\":\"e\"}}}]}";
+
+    /** Stand up an existing, owned scenario whose latest version has {@code bodyJson}. */
+    private Scenario existingWithBody(UUID id, String bodyJson) {
+        Scenario s = new Scenario(id, OWNER, "S");
+        UUID versionId = UUID.randomUUID();
+        s.setLatestVersionId(versionId);
+        when(scenarios.findById(id)).thenReturn(Optional.of(s));
+        when(versions.findById(versionId)).thenReturn(
+                Optional.of(new ScenarioVersion(versionId, id, 1, OWNER, bodyJson)));
+        when(versions.findMaxVersionNo(id)).thenReturn(Optional.of(1));
+        when(versions.countByScenarioId(id)).thenReturn(2L);
+        return s;
+    }
+
+    @Test
+    void addManeuverWritesV2VersionWithImpulseAndOneAudit() {
+        UUID id = UUID.randomUUID();
+        Scenario s = existingWithBody(id, DEPUTY_TLE_BODY_V2);
+
+        ScenarioResponse resp = service.addManeuver(id,
+                new ManeuverDraft(33591, "2024-06-01T06:00:00Z", "ric", 0.0, 1.5, 0.0));
+
+        ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
+        verify(versions).saveAndFlush(vCap.capture());
+        assertThat(vCap.getValue().getVersionNo()).isEqualTo(2);
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":2").contains("delta_v");
+        assertThat(s.getLatestVersionId()).isEqualTo(vCap.getValue().getId());
+        verify(auditLog, times(1)).save(any());
+
+        assertThat(resp.body().deputies()).hasSize(1);
+        assertThat(resp.body().deputies().get(0).maneuvers()).hasSize(1);
+        assertThat(resp.body().deputies().get(0).maneuvers().get(0).deltaV().i()).isEqualTo(1.5);
+    }
+
+    @Test
+    void addManeuverForwardMigratesAV1Body() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, BODY_V1);
+
+        ScenarioResponse resp = service.addManeuver(id,
+                new ManeuverDraft(33591, "2024-06-01T06:00:00Z", "ric", 1.0, 0.0, 0.0));
+
+        ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
+        verify(versions).saveAndFlush(vCap.capture());
+        // The v1 body deserialized (null maneuvers → empty), then re-stamped to v2.
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":2").contains("delta_v");
+        assertThat(resp.body().schemaVersion()).isEqualTo(2);
+        assertThat(resp.body().chief().noradId()).isEqualTo(25544);
+        assertThat(resp.body().deputies().get(0).maneuvers()).hasSize(1);
+    }
+
+    @Test
+    void rejectsManeuverOnChief() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        assertThatThrownBy(() -> service.addManeuver(id,
+                new ManeuverDraft(25544, "2024-06-01T06:00:00Z", "ric", 0.0, 1.0, 0.0)))
+                .isInstanceOf(ScenarioValidationException.class);
+        verify(versions, never()).saveAndFlush(any());
+        verify(auditLog, never()).save(any());
+    }
+
+    @Test
+    void rejectsManeuverEpochOutOfRange() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        assertThatThrownBy(() -> service.addManeuver(id,
+                new ManeuverDraft(33591, "2024-07-01T00:00:00Z", "ric", 0.0, 1.0, 0.0)))
+                .isInstanceOf(ScenarioValidationException.class);
+        verify(auditLog, never()).save(any());
+    }
+
+    @Test
+    void rejectsNonRicManeuverFrame() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        assertThatThrownBy(() -> service.addManeuver(id,
+                new ManeuverDraft(33591, "2024-06-01T06:00:00Z", "body", 0.0, 1.0, 0.0)))
+                .isInstanceOf(ScenarioValidationException.class);
+        verify(auditLog, never()).save(any());
+    }
+
+    @Test
+    void removeManeuverDropsItAndWritesANewVersion() {
+        // Seed a body that already carries one maneuver (id "m-1") on the deputy.
+        String withManeuver = DEPUTY_TLE_BODY_V2.replace(
+                "\"name\":\"NOAA\","
+                + "\"initialState\":{\"kind\":\"tle\",\"tle\":{\"line1\":\"1\",\"line2\":\"2\",\"epoch\":\"e\"}},\"maneuvers\":[]}",
+                "\"name\":\"NOAA\","
+                + "\"initialState\":{\"kind\":\"tle\",\"tle\":{\"line1\":\"1\",\"line2\":\"2\",\"epoch\":\"e\"}},"
+                + "\"maneuvers\":[{\"id\":\"m-1\",\"kind\":\"delta_v\",\"epoch\":\"2024-06-01T06:00:00Z\","
+                + "\"frame\":\"ric\",\"deltaV\":{\"r\":0.0,\"i\":1.5,\"c\":0.0}}]}");
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, withManeuver);
+
+        ScenarioResponse resp = service.removeManeuver(id, "m-1");
+
+        ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
+        verify(versions).saveAndFlush(vCap.capture());
+        assertThat(vCap.getValue().getBody()).doesNotContain("m-1");
+        verify(auditLog, times(1)).save(any());
+        assertThat(resp.body().deputies().get(0).maneuvers()).isEmpty();
+    }
+
+    @Test
+    void rejectsRemovingUnknownManeuver() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        assertThatThrownBy(() -> service.removeManeuver(id, "nope"))
+                .isInstanceOf(ScenarioValidationException.class);
+        verify(versions, never()).saveAndFlush(any());
+        verify(auditLog, never()).save(any());
+    }
+
     @Test
     void snapshotFrozenAgainstLaterCatalogChange() {
         service.create(draft("Frozen", 25544, List.of()));

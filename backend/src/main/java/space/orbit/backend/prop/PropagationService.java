@@ -1,8 +1,18 @@
 package space.orbit.backend.prop;
 
+import java.util.Comparator;
+import java.util.List;
+import org.hipparchus.geometry.euclidean.threed.Vector3D;
+import org.orekit.attitudes.LofOffset;
+import org.orekit.forces.maneuvers.Control3DVectorCostType;
+import org.orekit.forces.maneuvers.ImpulseManeuver;
+import org.orekit.forces.maneuvers.ImpulseProvider;
+import org.orekit.frames.LOFType;
 import org.orekit.propagation.Propagator;
 import org.orekit.propagation.analytical.tle.TLE;
 import org.orekit.propagation.analytical.tle.TLEPropagator;
+import org.orekit.propagation.events.DateDetector;
+import org.orekit.propagation.numerical.NumericalPropagator;
 import org.orekit.time.AbsoluteDate;
 import org.orekit.utils.PVCoordinates;
 import org.springframework.context.annotation.DependsOn;
@@ -55,6 +65,50 @@ public class PropagationService {
             }
             case CW -> throw new UnsupportedOperationException("CW propagation lands in Phase 5");
         };
+    }
+
+    /** Deterministic order for same-instant impulses (R11): epoch, then ΔV components. */
+    private static final Comparator<Impulse> IMPULSE_ORDER =
+            Comparator.comparing(Impulse::epoch)
+                    .thenComparingDouble(Impulse::r)
+                    .thenComparingDouble(Impulse::i)
+                    .thenComparingDouble(Impulse::c);
+
+    /**
+     * Build a propagator for a maneuvered role (Phase 5B, US-MAN-01). With no
+     * impulses this is exactly {@link #propagatorFor(TLE, Fidelity)}.
+     *
+     * <p><b>A maneuvered role is always numerical.</b> An impulse is applied by an
+     * {@link ImpulseManeuver} event that resets the propagator's state at the burn
+     * epoch — which the analytic {@link TLEPropagator} cannot do (its state can't
+     * be reset, and SGP4 can't re-seed from an arbitrary osculating state). So we
+     * seed the numerical engine from the TLE start state regardless of the
+     * requested {@code fidelity}; {@code SGP4} silently upgrades for that role.
+     *
+     * <p>Each impulse fires at a fixed {@link DateDetector} (pinned maxCheck +
+     * threshold) with its ΔV expressed in a QSW/RIC-aligned {@link LofOffset}
+     * attitude, {@link Control3DVectorCostType#NONE} (no mass bookkeeping). Impulses
+     * are attached in a sorted order so same-instant burns compose deterministically.
+     */
+    public Propagator propagatorFor(TLE tle, Fidelity fidelity, List<Impulse> impulses) {
+        if (impulses == null || impulses.isEmpty()) {
+            return propagatorFor(tle, fidelity);
+        }
+        TLEPropagator sgp4 = satellitePropagator.build(tle);
+        StateVector seed = satellitePropagator.eciState(sgp4, tle.getDate());
+        NumericalPropagator propagator = numericalPropagation.build(seed, PropagationSettings.DEFAULT);
+
+        LofOffset ricAttitude = new LofOffset(frames.eci(), LOFType.QSW); // satellite frame = RIC
+        impulses.stream().sorted(IMPULSE_ORDER).forEach(imp -> {
+            DateDetector trigger = new DateDetector(imp.epoch())
+                    .withMaxCheck(60.0)
+                    .withThreshold(1.0e-6);
+            Vector3D deltaVRic = new Vector3D(imp.r(), imp.i(), imp.c());
+            propagator.addEventDetector(new ImpulseManeuver(
+                    trigger, ricAttitude, ImpulseProvider.of(deltaVRic),
+                    Double.POSITIVE_INFINITY, Control3DVectorCostType.NONE));
+        });
+        return propagator;
     }
 
     /**

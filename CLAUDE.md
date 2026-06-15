@@ -24,9 +24,63 @@ pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
 ## Current phase
-**Phase 4B complete — backend tests green + frontend build green (in-browser pass
-pending).** Phase 5 next (relative-state analysis readouts + initial maneuvers;
-see roadmap §7).
+**Phase 4 complete & verified in-browser (2026-06-15).** **Phase 5 in progress**
+(relative-state analysis + initial maneuvers), sliced 5A/5B/5C — see
+[docs/phase-5-plan.md](docs/phase-5-plan.md) and roadmap §7.
+
+**Phase 5A complete — backend tests green + frontend build green** (relative-state
+analysis): backend `ScenarioStreamService` now computes each deputy's closest
+approach (TCA) on the live propagators (golden-section refine of the coarse sample
+minimum, deterministic) and carries `tcaEpoch`/`tcaDistanceM` additively in the
+`scenario-relative` envelope (contract stays `VERSION="1"`). Frontend
+`relativeBuffer` gained `deputyStateAt` (R/I/C + velocity) + a subscribe hook; a new
+`RelativeReadout` component shows per-deputy distance / range-rate / R-I-C (throttled
+rAF off the buffer, refs not Zustand — Decision 5) + TCA, and `Timeline` draws TCA
+ticks.
+
+**Phase 5B complete — backend tests green + frontend build green** (impulsive ΔV
+maneuvers): `ScenarioBody` bumped to **schemaVersion 2** (additive `maneuvers` list
+per `Role`; a v1 body reads with null→empty maneuvers and is re-stamped on save — no
+DB migration). `ScenarioService.addManeuver`/`removeManeuver` are audited single-path
+mutations (new immutable version + one audit row, Decision 16); `ScenarioController`
+exposes `POST /scenarios/{id}/maneuvers` + `DELETE …/{maneuverId}`. **R15-critical:**
+a maneuvered deputy is **always propagated numerically** —
+`PropagationService.propagatorFor(tle, fidelity, List<Impulse>)` forces the numerical
+engine and attaches Orekit `ImpulseManeuver` (a `DateDetector` per burn, ΔV via a
+`LofOffset(eci, LOFType.QSW)` = RIC attitude, `Control3DVectorCostType.NONE`) — SGP4's
+analytic `TLEPropagator` can't be reset mid-propagation. Determinism (R11): impulses
+sorted by (epoch, ΔV), pinned detector maxCheck/threshold; byte-identical reruns are
+tested. Frontend: `ManeuverPanel` (per-deputy list + add-Δv form + cumulative Σ|ΔV|
+budget), ΔV `ArrowHelper` glyphs in `ProximityView` (read from the loaded scenario
+body in the store — no contract change for glyphs), and `addManeuver`/`removeManeuver`
+store actions that reuse the reload-nonce re-propagation path. RIC-only in 5B;
+body-frame ΔV is deferred to Phase 7 (needs attitude).
+
+**Phase 5C complete — backend tests green + frontend build green** (CW fidelity +
+transfer templates): new `prop/CwPropagation` is a closed-form Clohessy–Wiltshire
+state-transition relative propagator (x=radial, y=in-track, z=cross-track; piecewise
+RIC impulses). In CW mode `ScenarioStreamService` propagates the **chief** with SGP4
+and builds each **deputy** as a `PVCoordinatesProvider` from CW dynamics, seeded
+R15-correctly from the chief's live LVLH frame (`PreparedRole` now holds a
+`PVCoordinatesProvider`, so SGP4/numerical/CW all sample through one loop). The
+`scenario-relative` envelope additively carries `fidelity`/`maxSeparationM`/
+`chiefEccentricity`; the frontend warns when a CW scenario exceeds ~10 km separation
+or a near-circular chief. **Templates** (`ManeuverTemplateService`): `POST
+/scenarios/{id}/maneuvers/hohmann` (vis-viva, two prograde impulses) and `.../rendezvous`
+(Orekit `IodLambert`, two ΔV) compute ΔV from the frozen TLEs and insert it through a
+new audited `ScenarioService.addManeuvers` (one version + audit per template). ΔV is
+stored in the burn state's **own** RIC (the frame `ImpulseManeuver`'s `LofOffset`
+re-applies it in). Frontend: fidelity selector (sgp4/numerical/cw) in the composer,
+Hohmann/rendezvous forms + CW banner in `ManeuverPanel`.
+
+**Phase 5 verified on the dev stack (2026-06-15):** the backend image was rebuilt
+(`docker compose up -d --build backend`) and `frontend/src/api/schema.d.ts` was
+regenerated from the live `/v3/api-docs` via `npm run gen:api` (no longer hand-edited).
+All maneuver endpoints round-trip 200 against the seeded demo (add Δv; Hohmann →
+two prograde impulses; Lambert rendezvous), and `scenario-relative` carries TCA +
+the CW hints. A full visual click-through (CW animation, ΔV glyphs, transfer paths)
+is the remaining nicety. **Phase 6 next** (proximity visualization: GLTF models,
+trajectory ribbons).
 
 **Phase 4B** (three.js proximity view + per-scenario `scenario-relative` stream):
 backend `stream` adds `RelativeStateEncoder` (plain-JSON `scenario-relative`

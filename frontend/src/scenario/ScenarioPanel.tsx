@@ -26,6 +26,7 @@ export default function ScenarioPanel() {
   const saveScenario = useStore((s) => s.saveScenario);
   const closeScenario = useStore((s) => s.closeScenario);
   const setComposerTimeRange = useStore((s) => s.setComposerTimeRange);
+  const setComposerFidelity = useStore((s) => s.setComposerFidelity);
 
   useEffect(() => {
     void loadScenarios();
@@ -153,6 +154,18 @@ export default function ScenarioPanel() {
                 </ul>
               </div>
             )}
+            <div className="composer-fidelity">
+              <span className="composer-role">Fidelity</span>
+              <select
+                value={composer.fidelity}
+                onChange={(e) => setComposerFidelity(e.target.value)}
+                aria-label="Propagator fidelity"
+              >
+                <option value="sgp4">SGP4</option>
+                <option value="numerical">Numerical (DP8(7))</option>
+                <option value="cw">Clohessy–Wiltshire</option>
+              </select>
+            </div>
             <div className="composer-timerange">
               <span className="composer-role">Time range (UTC)</span>
               <label className="tr-field">

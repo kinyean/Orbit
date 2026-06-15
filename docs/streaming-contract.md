@@ -285,8 +285,13 @@ instants.
   "chiefId": 25544,
   "includeVelocity": true,           // gates the stride (orbit.scenario.include-relative-velocity)
   "stride": 7,                       // 4 = [t,R,I,C]; 7 = [t,R,I,C,vR,vI,vC]
+  "fidelity": "cw",                  // scenario fidelity (Phase 5C); drives the CW warning
+  "maxSeparationM": 3200,            // largest chief-relative range over the window
+  "chiefEccentricity": 0.0007,       // CW assumes a near-circular chief
   "deputies": [
     { "noradId": 25545, "name": "DEPUTY-1", "interpolationDegree": 5,
+      "tcaEpoch": "2026-06-11T00:42:10Z",   // closest approach (Phase 5A); optional
+      "tcaDistanceM": 1842,                  // chief-relative range at tcaEpoch (m)
       "samples": [ t, R,I,C, vR,vI,vC,  t, R,I,C, vR,vI,vC,  … ] }
   ]
 }
@@ -300,3 +305,15 @@ instants.
   single-epoch `FrameService.toRelativeState` (which would drop that term).
 - Positions rounded to whole metres; velocities to mm/s (whole-metre rounding would
   zero out small relative velocities).
+- **`tcaEpoch` / `tcaDistanceM`** (Phase 5A, US-REL-02, additive — `VERSION` stays
+  `"1"`): the deputy's closest approach to the chief over `[start,end]`, computed on
+  the **live propagators at full resolution** (a golden-section refine of the
+  coarse sample-grid minimum), not by scanning the clamped samples. Omitted if it
+  could not be computed; the client displays it in the relative readout and as a
+  timeline tick. Deterministic (fixed-iteration refine — R11).
+- **`fidelity` / `maxSeparationM` / `chiefEccentricity`** (Phase 5C, US-REL-03,
+  additive): the scenario fidelity plus the CW validity hints. The client shows a
+  warning when `fidelity === "cw"` and the separation exceeds ~10 km or the chief
+  is not near-circular (CW is a small-separation linearization). In CW mode the
+  chief propagates with SGP4 and each deputy is a closed-form CW state-transition
+  provider seeded R15-correctly from the chief's live LVLH frame.

@@ -133,15 +133,32 @@ export default function ProximityView() {
       controls.update();
     };
 
+    // ΔV maneuver glyphs (US-MAN-04): one arrow per maneuver, shown when the clock
+    // is within MANEUVER_WINDOW_S of the burn epoch. Built lazily and reused.
+    const MANEUVER_WINDOW_S = 120;
+    const glyphs: THREE.ArrowHelper[] = [];
+    const ensureGlyphs = (count: number) => {
+      while (glyphs.length < count) {
+        const a = new THREE.ArrowHelper(
+          new THREE.Vector3(0, 1, 0), new THREE.Vector3(), 1, 0xffe066, undefined, undefined);
+        a.visible = false;
+        scene.add(a);
+        glyphs.push(a);
+      }
+    };
+
     // Render loop — the lockstep seam. Reads the shared clock; never writes it.
     let rafId = 0;
     let lastReadout = 0;
     const out: [number, number, number] = [0, 0, 0];
+    const dvDir = new THREE.Vector3();
+    const glyphPos = new THREE.Vector3();
     const renderFrame = () => {
       rafId = requestAnimationFrame(renderFrame);
       const data = getRelativeData();
       if (getRelativeVersion() !== builtVersion) rebuild();
 
+      let maxDistNow = 1000;
       if (data && geometry) {
         const t = simTimeToT(data.epochMs, useStore.getState().currentTime);
         const pos = geometry.attributes.position.array as Float32Array;
@@ -151,8 +168,47 @@ export default function ProximityView() {
           pos[b] = out[0];
           pos[b + 1] = out[1];
           pos[b + 2] = out[2];
+          maxDistNow = Math.max(maxDistNow, Math.hypot(out[0], out[1], out[2]));
         });
         geometry.attributes.position.needsUpdate = true;
+
+        // ΔV glyphs: read maneuvers from the loaded scenario (store), place each at
+        // the deputy's interpolated position at the burn epoch, oriented along ΔV
+        // in LVLH (R→+X, I→+Y, C→+Z). Length scaled to the scene, clamped.
+        const body = useStore.getState().loadedScenario?.body;
+        const nowMs = useStore.getState().currentTime.getTime();
+        const glyphLen = Math.max(maxDistNow * 0.25, 200);
+        let gi = 0;
+        if (body?.deputies && data) {
+          for (const dep of data.deputies) {
+            const role = body.deputies.find((d) => d.noradId === dep.noradId);
+            for (const m of role?.maneuvers ?? []) {
+              const epochMs = m.epoch ? Date.parse(m.epoch) : NaN;
+              const dv = m.deltaV;
+              if (Number.isNaN(epochMs) || !dv) continue;
+              ensureGlyphs(gi + 1);
+              const glyph = glyphs[gi++];
+              if (Math.abs(nowMs - epochMs) > MANEUVER_WINDOW_S * 1000) {
+                glyph.visible = false;
+                continue;
+              }
+              const mt = (epochMs - data.epochMs) / 1000;
+              deputyPositionAt(dep.samples, dep.stride, mt, out);
+              dvDir.set(dv.r ?? 0, dv.i ?? 0, dv.c ?? 0);
+              if (dvDir.lengthSq() === 0) {
+                glyph.visible = false;
+                continue;
+              }
+              dvDir.normalize();
+              glyphPos.set(out[0], out[1], out[2]);
+              glyph.position.copy(glyphPos);
+              glyph.setDirection(dvDir);
+              glyph.setLength(glyphLen, glyphLen * 0.25, glyphLen * 0.12);
+              glyph.visible = true;
+            }
+          }
+        }
+        for (let k = gi; k < glyphs.length; k++) glyphs[k].visible = false;
       }
 
       controls.update();
@@ -180,6 +236,10 @@ export default function ProximityView() {
       cancelAnimationFrame(rafId);
       resize.disconnect();
       controls.dispose();
+      glyphs.forEach((g) => {
+        scene.remove(g);
+        g.dispose();
+      });
       if (points) points.geometry.dispose();
       pointsMaterial.dispose();
       axes.dispose();

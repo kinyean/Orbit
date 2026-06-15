@@ -26,14 +26,19 @@ public class RelativeStateEncoder {
     private static final int MAX_INTERP_DEGREE = 5;
 
     /**
-     * @param epoch           t=0 reference for the sample times (the scenario start)
-     * @param stepSeconds     effective sample step (echoed; matches the CZML grid)
-     * @param chiefId         NORAD id of the chief (the LVLH origin)
-     * @param deputies        one entry per deputy (chief excluded)
-     * @param includeVelocity whether each sample carries vR/vI/vC (stride 7 vs 4)
+     * @param epoch             t=0 reference for the sample times (the scenario start)
+     * @param stepSeconds       effective sample step (echoed; matches the CZML grid)
+     * @param chiefId           NORAD id of the chief (the LVLH origin)
+     * @param deputies          one entry per deputy (chief excluded)
+     * @param includeVelocity   whether each sample carries vR/vI/vC (stride 7 vs 4)
+     * @param fidelity          the scenario fidelity (echoed; {@code "cw"} drives the
+     *                          client's validity warning, Phase 5C / US-REL-03)
+     * @param maxSeparationM    largest chief-relative range over the window (CW hint)
+     * @param chiefEccentricity chief orbit eccentricity (CW assumes near-circular)
      */
     public String encodeRelative(Instant epoch, int stepSeconds, int chiefId,
-                                 List<RelativeSamples> deputies, boolean includeVelocity) {
+                                 List<RelativeSamples> deputies, boolean includeVelocity,
+                                 String fidelity, double maxSeparationM, double chiefEccentricity) {
         int stride = includeVelocity ? 7 : 4;
         StringWriter writer = new StringWriter(1 << 14);
         try (JsonGenerator g = JSON.createGenerator(writer)) {
@@ -46,6 +51,14 @@ public class RelativeStateEncoder {
             g.writeNumberField("chiefId", chiefId);
             g.writeBooleanField("includeVelocity", includeVelocity);
             g.writeNumberField("stride", stride);
+            // Fidelity + separation/eccentricity hints (Phase 5C): the client warns
+            // when a CW scenario exceeds the linearization's small-separation /
+            // near-circular validity envelope. Additive — contract stays VERSION "1".
+            if (fidelity != null) {
+                g.writeStringField("fidelity", fidelity);
+            }
+            g.writeNumberField("maxSeparationM", Math.round(maxSeparationM));
+            g.writeNumberField("chiefEccentricity", Math.round(chiefEccentricity * 1e6) / 1e6);
 
             g.writeArrayFieldStart("deputies");
             for (RelativeSamples dep : deputies) {
@@ -65,6 +78,13 @@ public class RelativeStateEncoder {
         g.writeNumberField("noradId", dep.noradId());
         g.writeStringField("name", dep.name() != null ? dep.name() : ("NORAD " + dep.noradId()));
         g.writeNumberField("interpolationDegree", Math.min(MAX_INTERP_DEGREE, dep.interpolationDegree()));
+
+        // Closest approach over the scenario window (US-REL-02, Phase 5A). Computed
+        // on the live propagators; the frontend only displays it.
+        if (dep.tcaEpoch() != null) {
+            g.writeStringField("tcaEpoch", dep.tcaEpoch().toString());
+            g.writeNumberField("tcaDistanceM", Math.round(dep.tcaDistanceM()));
+        }
 
         double[] s = dep.samples();
         g.writeArrayFieldStart("samples");

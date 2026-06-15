@@ -16,6 +16,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import space.orbit.backend.scenario.ManeuverDraft;
+import space.orbit.backend.scenario.ManeuverTemplateService;
 import space.orbit.backend.scenario.ScenarioDraft;
 import space.orbit.backend.scenario.ScenarioResponse;
 import space.orbit.backend.scenario.ScenarioService;
@@ -40,9 +42,11 @@ import space.orbit.backend.scenario.ScenarioVersionResponse;
 public class ScenarioController {
 
     private final ScenarioService service;
+    private final ManeuverTemplateService templates;
 
-    public ScenarioController(ScenarioService service) {
+    public ScenarioController(ScenarioService service, ManeuverTemplateService templates) {
         this.service = service;
+        this.templates = templates;
     }
 
     @PostMapping
@@ -77,6 +81,31 @@ public class ScenarioController {
         service.delete(id);
     }
 
+    // --- maneuvers (Phase 5B, US-MAN-01) -------------------------------------
+
+    @PostMapping("/{id}/maneuvers")
+    public ScenarioResponse addManeuver(@PathVariable UUID id, @Valid @RequestBody ManeuverRequest req) {
+        return service.addManeuver(id, new ManeuverDraft(
+                req.deputyNoradId(), req.epoch(), req.frame(), req.r(), req.i(), req.c()));
+    }
+
+    @DeleteMapping("/{id}/maneuvers/{maneuverId}")
+    public ScenarioResponse removeManeuver(@PathVariable UUID id, @PathVariable String maneuverId) {
+        return service.removeManeuver(id, maneuverId);
+    }
+
+    // --- maneuver templates (Phase 5C, US-MAN-02 / US-MAN-03) ----------------
+
+    @PostMapping("/{id}/maneuvers/hohmann")
+    public ScenarioResponse hohmann(@PathVariable UUID id, @Valid @RequestBody HohmannRequest req) {
+        return templates.hohmann(id, req.deputyNoradId(), req.targetAltitudeKm());
+    }
+
+    @PostMapping("/{id}/maneuvers/rendezvous")
+    public ScenarioResponse rendezvous(@PathVariable UUID id, @Valid @RequestBody RendezvousRequest req) {
+        return templates.rendezvous(id, req.deputyNoradId(), req.arrivalEpoch());
+    }
+
     private static ScenarioDraft toDraft(ScenarioRequest req) {
         List<Integer> deputyIds = req.deputies() == null
                 ? List.of()
@@ -105,5 +134,30 @@ public class ScenarioController {
     }
 
     public record RoleRef(@Positive int noradId) {
+    }
+
+    /**
+     * Impulsive ΔV maneuver payload (Phase 5B, US-MAN-01). {@code frame} optional
+     * (defaults to RIC, the only frame in 5B); ΔV components are metres/second.
+     */
+    public record ManeuverRequest(
+            @Positive int deputyNoradId,
+            @NotBlank String epoch,
+            String frame,
+            double r,
+            double i,
+            double c) {
+    }
+
+    /** Hohmann template payload (Phase 5C, US-MAN-02): target circular altitude (km). */
+    public record HohmannRequest(
+            @Positive int deputyNoradId,
+            @Positive double targetAltitudeKm) {
+    }
+
+    /** Lambert rendezvous payload (Phase 5C, US-MAN-03): chief-arrival epoch (ISO-8601 UTC). */
+    public record RendezvousRequest(
+            @Positive int deputyNoradId,
+            @NotBlank String arrivalEpoch) {
     }
 }

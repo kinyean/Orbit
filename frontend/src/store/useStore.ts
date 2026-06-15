@@ -65,6 +65,8 @@ export interface Composer {
   /** Scenario time window (ISO-8601 UTC). null until set/loaded → save defaults to now…+24h. */
   start: string | null;
   end: string | null;
+  /** Propagator fidelity: 'sgp4' | 'numerical' | 'cw' (US-PROP-03, Phase 5C). */
+  fidelity: string;
 }
 
 export interface State {
@@ -126,6 +128,7 @@ export interface State {
   addDeputy: (id: number) => void;
   removeFromScenario: (id: number) => void;
   setComposerTimeRange: (start: string, end: string) => void;
+  setComposerFidelity: (fidelity: string) => void;
   clearComposer: () => void;
 
   // Scenario CRUD (calls the generated client)
@@ -136,6 +139,15 @@ export interface State {
   deleteScenario: (id: string) => Promise<void>;
   /** Stop streaming the loaded scenario and return to the live catalog regime. */
   closeScenario: () => void;
+
+  // Maneuvers (Phase 5B, US-MAN-01). Edit → new version + audit (backend) → reload
+  // the loaded scenario so the stream re-propagates with the maneuver applied.
+  addManeuver: (deputyNoradId: number, epoch: string, dv: { r: number; i: number; c: number }) => Promise<void>;
+  removeManeuver: (maneuverId: string) => Promise<void>;
+  // Maneuver templates (Phase 5C, US-MAN-02/03). Compute ΔV server-side, insert,
+  // and reload (re-propagate). Return an error message on failure (else null).
+  applyHohmann: (deputyNoradId: number, targetAltitudeKm: number) => Promise<string | null>;
+  applyRendezvous: (deputyNoradId: number, arrivalEpoch: string) => Promise<string | null>;
 }
 
 /** Build a create/update request from the composer. Defaults to a 24-hour window
@@ -145,7 +157,7 @@ function composerToRequest(name: string, composer: Composer): ScenarioRequest {
   const end = composer.end ?? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   return {
     name,
-    fidelity: 'sgp4',
+    fidelity: composer.fidelity || 'sgp4',
     timeRange: { start, end },
     chief: { noradId: composer.chiefId ?? 0 },
     deputies: composer.deputyIds.map((id) => ({ noradId: id })),
@@ -182,6 +194,7 @@ const emptyComposer: Composer = {
   isDirty: false,
   start: null,
   end: null,
+  fidelity: 'sgp4',
 };
 
 /** Live-mode time-travel half-window: the scrub bar spans ±this around "now". */
@@ -313,6 +326,8 @@ export const useStore = create<State>((set, get) => ({
     }),
   setComposerTimeRange: (start, end) =>
     set((s) => ({ composer: { ...s.composer, start, end, isDirty: true } })),
+  setComposerFidelity: (fidelity) =>
+    set((s) => ({ composer: { ...s.composer, fidelity, isDirty: true } })),
   clearComposer: () => set({ composer: emptyComposer }),
 
   loadScenarios: async () => {
@@ -375,6 +390,7 @@ export const useStore = create<State>((set, get) => ({
         isDirty: false,
         start: startStr ?? null,
         end: endStr ?? null,
+        fidelity: body?.fidelity ?? 'sgp4',
       },
       loadedScenario: body ? { id: scenarioId, name: data.name ?? '', body } : null,
       scenarioReloadNonce: get().scenarioReloadNonce + 1,
@@ -423,4 +439,64 @@ export const useStore = create<State>((set, get) => ({
     }
     await get().loadScenarios();
   },
+
+  addManeuver: async (deputyNoradId, epoch, dv) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return;
+    const { error } = await api.POST('/scenarios/{id}/maneuvers', {
+      params: { path: { id } },
+      body: { deputyNoradId, epoch, frame: 'ric', r: dv.r, i: dv.i, c: dv.c },
+    });
+    if (error) {
+      console.error('Failed to add maneuver', error);
+      return;
+    }
+    await get().loadScenario(id); // re-propagate: bumps scenarioReloadNonce → stream reopens
+  },
+
+  removeManeuver: async (maneuverId) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return;
+    const { error } = await api.DELETE('/scenarios/{id}/maneuvers/{maneuverId}', {
+      params: { path: { id, maneuverId } },
+    });
+    if (error) {
+      console.error('Failed to remove maneuver', error);
+      return;
+    }
+    await get().loadScenario(id);
+  },
+
+  applyHohmann: async (deputyNoradId, targetAltitudeKm) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { error } = await api.POST('/scenarios/{id}/maneuvers/hohmann', {
+      params: { path: { id } },
+      body: { deputyNoradId, targetAltitudeKm },
+    });
+    if (error) return errorMessage(error);
+    await get().loadScenario(id);
+    return null;
+  },
+
+  applyRendezvous: async (deputyNoradId, arrivalEpoch) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { error } = await api.POST('/scenarios/{id}/maneuvers/rendezvous', {
+      params: { path: { id } },
+      body: { deputyNoradId, arrivalEpoch },
+    });
+    if (error) return errorMessage(error);
+    await get().loadScenario(id);
+    return null;
+  },
 }));
+
+/** Pull a human message out of the generated client's error payload (422 etc.). */
+function errorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'message' in error) {
+    const m = (error as { message?: unknown }).message;
+    if (typeof m === 'string') return m;
+  }
+  return 'Request failed';
+}
