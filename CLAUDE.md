@@ -24,211 +24,43 @@ pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
 ## Current phase
-**Phase 4 complete & verified in-browser (2026-06-15).** **Phase 5 in progress**
-(relative-state analysis + initial maneuvers), sliced 5A/5B/5C — see
-[docs/phase-5-plan.md](docs/phase-5-plan.md) and roadmap §7.
+**Phase 5 complete (5A/5B/5C) — relative-state analysis + initial maneuvers.**
+Backend 91 tests green, frontend type-check + build green, and verified on the dev
+stack (2026-06-15: image rebuilt, client regenerated via `gen:api`, maneuver
+endpoints round-trip 200). **Phase 6 next** — proximity visualization (GLTF models,
+trajectory ribbons; roadmap §7).
 
-**Phase 5A complete — backend tests green + frontend build green** (relative-state
-analysis): backend `ScenarioStreamService` now computes each deputy's closest
-approach (TCA) on the live propagators (golden-section refine of the coarse sample
-minimum, deterministic) and carries `tcaEpoch`/`tcaDistanceM` additively in the
-`scenario-relative` envelope (contract stays `VERSION="1"`). Frontend
-`relativeBuffer` gained `deputyStateAt` (R/I/C + velocity) + a subscribe hook; a new
-`RelativeReadout` component shows per-deputy distance / range-rate / R-I-C (throttled
-rAF off the buffer, refs not Zustand — Decision 5) + TCA, and `Timeline` draws TCA
-ticks.
+Per-phase detail lives in `docs/phase-*-plan.md` and the rationale in
+[decisions.md](docs/decisions.md); this is just the map of what exists:
 
-**Phase 5B complete — backend tests green + frontend build green** (impulsive ΔV
-maneuvers): `ScenarioBody` bumped to **schemaVersion 2** (additive `maneuvers` list
-per `Role`; a v1 body reads with null→empty maneuvers and is re-stamped on save — no
-DB migration). `ScenarioService.addManeuver`/`removeManeuver` are audited single-path
-mutations (new immutable version + one audit row, Decision 16); `ScenarioController`
-exposes `POST /scenarios/{id}/maneuvers` + `DELETE …/{maneuverId}`. **R15-critical:**
-a maneuvered deputy is **always propagated numerically** —
-`PropagationService.propagatorFor(tle, fidelity, List<Impulse>)` forces the numerical
-engine and attaches Orekit `ImpulseManeuver` (a `DateDetector` per burn, ΔV via a
-`LofOffset(eci, LOFType.QSW)` = RIC attitude, `Control3DVectorCostType.NONE`) — SGP4's
-analytic `TLEPropagator` can't be reset mid-propagation. Determinism (R11): impulses
-sorted by (epoch, ΔV), pinned detector maxCheck/threshold; byte-identical reruns are
-tested. Frontend: `ManeuverPanel` (per-deputy list + add-Δv form + cumulative Σ|ΔV|
-budget), ΔV `ArrowHelper` glyphs in `ProximityView` (read from the loaded scenario
-body in the store — no contract change for glyphs), and `addManeuver`/`removeManeuver`
-store actions that reuse the reload-nonce re-propagation path. RIC-only in 5B;
-body-frame ΔV is deferred to Phase 7 (needs attitude).
+- **Phase 1** — dual-container dev env (Spring Boot + Postgres + Flyway + frontend),
+  OpenAPI-generated client, Spring Security pipeline (stub).
+- **Phase 2** — Orekit 13.1.5 SGP4 core + `FrameService` (ECI/ECEF/geodetic);
+  **catalog mode**: one shared SGP4 pass over ~15.5k sats broadcast as gzip CZML on
+  `/stream/catalog`; globe consumes it (click-inspect, double-click focus, filters,
+  search). [phase-2-plan.md](docs/phase-2-plan.md).
+- **Phase 3** — 3A: scenario CRUD + immutable versioning + audit through one
+  `ScenarioService` (chief + deputies, frozen-TLE jsonb bodies). 3B: numerical
+  propagator (DP8(7), J4+, drag, SRP, third-body) + LVLH/RIC frames + fidelity
+  dispatch (backend-only). [phase-3-plan.md](docs/phase-3-plan.md),
+  [phase-3b-plan.md](docs/phase-3b-plan.md), Decisions 19–20.
+- **Phase 4** — 4A: one authoritative clock (single rAF `clockEngine` writer) +
+  per-scenario `/stream/scenario/{id}` CZML stream (precompute-once); the globe
+  plays a loaded scenario. 4B: three.js proximity view (chief-LVLH) +
+  `scenario-relative` stream; both viewports lockstep on one socket.
+  [phase-4-plan.md](docs/phase-4-plan.md).
+- **Phase 5** — relative readout (distance/range-rate/R-I-C) + backend closest
+  approach; impulsive ΔV maneuvers (`ScenarioBody` schema v2, audited, numerical
+  re-propagation via Orekit `ImpulseManeuver`, glyphs + Σ|ΔV| budget); CW fidelity
+  (`CwPropagation`) + Hohmann/Lambert templates.
+  [phase-5-plan.md](docs/phase-5-plan.md).
 
-**Phase 5C complete — backend tests green + frontend build green** (CW fidelity +
-transfer templates): new `prop/CwPropagation` is a closed-form Clohessy–Wiltshire
-state-transition relative propagator (x=radial, y=in-track, z=cross-track; piecewise
-RIC impulses). In CW mode `ScenarioStreamService` propagates the **chief** with SGP4
-and builds each **deputy** as a `PVCoordinatesProvider` from CW dynamics, seeded
-R15-correctly from the chief's live LVLH frame (`PreparedRole` now holds a
-`PVCoordinatesProvider`, so SGP4/numerical/CW all sample through one loop). The
-`scenario-relative` envelope additively carries `fidelity`/`maxSeparationM`/
-`chiefEccentricity`; the frontend warns when a CW scenario exceeds ~10 km separation
-or a near-circular chief. **Templates** (`ManeuverTemplateService`): `POST
-/scenarios/{id}/maneuvers/hohmann` (vis-viva, two prograde impulses) and `.../rendezvous`
-(Orekit `IodLambert`, two ΔV) compute ΔV from the frozen TLEs and insert it through a
-new audited `ScenarioService.addManeuvers` (one version + audit per template). ΔV is
-stored in the burn state's **own** RIC (the frame `ImpulseManeuver`'s `LofOffset`
-re-applies it in). Frontend: fidelity selector (sgp4/numerical/cw) in the composer,
-Hohmann/rendezvous forms + CW banner in `ManeuverPanel`.
-
-**Phase 5 verified on the dev stack (2026-06-15):** the backend image was rebuilt
-(`docker compose up -d --build backend`) and `frontend/src/api/schema.d.ts` was
-regenerated from the live `/v3/api-docs` via `npm run gen:api` (no longer hand-edited).
-All maneuver endpoints round-trip 200 against the seeded demo (add Δv; Hohmann →
-two prograde impulses; Lambert rendezvous), and `scenario-relative` carries TCA +
-the CW hints. A full visual click-through (CW animation, ΔV glyphs, transfer paths)
-is the remaining nicety. **Phase 6 next** (proximity visualization: GLTF models,
-trajectory ribbons).
-
-**Phase 4B** (three.js proximity view + per-scenario `scenario-relative` stream):
-backend `stream` adds `RelativeStateEncoder` (plain-JSON `scenario-relative`
-envelope) + `RelativeSamples` DTO; `ScenarioStreamService.loadAndEncode` now also
-samples each deputy's LVLH R/I/C (and velocity) on the **same time grid** as the
-CZML and populates `EncodedScenario.relative` (the handler already sent it when
-non-null). **R15 (critical):** the LVLH transform is built **once** from the *live*
-chief propagator (`frames.lvlh(chiefProp)`) and applied per step
-(`eci.getTransformTo(lvlh,date).transformPVCoordinates(deputyEci)`) — **not**
-`FrameService.toRelativeState` (single-epoch constant provider → wrong relative
-velocity). Frontend: `three` + a `stream/relativeBuffer.ts` module singleton (outside
-Zustand, Decision 5) that Globe's `onRelative` fills and `views/ProximityView.tsx`
-reads each frame; the proximity render loop READS `store.currentTime` (never writes)
-→ lockstep by construction, mirroring Globe's `preRender`. Chief at the LVLH origin
-(amber); deputies as fixed-pixel color-matched points (R→+X, I→+Y, C→+Z, 1 unit=1 m);
-camera auto-frames. `App.tsx` is a **resizable split** (globe left / proximity right,
-draggable divider) that appears only when a scenario is loaded, with a toggle that
-**unmounts** the proximity pane (frees the 2nd WebGL context). One WebSocket serves
-both viewports. Display-only (no cross-view click yet). Contract stays `VERSION="1"`.
-See [docs/streaming-contract.md](docs/streaming-contract.md) (`scenario-relative`).
-A `SampleScenarioSeeder` (scenario pkg, on `ApplicationReadyEvent`, idempotent via
-`ScenarioService.seedIfAbsent`) seeds a demo **"Demo — close formation (NMC)"** for
-the dev user: two *synthetic* sats (NORAD 99001/99002) on a bounded NMC relative
-orbit (equal mean motion ⇒ no drift; small Δe/Δi → a ~2–4 km LVLH ellipse) so the
-proximity view shows a real circumnavigation out of the box. NOTE: TLE line
-serialization caps the NORAD id at 5 digits (`getLine1()`/`getLine2()` throw on
-6-digit) — the formation test exercises that round-trip.
-
-**Phase 4A** (authoritative shared clock + per-scenario CZML stream — the global
-view now *plays* a loaded scenario): backend `stream` gained a per-connection
-WebSocket `/stream/scenario/{id}` (`ScenarioStreamHandler` extends
-`TextWebSocketHandler`; **not** broadcast). Identity is captured at handshake by
-`ScenarioHandshakeInterceptor` (the WS thread runs outside the security-filter
-window, where `DevUserAuthenticationFilter` has cleared the context).
-`ScenarioStreamService.loadAndEncode` is **precompute-once** (Decision 11): rebuild
-each role's TLE from the body's frozen line strings (`new TLE(l1,l2,utc)`),
-`Fidelity.fromString`-dispatch (CW→4422), sample ECEF per step, encode one
-`scenario-czml` message — sequential/ordered/no-RNG so it's byte-identical on
-rerun (R11). `CzmlEncoder.encodeScenario` reuses the catalog FIXED-position block
-+ role-colored markers + orbit `path` + an **effective `stepSeconds` echo** (the
-`max-samples-per-sat` clamp raises the step, never silently truncates — R8).
-Shared `StreamGzip`; context-free reads `ScenarioService.bodyForStream` /
-`UserService.findByEmail` (no user provisioning on connect; not-owned collapses
-to 4404 to avoid id enumeration). Close codes 4400/4404/4422. New
-`ScenarioStreamProperties` (`orbit.scenario.*`). Contract stays `VERSION="1"`
-(additive, R12). Frontend: a real clock slice (`rate`/`direction`/`bounds`) + a
-single-writer `clockEngine` rAF loop (the sole `currentTime` writer → lockstep by
-construction); Cesium's autonomous clock severed (`shouldAnimate=false`,
-`multiplier=0`, `targetFrameRate=30`) and driven from the store in a `preRender`
-listener (which also hosts the selection-position updater moved off the
-now-silent `onTick`); a `ScenarioStreamClient` (fatal close codes 44xx → no
-reconnect) feeding a second `CzmlDataSource('scenario')`; the catalog layer hidden
-during scenario playback; a rewritten `TimeController` (play/pause/step/reset/
-reverse/log-rate 0.01×–10000×) + a `Timeline` scrub bar. **No three.js yet** —
-that + `scenario-relative` is 4B. See
-[docs/phase-4-plan.md](docs/phase-4-plan.md) and
-[docs/streaming-contract.md](docs/streaming-contract.md).
-
-**Phase 4A follow-ups (Decision 21):** (1) **Live catalog time-travel** — the
-clock slice gained a `catalogLive` flag; stepping/scrubbing in catalog mode
-freezes the globe and sends `{kind:"seek",epoch}` on the catalog socket, and the
-backend replies with a per-session `catalog-snapshot` (whole catalog propagated
-to that instant; `CatalogService.buildSnapshotMessage` via a seek-handler
-callback registered on `CatalogStreamHandler` — no service↔handler cycle). The
-client applies snapshots always but ignores the live broadcast while frozen.
-Playing **from** a traveled time is supported via **rolling rate-scaled prefetched
-snapshots** (seek carries `windowSeconds`; the client widens it with the rate and
-refetches before the window edge), **capped at 100×** so per-user bandwidth stays
-bounded; a `● LIVE` toggle returns to realtime. (2) **Time-range editor** — the
-composer carries `start`/`end`;
-the scenario panel has UTC `datetime-local` inputs (used on create *and* when
-editing a loaded scenario), and saving an edit reloads via a `scenarioReloadNonce`
-so the per-scenario stream recomputes for the new window. See Decision 21.
-(3) **Orbit paths** — single-clicking a catalog satellite toggles a dashed
-orbit-path polyline on the globe (multiple at once; click again to remove). The
-client sends `{kind:"orbit",noradId,epoch}` on the catalog socket; the backend
-propagates that one sat over **one period** from `epoch` and replies with
-`catalog-orbit` (ECEF positions only, `CatalogService.buildOrbitMessage` via an
-orbit-handler callback). The path is **live** — the client re-requests at the
-current sim clock as time advances (drift threshold), so it precesses with the
-moving dots. Colors are **round-robin** (next palette slot, avoiding ones in use)
-for max distinctness. The toggle is **debounced + cancelled by double-click**, so
-double-click stays pure focus (Decision 18) and never draws a path; paths clear
-when a scenario loads (catalog hidden). Drawn as a `PolylineDashMaterialProperty`
-line (`arcType NONE`).
-
-**Phase 3B** (numerical propagation + relative frames, backend-only — no UI/
-contract change, proven by `./gradlew test`): new in `prop` — `Fidelity` enum
-(`fromString` defaults unknown→`SGP4`), `PropagationSettings` (pinned,
-deterministic `DEFAULT`: 500 kg, 1 m², Cd 2.2, Cr 1.8, gravity 16×16, DP8(7)
-posTol 1e-3 m), `NumericalPropagation` (Orekit `NumericalPropagator`: DP8(7) +
-Holmes-Featherstone gravity ≥J4 + NRLMSISE-00 drag + SRP + Sun/Moon third-body;
-seeded from the SGP4 ECI state; gravity-field μ seeds the orbit so the
-auto-added Newtonian central term agrees), and `PropagationService` (the
-fidelity-dispatch seam Phase 4 calls — `sgp4`/`numerical`; `cw` throws until
-Phase 5 — plus a uniform `sample()→StateVector` for both engines). `FrameService`
-v2 adds chief-centered `lvlh()`/`ric()` (Orekit `LOFType.LVLH`≡`QSW`, the
-glossary R/I/C — **not** `LVLH_CCSDS`), `toRelativeState`, a minimal static
-`body()` frame, and an `earth()` accessor. Tests pin frame orientation by signed
-axis (radial→+R, in-track→+I, cross-track→+C), a closed relative-orbit loop, and
-bit-identical numerical reruns (Decisions 19→20; SRS §5.4.1). See
-[docs/decisions.md](docs/decisions.md) Decision 20 and
-[docs/phase-3b-plan.md](docs/phase-3b-plan.md).
-
-**Phase 3A** (scenario composition on SGP4): backend `scenario` package — JPA
-entities mapped to `V1__init.sql` (+ V2 seed dev user, V3 soft-delete),
-repositories, `ScenarioService` (the single audited/versioned mutation path,
-Decision 16), `UserService`, `ScenarioBody` (jsonb body schema v1 with a frozen
-TLE snapshot per role), and `api/ScenarioController` + `@RestControllerAdvice`
-(404/409/422). `CatalogService` gained a NORAD→`TleSnapshot` resolver. Frontend:
-scenario store slice (calls the generated client), wired InfoPanel role buttons,
-and a real ScenarioPanel (list/save/load/delete, names via the catalog index).
-Tests: `@DataJpaTest` (Testcontainers Postgres), `ScenarioService` slice,
-`@WebMvcTest`. New deps: `spring-boot-starter-validation`, Testcontainers;
-springdoc bumped 2.6.0→2.8.9 (Spring Boot 3.5 compatibility — 2.6.0 500s on
-`/v3/api-docs` once a `@ControllerAdvice` exists).
-
-Phase 2 (still in place) on top of Phase 1's dual-container dev env:
-- **Orekit 13.1.5** propagation core: SGP4 via `SatellitePropagator` (wraps
-  Orekit `TLEPropagator`), `FrameService` (ECI/ECEF/geodetic, frame-tagged
-  `StateVector`), OMM→TLE conversion. The reachable catalog mirrors serve OMM
-  JSON (no TLE lines), so `TleFactory` builds TLEs from mean elements
-  (ndot/nddot=0; SGP4 ignores them).
-- **Catalog mode** (Decision 13): loads a bundled offline TLE seed (~15.5k
-  sats) + best-effort GitHub-mirror refresh (CelesTrak is firewall-blocked
-  here), propagates the whole set every 30 s, broadcasts one shared CZML feed
-  over WebSocket `/stream/catalog`. ~100–650 ms/pass, 7.36 MB/message.
-- **Streaming contract v1** (docs/streaming-contract.md): JSON envelope +
-  CZML; ECEF/FIXED positions; `contractVersion` checked client-side (R12).
-- **Frontend**: `CatalogStreamClient` → `CzmlDataSource` on the globe;
-  click-to-inspect (hit-padded, live position), **single-click inspect /
-  double-click focus** (smooth blend into an ENU tracked-entity orbit — no
-  auto-zoom, no twist; Decision 18) + reset-view, constellation filters
-  (name-prefix; localStorage), search-to-fly, live stats. satellite.js +
-  client-side propagation/fetch removed.
-- Data bundles (orekit-data + TLE seed) baked into the backend image; fully
-  offline-capable. Backend at :8081, frontend at :5174 (8080/5173 taken).
-
-Verified in-browser: ~15.5k dots render and animate smoothly; click-inspect,
-constellation filters, search-to-fly, and double-click focus all work (R7
-PointPrimitiveCollection fallback not needed; no FPS counter instrumented).
-
-**Phase 5 next:** relative-state analysis (distance / range-rate / R-I-C readouts,
-closest-approach), the closed-form CW fidelity for close range, and initial
-impulsive ΔV maneuvers (+ templates) with re-propagation. The proximity view (4B)
-already renders the relative motion the 3B engine produces; Phase 5 adds the
-analysis + maneuver layer on top. See
-[docs/architecture-and-roadmap.md §7](docs/architecture-and-roadmap.md).
+Invariants to preserve (see `decisions.md`): one streaming contract, `VERSION="1"`,
+additive only (R12); every state frame-tagged via `FrameService` — relative velocity
+uses the rotating LVLH transform, never the single-epoch `toRelativeState` (R15);
+deterministic propagation, byte-identical reruns (R11); one `currentTime` writer;
+ephemeris in stream buffers, not Zustand (Decision 5); all scenario edits (incl.
+maneuvers) go through the single audited `ScenarioService` path (Decision 16).
 
 ## Stack
 - **Frontend:** React + TS strict + Vite + CesiumJS (global view) + three.js
