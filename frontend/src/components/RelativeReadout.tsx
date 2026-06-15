@@ -7,6 +7,7 @@ import {
   simTimeToT,
   deputyStateAt,
 } from '../stream/relativeBuffer';
+import { useCollapsed } from '../lib/usePanelChrome';
 
 // Must match ProximityView's DEPUTY_COLORS order (and the globe's deputy palette)
 // so a deputy is the same color in every view.
@@ -59,6 +60,7 @@ export default function RelativeReadout() {
   const data = getRelativeData();
   const deputies = (data?.deputies ?? []).slice(0, MAX_ROWS);
   const rowRefs = useRef<Map<number, RowRefs>>(new Map());
+  const { collapsed, toggle } = useCollapsed('relreadout');
 
   const cellRef = (noradId: number, key: keyof RowRefs) => (el: HTMLTableCellElement | null) => {
     let row = rowRefs.current.get(noradId);
@@ -103,7 +105,18 @@ export default function RelativeReadout() {
 
   return (
     <div className="relative-readout">
-      <div className="rel-title">Relative state · LVLH</div>
+      <div className="rel-title">
+        <span>Relative state · LVLH</span>
+        <button
+          className="panel-min"
+          onClick={toggle}
+          title={collapsed ? 'Expand' : 'Minimize'}
+          aria-label={collapsed ? 'Expand' : 'Minimize'}
+        >
+          {collapsed ? '▸' : '▾'}
+        </button>
+      </div>
+      {!collapsed && (
       <table>
         <thead>
           <tr>
@@ -132,6 +145,7 @@ export default function RelativeReadout() {
           ))}
         </tbody>
       </table>
+      )}
     </div>
   );
 }

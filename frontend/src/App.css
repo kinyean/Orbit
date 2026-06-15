@@ -736,6 +736,10 @@
 }
 
 .relative-readout .rel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 1px;
@@ -796,6 +800,10 @@
 .maneuver-panel .mvr-drag {
   position: sticky;
   top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   margin: 0 -14px 10px;
   padding: 10px 14px;
   font-size: 11px;
@@ -1023,4 +1031,59 @@
   color: #e2e8f0;
   padding: 4px 6px;
   font-size: 12px;
+}
+
+/* --- Shared panel chrome: minimize buttons, header rows, resize (UX cleanup) --- */
+.panel-min {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.panel-min:hover {
+  background: rgba(71, 85, 105, 0.3);
+  color: #e2e8f0;
+}
+
+/* Title + minimize on one row (FilterPanel). */
+.panel-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.panel-head-row h3 {
+  margin: 0;
+}
+
+/* InfoPanel header now holds minimize + close. */
+.info-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.maneuver-panel .mvr-drag-title {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Resizable, left-anchored panels (grip at bottom-right). Right/bottom-anchored
+   panels (info, relative readout) are collapse-only — resizing a pinned corner
+   over-constrains. */
+.scenario-panel,
+.maneuver-panel {
+  resize: both;
+  overflow: auto;
+  min-width: 200px;
+  min-height: 64px;
 }

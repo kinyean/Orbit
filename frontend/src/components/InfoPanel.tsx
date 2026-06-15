@@ -1,4 +1,5 @@
 import { useStore } from '../store/useStore';
+import { useCollapsed } from '../lib/usePanelChrome';
 
 function fmt(n: number | null, digits: number, unit = ''): string {
   if (n === null || !Number.isFinite(n)) return '—';
@@ -17,6 +18,7 @@ export default function InfoPanel() {
   const setChief = useStore((s) => s.setChief);
   const addDeputy = useStore((s) => s.addDeputy);
   const removeFromScenario = useStore((s) => s.removeFromScenario);
+  const { collapsed, toggle } = useCollapsed('info');
 
   if (!sat) return null;
 
@@ -41,14 +43,25 @@ export default function InfoPanel() {
     <aside className="info-panel">
       <header className="info-header">
         <h2>Selected satellite</h2>
-        <button
-          className="close-btn"
-          onClick={() => setSelectedSatellite(null)}
-          aria-label="Close"
-        >
-          {'×'}
-        </button>
+        <div className="info-header-actions">
+          <button
+            className="panel-min"
+            onClick={toggle}
+            title={collapsed ? 'Expand' : 'Minimize'}
+            aria-label={collapsed ? 'Expand' : 'Minimize'}
+          >
+            {collapsed ? '▸' : '▾'}
+          </button>
+          <button
+            className="close-btn"
+            onClick={() => setSelectedSatellite(null)}
+            aria-label="Close"
+          >
+            {'×'}
+          </button>
+        </div>
       </header>
+      {!collapsed && (
       <div className="info-content">
         <div className="info-name">{sat.name}</div>
         <div className="info-row"><span>NORAD ID</span><span>{sat.noradId}</span></div>
@@ -80,6 +93,7 @@ export default function InfoPanel() {
           )}
         </div>
       </div>
+      )}
     </aside>
   );
 }

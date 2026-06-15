@@ -1,6 +1,7 @@
 import { useState, useSyncExternalStore, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { useStore } from '../store/useStore';
 import { getRelativeData, getRelativeVersion, subscribeRelative } from '../stream/relativeBuffer';
+import { useCollapsed } from '../lib/usePanelChrome';
 
 const CW_MAX_SEPARATION_M = 10_000; // CW linearization validity (~10 km)
 const CW_MAX_ECCENTRICITY = 0.01; // CW assumes a near-circular chief
@@ -51,8 +52,10 @@ export default function ManeuverPanel() {
   const [msg, setMsg] = useState<string | null>(null);
   // Draggable position (defaults beside the scenario panel so it doesn't cover it).
   const [pos, setPos] = useState({ x: 248, y: 320 });
+  const { collapsed, toggle } = useCollapsed('maneuvers');
 
   function onDragStart(e: ReactPointerEvent) {
+    if ((e.target as HTMLElement).closest('button')) return; // let header buttons click, not drag
     e.preventDefault();
     const startX = e.clientX;
     const startY = e.clientY;
@@ -125,8 +128,18 @@ export default function ManeuverPanel() {
   return (
     <aside className="maneuver-panel" style={{ left: pos.x, top: pos.y }}>
       <div className="mvr-drag" onPointerDown={onDragStart} title="Drag to move">
-        <span className="mvr-grip" aria-hidden>⠿</span> Maneuvers · ΔV
+        <span className="mvr-drag-title"><span className="mvr-grip" aria-hidden>⠿</span> Maneuvers · ΔV</span>
+        <button
+          className="panel-min"
+          onClick={toggle}
+          title={collapsed ? 'Expand' : 'Minimize'}
+          aria-label={collapsed ? 'Expand' : 'Minimize'}
+        >
+          {collapsed ? '▸' : '▾'}
+        </button>
       </div>
+      {!collapsed && (
+      <>
       {cwWarning && <div className="mvr-cw-warn">⚠ {cwWarning}</div>}
       {deputies.map((d, idx) => {
         const maneuvers = d.maneuvers ?? [];
@@ -238,6 +251,8 @@ export default function ManeuverPanel() {
         </div>
         {msg && <div className="mvr-msg">{msg}</div>}
       </div>
+      </>
+      )}
     </aside>
   );
 }

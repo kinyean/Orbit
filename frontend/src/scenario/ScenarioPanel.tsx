@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useStore } from '../store/useStore';
+import { useCollapsed } from '../lib/usePanelChrome';
 
 /**
  * Scenario panel (Phase 3A). A real saved-scenario list + the composer card.
@@ -27,6 +28,7 @@ export default function ScenarioPanel() {
   const closeScenario = useStore((s) => s.closeScenario);
   const setComposerTimeRange = useStore((s) => s.setComposerTimeRange);
   const setComposerFidelity = useStore((s) => s.setComposerFidelity);
+  const { collapsed, toggle } = useCollapsed('scenarios');
 
   useEffect(() => {
     void loadScenarios();
@@ -92,8 +94,18 @@ export default function ScenarioPanel() {
           >
             Save
           </button>
+          <button
+            className="panel-min"
+            onClick={toggle}
+            title={collapsed ? 'Expand' : 'Minimize'}
+            aria-label={collapsed ? 'Expand' : 'Minimize'}
+          >
+            {collapsed ? '▸' : '▾'}
+          </button>
         </div>
       </div>
+      {!collapsed && (
+      <>
       {loadedScenario && (
         <div className="scenario-playing">▶ Playing: {loadedScenario.name}</div>
       )}
@@ -188,6 +200,8 @@ export default function ScenarioPanel() {
           </>
         )}
       </div>
+      </>
+      )}
     </aside>
   );
 }
