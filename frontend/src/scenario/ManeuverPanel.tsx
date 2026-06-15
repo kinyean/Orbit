@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore, type FormEvent } from 'react';
+import { useState, useSyncExternalStore, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { useStore } from '../store/useStore';
 import { getRelativeData, getRelativeVersion, subscribeRelative } from '../stream/relativeBuffer';
 
@@ -49,6 +49,26 @@ export default function ManeuverPanel() {
   const [targetAlt, setTargetAlt] = useState('');
   const [arrival, setArrival] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
+  // Draggable position (defaults beside the scenario panel so it doesn't cover it).
+  const [pos, setPos] = useState({ x: 248, y: 320 });
+
+  function onDragStart(e: ReactPointerEvent) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const origin = { ...pos };
+    const move = (ev: PointerEvent) => {
+      const x = Math.min(window.innerWidth - 80, Math.max(0, origin.x + (ev.clientX - startX)));
+      const y = Math.min(window.innerHeight - 60, Math.max(0, origin.y + (ev.clientY - startY)));
+      setPos({ x, y });
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
 
   if (!loaded) return null;
   const deputies = loaded.body.deputies ?? [];
@@ -103,8 +123,10 @@ export default function ManeuverPanel() {
   }
 
   return (
-    <aside className="maneuver-panel">
-      <h3>Maneuvers · ΔV</h3>
+    <aside className="maneuver-panel" style={{ left: pos.x, top: pos.y }}>
+      <div className="mvr-drag" onPointerDown={onDragStart} title="Drag to move">
+        <span className="mvr-grip" aria-hidden>⠿</span> Maneuvers · ΔV
+      </div>
       {cwWarning && <div className="mvr-cw-warn">⚠ {cwWarning}</div>}
       {deputies.map((d, idx) => {
         const maneuvers = d.maneuvers ?? [];
