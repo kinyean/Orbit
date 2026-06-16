@@ -16,6 +16,7 @@ import org.orekit.propagation.analytical.tle.TLE;
 import org.orekit.time.AbsoluteDate;
 import org.orekit.time.TimeScale;
 import org.orekit.time.TimeScalesFactory;
+import org.orekit.utils.AbsolutePVCoordinates;
 import org.orekit.utils.Constants;
 import org.orekit.utils.PVCoordinates;
 import org.springframework.context.annotation.DependsOn;
@@ -129,8 +130,8 @@ public class ManeuverTemplateService {
         // Δv1 boosts the deputy onto the transfer; Δv2 matches the chief at arrival.
         Vector3D dv1Eci = vTransferDepart.subtract(dep1.getVelocity());
         Vector3D dv2Eci = chief2.getVelocity().subtract(vTransferArrive);
-        double[] ric1 = toRic(dv1Eci, dep1.getPosition(), dep1.getVelocity());
-        double[] ric2 = toRic(dv2Eci, chief2.getPosition(), vTransferArrive);
+        double[] ric1 = toRic(dv1Eci, dep1.getPosition(), dep1.getVelocity(), t1);
+        double[] ric2 = toRic(dv2Eci, chief2.getPosition(), vTransferArrive, t2);
 
         List<ManeuverDraft> drafts = List.of(
                 new ManeuverDraft(deputyNoradId, startInstant.toString(), "ric", ric1[0], ric1[1], ric1[2]),
@@ -142,12 +143,19 @@ public class ManeuverTemplateService {
 
     // --- helpers --------------------------------------------------------------
 
-    /** Project an ECI ΔV onto the QSW/RIC axes of a burn state (r=radial, i=in-track, c=cross). */
-    private static double[] toRic(Vector3D dv, Vector3D r, Vector3D v) {
-        Vector3D xhat = r.normalize();
-        Vector3D zhat = r.crossProduct(v).normalize(); // orbit normal
-        Vector3D yhat = zhat.crossProduct(xhat);        // completes right-handed (≈ velocity)
-        return new double[] {dv.dotProduct(xhat), dv.dotProduct(yhat), dv.dotProduct(zhat)};
+    /**
+     * Project an ECI ΔV onto the RIC axes of a burn state (r=radial, i=in-track,
+     * c=cross), via the canonical {@link FrameService} rather than a hand-rolled
+     * basis (Decision 12 / R15). The burn state is wrapped as a fixed
+     * {@link AbsolutePVCoordinates} provider so {@code FrameService.ric} builds the
+     * same QSW triad it uses everywhere; a ΔV is a free vector, so we rotate it into
+     * the RIC axes ({@code transformVector} applies rotation only).
+     */
+    private double[] toRic(Vector3D dvEci, Vector3D r, Vector3D v, AbsoluteDate date) {
+        Frame eci = frames.eci();
+        Frame ric = frames.ric(new AbsolutePVCoordinates(eci, date, new PVCoordinates(r, v)));
+        Vector3D out = eci.getTransformTo(ric, date).transformVector(dvEci);
+        return new double[] {out.getX(), out.getY(), out.getZ()};
     }
 
     private static ScenarioBody.Role deputyRole(ScenarioBody body, int noradId) {

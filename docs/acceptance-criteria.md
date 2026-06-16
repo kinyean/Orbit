@@ -321,6 +321,17 @@ against a metric. Phase done = every criterion passes.
 > from the live spec, and all maneuver endpoints round-trip 200 against the seeded
 > demo (add Δv; Hohmann → two prograde impulses; Lambert rendezvous). A full visual
 > click-through (CW animation / glyphs / transfer paths) is the remaining nicety.
+>
+> **Phase-5 closeout — Phases 1–5 audited complete (2026-06-16).** A read-only
+> completeness + architecture audit confirmed every Phase 1–5 acceptance criterion is
+> backed by code + tests and the load-bearing invariants hold (one streaming contract /
+> R12, determinism / R11, frame discipline / R15, single mutation path / Decision 16,
+> single clock writer, Decision-5 buffers, frontend-never-propagates / D9). Backend **91
+> tests green**, frontend type-check + build green. One low-severity finding fixed:
+> `ManeuverTemplateService.toRic` now routes its RIC projection through `FrameService`
+> (the canonical path, Decision 12 / R15) instead of a hand-rolled QSW basis — behaviour
+> unchanged, guarded by `ManeuverTemplateServiceTests`. The distance-vs-time graph
+> (Decision 22) also landed in this window. **Phase 6 next** (proximity visualization).
 
 **5A — relative-state analysis** ✅ (backend tests green + frontend build green)
 - [x] Relative-state readout (distance, range-rate, R/I/C components) per
