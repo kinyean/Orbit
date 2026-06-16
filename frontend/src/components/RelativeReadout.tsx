@@ -7,7 +7,9 @@ import {
   simTimeToT,
   deputyStateAt,
 } from '../stream/relativeBuffer';
-import { useCollapsed } from '../lib/usePanelChrome';
+import { useCollapsed, usePanelTab } from '../lib/usePanelChrome';
+import { fmtDistance } from '../lib/format';
+import DistanceChart, { type DistanceChartHandle } from './DistanceChart';
 
 // Must match ProximityView's DEPUTY_COLORS order (and the globe's deputy palette)
 // so a deputy is the same color in every view.
@@ -15,11 +17,7 @@ const DEPUTY_COLORS = [
   '#38bdf8', '#ff922b', '#a3e635', '#e879f9', '#2dd4bf', '#f472b6', '#818cf8', '#facc15',
 ];
 const MAX_ROWS = 10; // SRS §5.1.1 — ≤10 spacecraft
-
-function fmtDistance(m: number): string {
-  if (m >= 1000) return `${(m / 1000).toFixed(m >= 100_000 ? 0 : 2)} km`;
-  return `${m.toFixed(0)} m`;
-}
+const TABS = ['table', 'graph'] as const;
 
 /** Signed R/I/C component (km past 1 km, else m). */
 function fmtComponent(v: number): string {
@@ -60,7 +58,9 @@ export default function RelativeReadout() {
   const data = getRelativeData();
   const deputies = (data?.deputies ?? []).slice(0, MAX_ROWS);
   const rowRefs = useRef<Map<number, RowRefs>>(new Map());
+  const chartRef = useRef<DistanceChartHandle>(null);
   const { collapsed, toggle } = useCollapsed('relreadout');
+  const { tab, setTab } = usePanelTab('relreadout', TABS);
 
   const cellRef = (noradId: number, key: keyof RowRefs) => (el: HTMLTableCellElement | null) => {
     let row = rowRefs.current.get(noradId);
@@ -80,9 +80,16 @@ export default function RelativeReadout() {
       const now = performance.now();
       if (now - last < 200) return;
       last = now;
+      if (collapsed) return;
       const d = getRelativeData();
       if (!d) return;
       const t = simTimeToT(d.epochMs, useStore.getState().currentTime);
+      // Graph tab: just slide the cursor (curves are static). Decision 5 — the
+      // high-frequency update touches DOM/SVG via refs, never React/Zustand.
+      if (tab === 'graph') {
+        chartRef.current?.setCursorT(t);
+        return;
+      }
       for (const dep of d.deputies) {
         const refs = rowRefs.current.get(dep.noradId);
         if (!refs) continue;
@@ -99,7 +106,7 @@ export default function RelativeReadout() {
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version]);
+  }, [version, tab, collapsed]);
 
   if (deputies.length === 0) return null;
 
@@ -107,6 +114,26 @@ export default function RelativeReadout() {
     <div className="relative-readout">
       <div className="rel-title">
         <span>Relative state · LVLH</span>
+        {!collapsed && (
+          <div className="rel-tabs" role="tablist">
+            <button
+              className={`rel-tab${tab === 'table' ? ' active' : ''}`}
+              role="tab"
+              aria-selected={tab === 'table'}
+              onClick={() => setTab('table')}
+            >
+              Table
+            </button>
+            <button
+              className={`rel-tab${tab === 'graph' ? ' active' : ''}`}
+              role="tab"
+              aria-selected={tab === 'graph'}
+              onClick={() => setTab('graph')}
+            >
+              Graph
+            </button>
+          </div>
+        )}
         <button
           className="panel-min"
           onClick={toggle}
@@ -116,7 +143,15 @@ export default function RelativeReadout() {
           {collapsed ? '▸' : '▾'}
         </button>
       </div>
-      {!collapsed && (
+      {!collapsed && tab === 'graph' && data && (
+        <DistanceChart
+          ref={chartRef}
+          deputies={deputies}
+          epochMs={data.epochMs}
+          colors={DEPUTY_COLORS}
+        />
+      )}
+      {!collapsed && tab === 'table' && (
       <table>
         <thead>
           <tr>

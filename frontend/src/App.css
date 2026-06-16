@@ -5,6 +5,14 @@
   overflow: hidden;
 }
 
+/* Hide the entire Cesium credit bar (bottom-left): the ion logo and the
+   "Data attribution" / data-source links. NOTE: Cesium ion's Terms of Service
+   require attribution while using ion-hosted imagery — only keep this hidden for
+   internal/dev use or once imagery is self-hosted. */
+.cesium-widget-credits {
+  display: none !important;
+}
+
 /* Viewports layer (z-index 0) under all overlays. Flex row: globe left,
    proximity right (only when a scenario is loaded), draggable divider between. */
 .viewports {
@@ -776,6 +784,209 @@
 
 .relative-readout .rel-tca {
   color: #94a3b8;
+}
+
+/* Table | Graph tabs in the readout title row (US-REL-01 distance graph). */
+.relative-readout .rel-tabs {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  padding: 2px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(71, 85, 105, 0.3);
+  border-radius: 6px;
+}
+
+.relative-readout .rel-tab {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  line-height: 1.4;
+}
+
+.relative-readout .rel-tab:hover {
+  color: #e2e8f0;
+}
+
+.relative-readout .rel-tab.active {
+  background: rgba(56, 189, 248, 0.18);
+  color: #38bdf8;
+}
+
+/* Distance-vs-time graph (hand-rolled SVG; no charting dependency). */
+.distance-chart {
+  width: 46vw;
+  max-width: 640px;
+  min-width: 320px;
+}
+
+.distance-chart svg {
+  display: block;
+}
+
+/* Window-span toggle + follow + pan scroller. */
+.distance-chart .dchart-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.distance-chart .dchart-wins {
+  display: flex;
+  gap: 2px;
+}
+
+.distance-chart .dchart-win,
+.distance-chart .dchart-follow {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(71, 85, 105, 0.3);
+  color: #94a3b8;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  line-height: 1.4;
+}
+
+.distance-chart .dchart-win:hover,
+.distance-chart .dchart-follow:hover {
+  color: #e2e8f0;
+}
+
+.distance-chart .dchart-win.active,
+.distance-chart .dchart-follow.active {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #38bdf8;
+}
+
+.distance-chart .dchart-pan {
+  width: 100%;
+  margin-top: 4px;
+  accent-color: #38bdf8;
+  cursor: ew-resize;
+}
+
+.distance-chart .dchart-empty {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #64748b;
+  padding: 24px 8px;
+  text-align: center;
+}
+
+.distance-chart .dchart-grid {
+  stroke: rgba(71, 85, 105, 0.25);
+  stroke-width: 1;
+}
+
+.distance-chart .dchart-axis {
+  fill: #64748b;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 9px;
+}
+
+.distance-chart .dchart-line {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+/* min/max envelope band for dense (many-orbit) windows — translucent fill so
+   overlapping deputies stay distinguishable; the lower edge is the closest-
+   approach trend. */
+.distance-chart .dchart-band {
+  fill-opacity: 0.35;
+  stroke-width: 0.75;
+  stroke-opacity: 0.9;
+}
+
+.distance-chart .dchart-tca {
+  stroke: rgba(19, 24, 38, 0.9);
+  stroke-width: 1;
+}
+
+/* Closest-approach marker + label (the "smallest distance" callout). The label
+   gets a dark halo (paint-order stroke) so it stays legible over a band. */
+.distance-chart .dchart-min-ring {
+  fill: none;
+  stroke-width: 1.5;
+}
+
+.distance-chart .dchart-min-label {
+  fill: #f1f5f9;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: rgba(11, 15, 25, 0.92);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+}
+
+/* Deputy filter legend. */
+.distance-chart .dchart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-top: 6px;
+}
+
+.distance-chart .dchart-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(71, 85, 105, 0.3);
+  border-radius: 4px;
+  color: #cbd5e1;
+  cursor: pointer;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10px;
+  padding: 2px 7px;
+}
+
+.distance-chart .dchart-chip:hover {
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.distance-chart .dchart-chip.off {
+  color: #64748b;
+  text-decoration: line-through;
+}
+
+.distance-chart .dchart-chip.off .dchart-chip-dot {
+  opacity: 0.3;
+}
+
+.distance-chart .dchart-chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.distance-chart .dchart-cursor {
+  stroke: rgba(226, 232, 240, 0.55);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.distance-chart .dchart-cursor-label {
+  fill: #cbd5e1;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 9px;
 }
 
 /* Maneuver panel (Phase 5B, US-MAN-01 / US-MAN-05). Draggable by its header
