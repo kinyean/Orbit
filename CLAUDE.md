@@ -50,9 +50,10 @@ Per-phase detail lives in `docs/phase-*-plan.md` and the rationale in
   `scenario-relative` stream; both viewports lockstep on one socket.
   [phase-4-plan.md](docs/phase-4-plan.md).
 - **Phase 5** — relative readout (distance/range-rate/R-I-C) + backend closest
-  approach; impulsive ΔV maneuvers (`ScenarioBody` schema v2, audited, numerical
-  re-propagation via Orekit `ImpulseManeuver`, glyphs + Σ|ΔV| budget); CW fidelity
-  (`CwPropagation`) + Hohmann/Lambert templates.
+  approach + a distance-vs-time graph (`DistanceChart`, Table|Graph tab, no-dep SVG,
+  windowed/filterable — Decision 22); impulsive ΔV maneuvers (`ScenarioBody` schema
+  v2, audited, numerical re-propagation via Orekit `ImpulseManeuver`, glyphs + Σ|ΔV|
+  budget); CW fidelity (`CwPropagation`) + Hohmann/Lambert templates.
   [phase-5-plan.md](docs/phase-5-plan.md).
 
 Invariants to preserve (see `decisions.md`): one streaming contract, `VERSION="1"`,

@@ -329,6 +329,15 @@ against a metric. Phase done = every criterion passes.
 - [x] Closest-approach time + distance computed (backend, full-resolution
       golden-section refine in `ScenarioStreamService`; carried additively in the
       `scenario-relative` envelope) and annotated on the timeline + readout.
+- [x] Distance-vs-time graph (`DistanceChart.tsx`, a `Table | Graph` tab in the
+      readout): per-deputy chief-relative range over the scenario window, hand-rolled
+      SVG (no charting dependency), static curves + an imperatively-driven "now"
+      cursor (Decision 5). Window toggle (1h/6h/1d/7d/All) + pan scroller + follow so
+      long many-orbit scenarios read as lines; the All overview is a min/max envelope
+      band when samples overplot pixels. Per-deputy in-view closest-approach marker
+      (labeled; note: the sample-grid minimum, coarser than the backend's refined
+      TCA in the table), log distance axis, date-aware time axis, and a deputy-filter
+      legend that rescales the y-axis to the shown set. See Decision 22.
 
 **5B — impulsive ΔV maneuvers** ✅ (backend tests green + frontend build green)
 - [x] Impulsive ΔV maneuver: add via UI (`ManeuverPanel.tsx`), scenario

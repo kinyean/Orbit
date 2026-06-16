@@ -52,6 +52,7 @@ considered**, **Consequences**.
 
 **UX / interaction**
 18. [Global-view camera: click-to-inspect, double-click focus](#18-global-view-camera-click-to-inspect-double-click-focus)
+22. [Distance-vs-time graph: tab-in-readout, no-dep SVG, windowed (Phase 5)](#22-distance-vs-time-graph-tab-in-readout-no-dep-svg-windowed-phase-5)
 
 [Superseded decisions (pre-SRS pivot)](#superseded-decisions-pre-srs-pivot)
 ·
@@ -810,6 +811,59 @@ to ≤2400 s) and is handled on the catalog socket via a callback the catalog
 service registers (no service↔handler cycle). Verified end-to-end: a seek returns
 a `catalog-snapshot` at the chosen epoch, and a wider `windowSeconds` yields
 proportionally more samples.
+
+---
+
+## 22. Distance-vs-time graph: tab-in-readout, no-dep SVG, windowed (Phase 5)
+
+**Context.** The relative readout (Decision-5 refs/rAF, Phase 5A) shows the
+*current-instant* chief↔deputy range numerically. Maya wanted to see how the
+distance *evolves over the scenario* (when it closes, where the closest approach
+is) without cluttering an already panel-dense UI. The full per-deputy LVLH
+time-series is already buffered client-side (`relativeBuffer`), so no backend or
+contract change is needed — distance is `hypot(R,I,C)` per sample.
+
+**Decision.**
+- **Placement: a `Table | Graph` tab inside the existing relative readout**, not a
+  new panel — zero added screen real estate, reuses the panel's collapse chrome,
+  color palette, and rAF loop. Tab choice persists in localStorage (`usePanelTab`,
+  beside `useCollapsed`).
+- **Rendering: hand-rolled SVG, no charting dependency** (CLAUDE.md "ask before
+  adding deps"; the dataset is small, the panel theme is bespoke). Static curves are
+  computed once per data/view change; the moving "now" cursor is driven imperatively
+  from the readout's throttled rAF loop (Decision 5 — high-freq data never touches
+  React/Zustand).
+- **Windowing over fit-everything.** A span toggle (1h/6h/1d/7d/All) + pan scroller +
+  "follow" keep only part of long, many-orbit scenarios on screen so individual
+  orbits read as crisp lines. The `All` overview falls back to a **min/max envelope
+  band** (per-pixel-column) when samples overplot pixels — its lower edge is the
+  closest-approach trend. Log distance axis; date-aware time axis.
+- **Closest-distance is explicit.** Each visible deputy gets a labeled marker at its
+  **in-view sample minimum**. This is intentionally the coarse sample-grid value, not
+  the backend's golden-section-refined TCA shown in the table — the frontend never
+  propagates (Decision 9) and the refine is computed only for the global window, so
+  the two "closest" numbers legitimately differ (graph ≥ table; gap grows with
+  closing speed). Accepted as the cheap, honest in-view read.
+- **Deputy filter.** A legend toggles curves on/off; the y-axis rescales to the
+  *visible* set, so isolating one deputy zooms the axis onto it. Colors stay locked
+  per deputy (filtering never recolors survivors); filter is graph-local.
+
+**Why.** Tab-in-panel is the least-clutter placement; a no-dep SVG matches the lean
+posture and theme and fits the refs/rAF pattern exactly; windowing is what makes
+multi-week scenarios legible (a single polyline over ~460 orbits is unreadable
+moiré, and the honest dense representation is the envelope band).
+
+**Alternatives considered.** A separate/floating panel (more clutter — rejected); a
+charting library e.g. uPlot (adds a dependency, canvas styling foreign to the theme,
+overkill for a small series — rejected); plotting the whole duration as one line
+(overplots into a mass — replaced by windowing + band); labeling the graph minimum
+with the backend's refined TCA (would require per-view refine the frontend can't do —
+rejected, in-view sample min accepted).
+
+**Consequences.** `DistanceChart.tsx` + `lib/format.ts` (shared `fmtDistance`) +
+`usePanelTab`. Purely additive, frontend-only. Unrelated same-change UI tidy: the
+Cesium ion credit bar is hidden via CSS (`.cesium-widget-credits`) — keep visible
+for any real deployment using ion imagery (ToS), fine for internal/dev.
 
 ---
 
