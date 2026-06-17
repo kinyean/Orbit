@@ -45,6 +45,11 @@ public class ManeuverTemplateService {
     private final PropagationService propagationService;
     private final FrameService frames;
 
+    /** Below this the orbit is deep in the atmosphere and re-enters within hours — a
+     *  Hohmann target there just deorbits the deputy. Guards the common "I meant to
+     *  nudge it, not crash it" mistake (the field is an absolute altitude, not a delta). */
+    private static final double MIN_TARGET_ALTITUDE_KM = 150.0;
+
     private TimeScale utc;
 
     public ManeuverTemplateService(ScenarioService scenarioService,
@@ -66,6 +71,14 @@ public class ManeuverTemplateService {
      * computed from the deputy's current radius via vis-viva.
      */
     public ScenarioResponse hohmann(UUID id, int deputyNoradId, double targetAltitudeKm) {
+        // The target is an ABSOLUTE circular altitude (km above the surface), not a
+        // change — reject sub-atmospheric targets that would just re-enter.
+        if (targetAltitudeKm < MIN_TARGET_ALTITUDE_KM) {
+            throw new ScenarioValidationException(String.format(
+                    "target altitude must be at least %.0f km (it is the absolute altitude above the"
+                            + " surface, not a change) — lower would re-enter the atmosphere",
+                    MIN_TARGET_ALTITUDE_KM));
+        }
         ScenarioBody body = scenarioService.get(id).body();
         ScenarioBody.Role deputy = deputyRole(body, deputyNoradId);
 
@@ -76,9 +89,6 @@ public class ManeuverTemplateService {
 
         double r1 = prop.getPVCoordinates(t1, eci).getPosition().getNorm();
         double r2 = Constants.WGS84_EARTH_EQUATORIAL_RADIUS + targetAltitudeKm * 1000.0;
-        if (targetAltitudeKm <= 0 || r2 <= 0) {
-            throw new ScenarioValidationException("target altitude must be positive");
-        }
         double mu = Constants.WGS84_EARTH_MU;
         double at = 0.5 * (r1 + r2); // transfer-ellipse semi-major axis
 
@@ -117,21 +127,53 @@ public class ManeuverTemplateService {
             throw new ScenarioValidationException("arrival epoch must be after the scenario start");
         }
 
-        Propagator depProp = propagationService.propagatorFor(tleOf(deputy), Fidelity.SGP4);
+        TLE depTle = tleOf(deputy);
+        Propagator depProp = propagationService.propagatorFor(depTle, Fidelity.SGP4);
         Propagator chiefProp = propagationService.propagatorFor(tleOf(body.chief()), Fidelity.SGP4);
         PVCoordinates dep1 = depProp.getPVCoordinates(t1, eci);
         PVCoordinates chief2 = chiefProp.getPVCoordinates(t2, eci);
 
+        // Solve Lambert across every feasible revolution count and keep the cheapest.
+        // A fixed nRev=0 is degenerate once the arrival is ≥1 orbit out: the target has
+        // wrapped back near its start, so a zero-rev path between two near-coincident
+        // points must nearly cancel the ~7.5 km/s orbital velocity (tens of km/s of Δv).
+        // The natural transfer is the matching multi-rev solution (e.g. "just go around
+        // once"), which a fixed nRev=0 never tries.
+        double period = 2.0 * Math.PI / depTle.getMeanMotion();
+        int maxRev = (int) Math.floor(t2.durationFrom(t1) / period);
         IodLambert lambert = new IodLambert(Constants.WGS84_EARTH_MU);
-        Orbit transfer = lambert.estimate(eci, true, 0, dep1.getPosition(), t1, chief2.getPosition(), t2);
-        Vector3D vTransferDepart = transfer.getPVCoordinates().getVelocity();
-        Vector3D vTransferArrive = new KeplerianPropagator(transfer).getPVCoordinates(t2, eci).getVelocity();
+        Vector3D vDepart = null;
+        Vector3D vArrive = null;
+        double bestTotal = Double.POSITIVE_INFINITY;
+        for (int nRev = 0; nRev <= maxRev; nRev++) {
+            try {
+                Orbit transfer = lambert.estimate(eci, true, nRev, dep1.getPosition(), t1, chief2.getPosition(), t2);
+                if (transfer == null) {
+                    continue;
+                }
+                Vector3D vd = transfer.getPVCoordinates().getVelocity();
+                Vector3D va = new KeplerianPropagator(transfer).getPVCoordinates(t2, eci).getVelocity();
+                double total = vd.subtract(dep1.getVelocity()).getNorm()
+                        + chief2.getVelocity().subtract(va).getNorm();
+                if (total < bestTotal) {
+                    bestTotal = total;
+                    vDepart = vd;
+                    vArrive = va;
+                }
+            } catch (RuntimeException infeasible) {
+                // no solution for this revolution count / geometry — skip it
+            }
+        }
+        if (vDepart == null) {
+            throw new ScenarioValidationException(
+                    "no transfer orbit connects the deputy to the chief at that arrival time");
+        }
 
         // Δv1 boosts the deputy onto the transfer; Δv2 matches the chief at arrival.
-        Vector3D dv1Eci = vTransferDepart.subtract(dep1.getVelocity());
-        Vector3D dv2Eci = chief2.getVelocity().subtract(vTransferArrive);
+        Vector3D dv1Eci = vDepart.subtract(dep1.getVelocity());
+        Vector3D dv2Eci = chief2.getVelocity().subtract(vArrive);
         double[] ric1 = toRic(dv1Eci, dep1.getPosition(), dep1.getVelocity(), t1);
-        double[] ric2 = toRic(dv2Eci, chief2.getPosition(), vTransferArrive, t2);
+        double[] ric2 = toRic(dv2Eci, chief2.getPosition(), vArrive, t2);
 
         List<ManeuverDraft> drafts = List.of(
                 new ManeuverDraft(deputyNoradId, startInstant.toString(), "ric", ric1[0], ric1[1], ric1[2]),

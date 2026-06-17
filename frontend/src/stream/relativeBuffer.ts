@@ -32,6 +32,10 @@ export interface RelativeFrameData {
   fidelity: string;
   maxSeparationM: number;
   chiefEccentricity: number;
+  // Chief geocentric radius (metres, Phase 6 / US-PROX-05): the proximity view
+  // places the Earth backdrop at (−chiefRadiusM, 0, 0) in the LVLH scene. 0 when
+  // absent (older backend) → the view falls back to a representative LEO radius.
+  chiefRadiusM: number;
 }
 
 let current: RelativeFrameData | null = null;
@@ -224,5 +228,6 @@ export function parseRelativeMessage(msg: ScenarioRelativeMessage): RelativeFram
     fidelity: typeof msg.fidelity === 'string' ? msg.fidelity : 'sgp4',
     maxSeparationM: typeof msg.maxSeparationM === 'number' ? msg.maxSeparationM : 0,
     chiefEccentricity: typeof msg.chiefEccentricity === 'number' ? msg.chiefEccentricity : 0,
+    chiefRadiusM: typeof msg.chiefRadiusM === 'number' ? msg.chiefRadiusM : 0,
   };
 }

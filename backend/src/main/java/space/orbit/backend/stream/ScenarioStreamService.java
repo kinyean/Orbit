@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.hipparchus.geometry.euclidean.threed.Vector3D;
+import org.orekit.errors.OrekitException;
 import org.orekit.frames.Frame;
 import org.orekit.propagation.Propagator;
 import org.orekit.propagation.analytical.tle.TLE;
@@ -92,39 +93,52 @@ public class ScenarioStreamService {
         // seeded from its own state at the start epoch.
         Fidelity chiefFidelity = fidelity == Fidelity.CW ? Fidelity.SGP4 : fidelity;
         PreparedRole chief = prepareRole(body.chief(), chiefFidelity);
-        List<PreparedRole> roles = new ArrayList<>();
-        roles.add(chief);
-        for (ScenarioBody.Role deputy : body.deputies()) {
-            roles.add(fidelity == Fidelity.CW
-                    ? prepareCwDeputy(deputy, chief, startDate)
-                    : prepareRole(deputy, fidelity));
+
+        // Propagation can fail when a spacecraft leaves the model's valid domain over
+        // the time range — most commonly numerical decay (drag) or a maneuver driving
+        // the orbit below the surface, which surfaces as an Orekit "point is inside
+        // ellipsoid". Treat that as an UNPROCESSABLE scenario (clean 4422 close) rather
+        // than a server error (1011), so the client stops instead of hammering reconnects.
+        try {
+            List<PreparedRole> roles = new ArrayList<>();
+            roles.add(chief);
+            for (ScenarioBody.Role deputy : body.deputies()) {
+                roles.add(fidelity == Fidelity.CW
+                        ? prepareCwDeputy(deputy, chief, startDate)
+                        : prepareRole(deputy, fidelity));
+            }
+
+            // Sample a margin (the longest half-trail) before start and after end so
+            // the path's one-orbit window always has data — otherwise the trail is
+            // short near the start and "grows" as you scrub forward (R8 stays: the
+            // step still respects the sample cap, now over the margined span).
+            double maxPeriod = roles.stream().mapToDouble(PreparedRole::periodSeconds).max().orElse(5400.0);
+            long marginSec = (long) Math.ceil(PATH_PERIODS / 2.0 * maxPeriod);
+            long spanSec = durationSec + 2L * marginSec;
+            int effectiveStep = effectiveStep(spanSec);
+            int steps = (int) (spanSec / effectiveStep);
+            double firstT = -marginSec; // seconds relative to the scenario start (the CZML epoch)
+
+            List<ScenarioSatelliteSamples> samples = new ArrayList<>();
+            for (PreparedRole role : roles) {
+                samples.add(sampleRole(role, startDate, firstT, effectiveStep, steps));
+            }
+            String czml = encoder.encodeScenario(start, effectiveStep, samples);
+
+            // Relative-state (proximity view, 4B): chief-LVLH R/I/C per deputy, on the
+            // SAME time grid so both views interpolate to the same instants. Also carries
+            // each deputy's closest approach over [start,end] (US-REL-02, Phase 5A) and a
+            // CW validity hint (US-REL-03, Phase 5C).
+            String relative = encodeRelative(roles, startDate, firstT, effectiveStep, steps, start,
+                    durationSec, body.fidelity(), chief.eccentricity());
+
+            return new EncodedScenario(czml, relative, effectiveStep);
+        } catch (OrekitException oe) {
+            throw new ScenarioStreamUnprocessableException(
+                    "a spacecraft leaves the propagation model's valid domain within the time range"
+                            + " (orbital decay or a maneuver puts it below the surface) — shorten the"
+                            + " time range or revise the maneuver: " + oe.getMessage());
         }
-
-        // Sample a margin (the longest half-trail) before start and after end so
-        // the path's one-orbit window always has data — otherwise the trail is
-        // short near the start and "grows" as you scrub forward (R8 stays: the
-        // step still respects the sample cap, now over the margined span).
-        double maxPeriod = roles.stream().mapToDouble(PreparedRole::periodSeconds).max().orElse(5400.0);
-        long marginSec = (long) Math.ceil(PATH_PERIODS / 2.0 * maxPeriod);
-        long spanSec = durationSec + 2L * marginSec;
-        int effectiveStep = effectiveStep(spanSec);
-        int steps = (int) (spanSec / effectiveStep);
-        double firstT = -marginSec; // seconds relative to the scenario start (the CZML epoch)
-
-        List<ScenarioSatelliteSamples> samples = new ArrayList<>();
-        for (PreparedRole role : roles) {
-            samples.add(sampleRole(role, startDate, firstT, effectiveStep, steps));
-        }
-        String czml = encoder.encodeScenario(start, effectiveStep, samples);
-
-        // Relative-state (proximity view, 4B): chief-LVLH R/I/C per deputy, on the
-        // SAME time grid so both views interpolate to the same instants. Also carries
-        // each deputy's closest approach over [start,end] (US-REL-02, Phase 5A) and a
-        // CW validity hint (US-REL-03, Phase 5C).
-        String relative = encodeRelative(roles, startDate, firstT, effectiveStep, steps, start,
-                durationSec, body.fidelity(), chief.eccentricity());
-
-        return new EncodedScenario(czml, relative, effectiveStep);
     }
 
     /**
@@ -140,6 +154,10 @@ public class ScenarioStreamService {
         PreparedRole chief = roles.get(0);
         Frame eci = frames.eci();
         Frame lvlh = frames.lvlh(chief.provider()); // rotating LVLH over the live chief orbit
+        // Chief geocentric radius at the epoch (Phase 6 / US-PROX-05) — places the
+        // Earth backdrop along −R in the LVLH scene. A single representative value
+        // (eccentric chiefs vary it slightly over the orbit) is enough for context.
+        double chiefRadiusM = chief.provider().getPVCoordinates(startDate, eci).getPosition().getNorm();
         boolean withVel = props.includeRelativeVelocity();
         int stride = withVel ? 7 : 4;
         int degree = Math.max(1, Math.min(5, steps));
@@ -154,32 +172,59 @@ public class ScenarioStreamService {
             // scenario window [0, durationSec] (the sampled span also has margin).
             double coarseMinDist = Double.POSITIVE_INFINITY;
             double coarseMinT = 0.0;
+            // HOLD the last valid relative state past a decay / domain exit (see sampleRole).
+            int firstValid = -1;
+            boolean decayed = false; // once a step leaves the domain, stop re-propagating
+            double hR = 0, hI = 0, hC = 0, hvR = 0, hvI = 0, hvC = 0;
             for (int k = 0; k <= steps; k++) {
                 double t = firstT + (double) k * step;
-                AbsoluteDate date = startDate.shiftedBy(t);
-                PVCoordinates depEci = depProp.getPVCoordinates(date, eci);
-                PVCoordinates rel = eci.getTransformTo(lvlh, date).transformPVCoordinates(depEci);
-                Vector3D p = rel.getPosition();
                 int base = k * stride;
                 s[base] = t;
-                s[base + 1] = p.getX(); // radial
-                s[base + 2] = p.getY(); // in-track
-                s[base + 3] = p.getZ(); // cross-track
-                if (withVel) {
-                    Vector3D v = rel.getVelocity(); // carries the LVLH rotation rate (R15)
-                    s[base + 4] = v.getX();
-                    s[base + 5] = v.getY();
-                    s[base + 6] = v.getZ();
-                }
-                if (t >= 0.0 && t <= durationSec) {
-                    double d = p.getNorm();
-                    if (d < coarseMinDist) {
-                        coarseMinDist = d;
-                        coarseMinT = t;
+                if (!decayed) {
+                    try {
+                        AbsoluteDate date = startDate.shiftedBy(t);
+                        PVCoordinates depEci = depProp.getPVCoordinates(date, eci);
+                        PVCoordinates rel = eci.getTransformTo(lvlh, date).transformPVCoordinates(depEci);
+                        Vector3D p = rel.getPosition();
+                        hR = p.getX(); // radial
+                        hI = p.getY(); // in-track
+                        hC = p.getZ(); // cross-track
+                        if (withVel) {
+                            Vector3D v = rel.getVelocity(); // carries the LVLH rotation rate (R15)
+                            hvR = v.getX();
+                            hvI = v.getY();
+                            hvC = v.getZ();
+                        }
+                        if (firstValid < 0) {
+                            firstValid = k;
+                        }
+                        if (t >= 0.0 && t <= durationSec) {
+                            double d = p.getNorm();
+                            if (d < coarseMinDist) {
+                                coarseMinDist = d;
+                                coarseMinT = t;
+                            }
+                            maxSeparation = Math.max(maxSeparation, d);
+                        }
+                    } catch (OrekitException leftDomain) {
+                        // decayed / re-entered: HOLD the rest, stop re-propagating (costly).
+                        decayed = true;
                     }
-                    maxSeparation = Math.max(maxSeparation, d);
+                }
+                s[base + 1] = hR;
+                s[base + 2] = hI;
+                s[base + 3] = hC;
+                if (withVel) {
+                    s[base + 4] = hvR;
+                    s[base + 5] = hvI;
+                    s[base + 6] = hvC;
                 }
             }
+            if (firstValid < 0) {
+                throw new ScenarioStreamUnprocessableException("deputy "
+                        + roles.get(i).role().noradId() + " never reaches a valid relative state");
+            }
+            backfillLeading(s, firstValid, stride);
             // Refine the closest approach on the live propagators around the coarse
             // bracket (US-REL-02). Distance is frame-invariant — compute it in ECI.
             double[] tca = refineTca(depProp, chief.provider(), eci, startDate,
@@ -191,7 +236,7 @@ public class ScenarioStreamService {
             deputies.add(new RelativeSamples(role.noradId(), role.name(), degree, s, tcaEpoch, tca[1]));
         }
         return relativeEncoder.encodeRelative(epoch, step, chief.role().noradId(), deputies, withVel,
-                fidelity, maxSeparation, chiefEccentricity);
+                fidelity, maxSeparation, chiefEccentricity, chiefRadiusM);
     }
 
     /**
@@ -234,13 +279,19 @@ public class ScenarioStreamService {
         return fBest <= coarseDist ? new double[] {tBest, fBest} : new double[] {coarseT, coarseDist};
     }
 
-    /** Chief-relative range (metres) at {@code t} seconds after {@code startDate}, in ECI. */
+    /** Chief-relative range (metres) at {@code t} seconds after {@code startDate}, in ECI.
+     *  Returns +∞ if either body has left the propagator's valid domain at {@code t}
+     *  (a decayed point is not a closest approach) so the golden-section refine stays robust. */
     private double relRange(PVCoordinatesProvider dep, PVCoordinatesProvider chief, Frame eci,
                             AbsoluteDate startDate, double t) {
-        AbsoluteDate date = startDate.shiftedBy(t);
-        Vector3D pDep = dep.getPVCoordinates(date, eci).getPosition();
-        Vector3D pChief = chief.getPVCoordinates(date, eci).getPosition();
-        return Vector3D.distance(pDep, pChief);
+        try {
+            AbsoluteDate date = startDate.shiftedBy(t);
+            Vector3D pDep = dep.getPVCoordinates(date, eci).getPosition();
+            Vector3D pChief = chief.getPVCoordinates(date, eci).getPosition();
+            return Vector3D.distance(pDep, pChief);
+        } catch (OrekitException leftDomain) {
+            return Double.POSITIVE_INFINITY;
+        }
     }
 
     /** Total orbit-path length, in orbital periods (must match the encoder's lead+trail). */
@@ -316,19 +367,61 @@ public class ScenarioStreamService {
     private ScenarioSatelliteSamples sampleRole(PreparedRole role, AbsoluteDate startDate,
                                                 double firstT, int step, int steps) {
         PVCoordinatesProvider provider = role.provider();
+        Frame ecef = frames.ecef();
         double[] cartesian = new double[(steps + 1) * 4];
+        // A body can leave the propagator's valid domain partway through the window
+        // (numerical decay / a maneuver → Orekit "point is inside ellipsoid"). HOLD the
+        // last valid position so the scenario still LOADS and the trail simply ends
+        // there, instead of failing the whole stream (the time grid is unchanged, R8).
+        int firstValid = -1;
+        boolean decayed = false; // once a step leaves the domain, stop re-propagating
+        double hx = 0, hy = 0, hz = 0;
         for (int k = 0; k <= steps; k++) {
             double t = firstT + (double) k * step; // relative to startDate; negative before start
-            AbsoluteDate date = startDate.shiftedBy(t);
-            Vector3D ecef = provider.getPVCoordinates(date, frames.ecef()).getPosition();
             int base = k * 4;
             cartesian[base] = t;
-            cartesian[base + 1] = ecef.getX();
-            cartesian[base + 2] = ecef.getY();
-            cartesian[base + 3] = ecef.getZ();
+            if (!decayed) {
+                try {
+                    Vector3D p = provider.getPVCoordinates(startDate.shiftedBy(t), ecef).getPosition();
+                    hx = p.getX();
+                    hy = p.getY();
+                    hz = p.getZ();
+                    if (firstValid < 0) {
+                        firstValid = k;
+                    }
+                } catch (OrekitException leftDomain) {
+                    // decayed / re-entered: HOLD the last valid point for the rest. Stop
+                    // calling the propagator — past decay every call re-fails (costly).
+                    decayed = true;
+                }
+            }
+            cartesian[base + 1] = hx;
+            cartesian[base + 2] = hy;
+            cartesian[base + 3] = hz;
         }
+        if (firstValid < 0) {
+            throw new ScenarioStreamUnprocessableException(
+                    "role " + role.role().role() + " (" + role.role().noradId()
+                            + ") never reaches a valid state within the time range");
+        }
+        backfillLeading(cartesian, firstValid, 4);
         return new ScenarioSatelliteSamples(
                 role.role().role(), role.role().noradId(), role.role().name(), role.periodSeconds(), cartesian);
+    }
+
+    /** Copy the first valid (x,y,z) back over any leading held-at-origin samples. */
+    private static void backfillLeading(double[] samples, int firstValidIdx, int stride) {
+        if (firstValidIdx <= 0) {
+            return;
+        }
+        double x = samples[firstValidIdx * stride + 1];
+        double y = samples[firstValidIdx * stride + 2];
+        double z = samples[firstValidIdx * stride + 3];
+        for (int k = 0; k < firstValidIdx; k++) {
+            samples[k * stride + 1] = x;
+            samples[k * stride + 2] = y;
+            samples[k * stride + 3] = z;
+        }
     }
 
     /** Rebuild an Orekit TLE from the body's frozen line strings (Decision 19). */

@@ -33,6 +33,7 @@ public class SampleScenarioSeeder {
 
     private static final UUID DEV_USER = UUID.fromString(DevUserAuthenticationFilter.DEV_USER_ID);
     private static final String NAME = "Demo — close formation (NMC)";
+    private static final String RENDEZVOUS_NAME = "Demo — rendezvous (co-orbit approach)";
     private static final String EPOCH = "2026-06-01T00:00:00.000";
     private static final String START = "2026-06-01T00:00:00Z";
     private static final String END = "2026-06-01T03:00:00Z"; // ~2 orbits
@@ -54,6 +55,23 @@ public class SampleScenarioSeeder {
                     List.of(role("deputy", deputyRecord())));
             scenarioService.seedIfAbsent(DEV_USER, NAME, body);
             log.info("Sample scenario ensured: \"{}\"", NAME);
+
+            // A second demo built for the rendezvous template: the chaser shares the
+            // chief's orbit ~1° behind (~120 km along-track) — well-conditioned for a
+            // Lambert transfer, unlike the ultra-close NMC (where two near-coincident
+            // positions make absolute Lambert degenerate). At a good arrival (~01:50Z)
+            // the transfer is a sane ~65 m/s and closes the gap from 120 km to ~40 km.
+            // It does NOT zero out: the chief runs SGP4 while the maneuvered deputy runs
+            // the numerical model, so the open-loop two-body plan misses by the
+            // model difference (a converging rendezvous needs differential correction —
+            // later-phase work). Some arrival times also hit Orekit IodLambert's bad
+            // branch (tens of km/s) — flagged by the panel's ΔV warning.
+            ScenarioBody rdv = new ScenarioBody(1, "sgp4",
+                    new ScenarioBody.TimeRange(START, END),
+                    role("chief", chiefRecord()),
+                    List.of(role("deputy", rendezvousChaserRecord())));
+            scenarioService.seedIfAbsent(DEV_USER, RENDEZVOUS_NAME, rdv);
+            log.info("Sample scenario ensured: \"{}\"", RENDEZVOUS_NAME);
         } catch (RuntimeException e) {
             // Best-effort — never block startup on the demo seed.
             log.warn("Sample scenario seed skipped: {}", e.toString());
@@ -91,5 +109,20 @@ public class SampleScenarioSeeder {
         return new GpRecord("DEMO DEPUTY (NMC)", "2026-001B", EPOCH,
                 15.20, 0.00004, 51.603, 0.0, 90.0, 270.0,
                 99002, 999, 1, 0.0, "U", 0);
+    }
+
+    /**
+     * Rendezvous chaser: <strong>identical orbit to the chief</strong> but 1° behind
+     * in mean anomaly (~120 km along-track). Same plane and altitude ⇒ they hold that
+     * gap (no drift), and the two positions are well separated, so a two-impulse
+     * Lambert transfer (US-MAN-03) is well-conditioned — the geometry the template is
+     * designed for. Best demo arrival ≈ {@code 2026-06-01T01:50:00Z} (~65 m/s,
+     * closes the gap from 120 km to ~40 km). It is an open-loop two-body sketch, so it
+     * doesn't reach zero miss (see the seed comment).
+     */
+    public static GpRecord rendezvousChaserRecord() {
+        return new GpRecord("DEMO CHASER", "2026-002B", EPOCH,
+                15.20, 0.00001, 51.600, 0.0, 0.0, 359.0,
+                99003, 999, 1, 0.0, "U", 0);
     }
 }

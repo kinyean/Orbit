@@ -35,10 +35,15 @@ public class RelativeStateEncoder {
      *                          client's validity warning, Phase 5C / US-REL-03)
      * @param maxSeparationM    largest chief-relative range over the window (CW hint)
      * @param chiefEccentricity chief orbit eccentricity (CW assumes near-circular)
+     * @param chiefRadiusM      chief geocentric distance at the epoch — lets the
+     *                          proximity view place the Earth backdrop along −R at
+     *                          the right altitude (Phase 6 / US-PROX-05). Additive —
+     *                          contract stays VERSION "1".
      */
     public String encodeRelative(Instant epoch, int stepSeconds, int chiefId,
                                  List<RelativeSamples> deputies, boolean includeVelocity,
-                                 String fidelity, double maxSeparationM, double chiefEccentricity) {
+                                 String fidelity, double maxSeparationM, double chiefEccentricity,
+                                 double chiefRadiusM) {
         int stride = includeVelocity ? 7 : 4;
         StringWriter writer = new StringWriter(1 << 14);
         try (JsonGenerator g = JSON.createGenerator(writer)) {
@@ -59,6 +64,9 @@ public class RelativeStateEncoder {
             }
             g.writeNumberField("maxSeparationM", Math.round(maxSeparationM));
             g.writeNumberField("chiefEccentricity", Math.round(chiefEccentricity * 1e6) / 1e6);
+            // Chief geocentric radius (Phase 6 / US-PROX-05): the proximity view
+            // centers the Earth backdrop at (−chiefRadiusM, 0, 0) in the LVLH scene.
+            g.writeNumberField("chiefRadiusM", Math.round(chiefRadiusM));
 
             g.writeArrayFieldStart("deputies");
             for (RelativeSamples dep : deputies) {

@@ -89,6 +89,11 @@ export interface State {
   // Bumped on every (re)load so the Globe reopens the scenario stream even when
   // the id is unchanged — e.g. after editing the time range of a loaded scenario.
   scenarioReloadNonce: number;
+  // Non-null when the per-scenario stream was refused (e.g. a spacecraft decays /
+  // maneuvers below the surface → 4422). Surfaced as a banner so a blank proximity
+  // view isn't silent. Cleared when a stream (re)connects.
+  scenarioStreamError: string | null;
+  setScenarioStreamError: (message: string | null) => void;
 
   // Saved scenarios (from the backend; US-SCN-03/11/12)
   scenarios: ScenarioSummary[];
@@ -222,6 +227,8 @@ export const useStore = create<State>((set, get) => ({
 
   loadedScenario: null,
   scenarioReloadNonce: 0,
+  scenarioStreamError: null,
+  setScenarioStreamError: (message) => set({ scenarioStreamError: message }),
 
   scenarios: [],
 
@@ -394,6 +401,7 @@ export const useStore = create<State>((set, get) => ({
       },
       loadedScenario: body ? { id: scenarioId, name: data.name ?? '', body } : null,
       scenarioReloadNonce: get().scenarioReloadNonce + 1,
+      scenarioStreamError: null, // clear any prior rejection; the new stream re-reports
       // Drop any catalog selection — its dot is hidden during playback, so a
       // stale ring would track an invisible entity ("circles empty").
       selectedSatellite: null,
@@ -416,6 +424,7 @@ export const useStore = create<State>((set, get) => ({
     const now = new Date();
     set({
       loadedScenario: null,
+      scenarioStreamError: null,
       bounds: liveBounds(now),
       composer: emptyComposer,
       selectedSatellite: null,

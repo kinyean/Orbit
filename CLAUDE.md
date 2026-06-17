@@ -24,11 +24,19 @@ pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
 ## Current phase
-**Phase 5 complete (5A/5B/5C) — relative-state analysis + initial maneuvers.**
-Backend 91 tests green, frontend type-check + build green, and verified on the dev
-stack (2026-06-15: image rebuilt, client regenerated via `gen:api`, maneuver
-endpoints round-trip 200). **Phase 6 next** — proximity visualization (GLTF models,
-trajectory ribbons; roadmap §7).
+**Phase 6 complete (6A/6B/6C) — proximity visualization.** Backend 91 tests green,
+frontend type-check + build green. Procedural spacecraft models (box bus + solar
+arrays + dish, with a `GLTFLoader` swap seam) replace the bare points, with a
+fixed-pixel marker as the far-LOD fallback; derived ram/LVLH orientation (estimated
+— attitude is Phase 7); past-solid / predicted-dashed windowed `THREE.Line` trajectory
+ribbons; camera modes (external / chief-body / deputy-body); and an Earth backdrop
+along −R from a new additive `chiefRadiusM` stream field (Earth/Stars/Off toggle),
+flat non-physical lighting until the Phase 8 Sun vector. Renderer uses a **logarithmic
+depth buffer** (the 1 m–100,000 km range z-fights a normal one — flickering Earth). A
+scenario that propagates below the surface (decay/maneuver over a long window) now
+fails gracefully (clean 4422 + a `scenarioStreamError` banner) instead of a 1011
+reconnect storm. Verified on the dev stack: `chiefRadiusM` round-trips (demo) and
+"t2" → 4422. **Phase 7 next** — sensors & FOV (roadmap §7). See Decision 23.
 
 Per-phase detail lives in `docs/phase-*-plan.md` and the rationale in
 [decisions.md](docs/decisions.md); this is just the map of what exists:
@@ -55,6 +63,13 @@ Per-phase detail lives in `docs/phase-*-plan.md` and the rationale in
   v2, audited, numerical re-propagation via Orekit `ImpulseManeuver`, glyphs + Σ|ΔV|
   budget); CW fidelity (`CwPropagation`) + Hohmann/Lambert templates.
   [phase-5-plan.md](docs/phase-5-plan.md).
+- **Phase 6** — proximity scene: procedural spacecraft models + GLTF-swap seam +
+  fixed-pixel marker LOD (`proximity/spacecraftModel.ts`); derived ram/LVLH
+  orientation (`proximity/orientation.ts`, estimated until Phase 7 attitude);
+  past/predicted `Line2` trajectory ribbons (`proximity/ribbons.ts`); camera modes
+  (`proximity/cameraModes.ts`); Earth backdrop from the additive `chiefRadiusM`
+  field (`proximity/earthBackdrop.ts`). [phase-6-plan.md](docs/phase-6-plan.md),
+  Decision 23.
 
 Invariants to preserve (see `decisions.md`): one streaming contract, `VERSION="1"`,
 additive only (R12); every state frame-tagged via `FrameService` — relative velocity

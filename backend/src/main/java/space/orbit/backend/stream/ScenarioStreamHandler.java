@@ -70,6 +70,7 @@ public class ScenarioStreamHandler extends TextWebSocketHandler {
         } catch (ScenarioNotFoundException notFound) {
             close(session, StreamContract.CLOSE_NOT_FOUND, "no scenario");
         } catch (ScenarioStreamUnprocessableException unusable) {
+            log.info("Scenario {} unprocessable: {}", scenarioId, unusable.getMessage());
             close(session, StreamContract.CLOSE_UNPROCESSABLE, "unprocessable scenario");
         } catch (IOException io) {
             log.debug("Scenario stream send failed for {}: {}", scenarioId, io.toString());

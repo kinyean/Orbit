@@ -6,6 +6,12 @@ import { useCollapsed } from '../lib/usePanelChrome';
 const CW_MAX_SEPARATION_M = 10_000; // CW linearization validity (~10 km)
 const CW_MAX_ECCENTRICITY = 0.01; // CW assumes a near-circular chief
 
+// Sanity guards (see the maneuver UI). A Hohmann target below this re-enters; a
+// cumulative ΔV above this is far beyond any real Earth-orbit maneuver (orbital
+// speed ≈ 7,500 m/s) and will re-enter or escape.
+const MIN_ALT_KM = 150;
+const DV_WARN_M_S = 5000;
+
 // Same deputy palette as ProximityView / RelativeReadout (color identity).
 const DEPUTY_COLORS = [
   '#38bdf8', '#ff922b', '#a3e635', '#e879f9', '#2dd4bf', '#f472b6', '#818cf8', '#facc15',
@@ -111,9 +117,16 @@ export default function ManeuverPanel() {
 
   async function onHohmann() {
     if (selected == null || !targetAlt) return;
+    const alt = Number(targetAlt) || 0;
+    // Instant feedback (the backend enforces this too): the field is an absolute
+    // altitude above the surface, not a change — a low value just deorbits.
+    if (alt < MIN_ALT_KM) {
+      setMsg(`Target is an absolute altitude (km above the surface), not a change — must be ≥ ${MIN_ALT_KM} km, else it re-enters.`);
+      return;
+    }
     setMsg(null);
-    const err = await applyHohmann(selected, Number(targetAlt) || 0);
-    setMsg(err ?? `Hohmann inserted to ${targetAlt} km`);
+    const err = await applyHohmann(selected, alt);
+    setMsg(err ?? `Hohmann inserted → ${targetAlt} km`);
   }
 
   async function onRendezvous() {
@@ -144,13 +157,20 @@ export default function ManeuverPanel() {
       {deputies.map((d, idx) => {
         const maneuvers = d.maneuvers ?? [];
         const budget = maneuvers.reduce((sum, m) => sum + magnitude(m.deltaV), 0);
+        const overBudget = budget >= DV_WARN_M_S;
         return (
           <div key={d.noradId ?? idx} className="mvr-deputy">
             <div className="mvr-deputy-head">
               <span style={{ color: DEPUTY_COLORS[idx % DEPUTY_COLORS.length] }}>●</span>{' '}
               <span className="mvr-deputy-name">{d.name ?? `NORAD ${d.noradId}`}</span>
-              <span className="mvr-budget">Σ {budget.toFixed(2)} m/s</span>
+              <span className={overBudget ? 'mvr-budget warn' : 'mvr-budget'}>Σ {budget.toFixed(2)} m/s</span>
             </div>
+            {overBudget && (
+              <div className="mvr-budget-warn">
+                ⚠ Far beyond a realistic burn (orbital speed ≈ 7,500 m/s) — this likely
+                re-enters or escapes. Real proximity burns are well under a few hundred m/s.
+              </div>
+            )}
             {maneuvers.length === 0 ? (
               <div className="mvr-empty">no maneuvers</div>
             ) : (
@@ -222,10 +242,12 @@ export default function ManeuverPanel() {
         <div className="mvr-add-title">Templates</div>
         <div className="mvr-template-row">
           <label>
-            Hohmann → alt (km)
+            Hohmann → target alt (km)
             <input
               type="number"
               step="any"
+              min={MIN_ALT_KM}
+              placeholder="absolute, e.g. 550"
               value={targetAlt}
               onChange={(e) => setTargetAlt(e.target.value)}
             />
@@ -248,6 +270,11 @@ export default function ManeuverPanel() {
           <button type="button" onClick={() => void onRendezvous()} disabled={!arrival}>
             Insert
           </button>
+        </div>
+        <div className="mvr-note">
+          Altitude is absolute (height above the surface, not a change). Rendezvous
+          departs at the scenario start and arrives at your time — keep it within the
+          window, between orbits that are actually near each other.
         </div>
         {msg && <div className="mvr-msg">{msg}</div>}
       </div>

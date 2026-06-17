@@ -622,6 +622,23 @@ export default function Globe() {
           const data = parseRelativeMessage(msg);
           if (data) setRelativeData(data);
         },
+        // Surface a refusal so a blank proximity view isn't silent. 4422 →
+        // "rejected" (e.g. a spacecraft decays/maneuvers below the surface over
+        // the time range); cleared once a stream (re)connects.
+        onStatus: (status) => {
+          const { setScenarioStreamError } = useStore.getState();
+          if (status === 'rejected') {
+            setScenarioStreamError(
+              "This scenario can't be streamed — a spacecraft leaves the propagation model's" +
+                ' valid domain over the time range (orbital decay, or a maneuver puts it below the' +
+                ' surface). Shorten the time range or revise the maneuver.',
+            );
+          } else if (status === 'version-mismatch') {
+            setScenarioStreamError('Stream version mismatch — reload the page to update the client.');
+          } else if (status === 'open' || status === 'connecting') {
+            setScenarioStreamError(null);
+          }
+        },
       },
     );
     // Defer connect one macrotask (matches the catalog client) so StrictMode's

@@ -53,6 +53,7 @@ considered**, **Consequences**.
 **UX / interaction**
 18. [Global-view camera: click-to-inspect, double-click focus](#18-global-view-camera-click-to-inspect-double-click-focus)
 22. [Distance-vs-time graph: tab-in-readout, no-dep SVG, windowed (Phase 5)](#22-distance-vs-time-graph-tab-in-readout-no-dep-svg-windowed-phase-5)
+23. [Proximity scene: procedural models + derived orientation + correct Earth backdrop (Phase 6)](#23-proximity-scene-procedural-models--derived-orientation--correct-earth-backdrop-phase-6)
 
 [Superseded decisions (pre-SRS pivot)](#superseded-decisions-pre-srs-pivot)
 ·
@@ -867,6 +868,137 @@ for any real deployment using ion imagery (ToS), fine for internal/dev.
 
 ---
 
+## 23. Proximity scene: procedural models + derived orientation + correct Earth backdrop (Phase 6)
+
+**Context.** Phase 6 (SRS §3.9.3/.5/.8) turns the proximity view's bare
+`THREE.Points` into a scene: spacecraft 3D models with articulable parts
+(US-PROX-01/02), past/predicted trajectory ribbons (US-PROX-03), camera modes
+(US-PROX-04), and an Earth backdrop (US-PROX-05). Two long-deferred items came due
+here: the **spacecraft 3D-model asset pipeline** and the **Earth-backdrop** choice
+(both below in Deferred). No attitude exists yet (Phase 7) and no Sun vector
+(Phase 8), so orientation and lighting must be honest placeholders.
+
+**Decision.**
+- **Models: procedural-first + a GLTF-swap seam.** Ship a generic procedural craft
+  (box bus + two solar arrays on named hinge joints + a dish gimbal) built from
+  three.js primitives, and a one-shot `GLTFLoader` that swaps in
+  `/public/models/spacecraft.glb` when present, falling back to the primitive
+  (R6). A fixed-pixel marker child is the far-LOD representation, so the
+  pre-Phase-6 dots remain at 100 km (no regression); the model fades in by apparent
+  on-screen size as you zoom, with a near-plane scale clamp.
+- **Articulation: static deployed pose.** Joints exist with a rotation API ready for
+  Phase 7/8, but nothing drives them — no faked sun-tracking. (US-PROX-02 "done" =
+  named, deployed, articulable parts; driving them is later.)
+- **Orientation: derived, labeled estimate.** `deriveBodyQuaternion` gives
+  ram-pointing (nose +Y along the LVLH-frame velocity, top +Z toward +R) when the
+  stream carries velocity (stride 7), and a fixed LVLH pose (nose along +I) for
+  stride-4 deputies and the chief (the origin has no relative velocity). It never
+  differentiates position to fake a velocity (R15-clean: it consumes the streamed
+  state, derives nothing physical), and the legend marks it "estimated" until Phase 7.
+  The same quaternion drives the body-frame cameras (one source of truth).
+- **Ribbons: a depth-tested, sliding-window `THREE.Line` trail.** The full past+future
+  path is already buffered (Decision 9 — no backend), but plotting the *whole* span is
+  an unreadable multi-orbit spirograph that also smears over the Earth (the same lesson
+  as the DistanceChart's windowing, Decision 22). So the ribbon is a **window** of
+  ±WINDOW_SECONDS around `currentTime` — past solid, predicted dashed — selected per
+  frame via `BufferGeometry.setDrawRange` (allocation-free; geometry built once).
+  Coarsely-sampled long scenarios (the R8 cap raises the step → ~28 points/orbit) are
+  **Catmull-Rom densified** toward ~30 s spacing so the curve reads smoothly rather than
+  as faceted chords. Plain depth-tested `THREE.Line` (not the fat `Line2`): it respects
+  the renderer's **logarithmic depth buffer** so the Earth occludes correctly and the
+  trail no longer paints over the planet. (The earlier `Line2` + `depthTest:false`
+  overlay smeared the whole ephemeris across the Earth and z-fought — replaced.)
+- **Depth: logarithmic depth buffer.** The scene spans 1 m to ~100,000 km (the Earth
+  backdrop); a normal depth buffer's precision collapses across that range → severe
+  z-fighting (a flickering Earth) and mis-ordered geometry. `WebGLRenderer({
+  logarithmicDepthBuffer: true })` fixes it across the whole range (core materials +
+  `Line2`/`Line` all honor it). The Earth is a single convex sphere — no additive
+  atmosphere shell (that shell z-fought the surface and read as a flickering blue haze).
+- **Camera modes: one OrbitControls + a body-ride rig.** `external` (free orbit about
+  the chief), `chief`/`deputy` ride the focus craft's derived body frame (offset kept
+  in body space, re-applied each frame, the user's drag read back through the body
+  quaternion), with an eased target transition on switch.
+- **Earth backdrop: correct, from one additive stream field.** The backend adds the
+  chief's geocentric radius (`chiefRadiusM`) to the `scenario-relative` envelope
+  (additive — `VERSION` stays `"1"`, R12; determinism intact, R11). The view centers
+  a true-scale Earth sphere at `(−chiefRadiusM, 0, 0)` along −R, so the limb is
+  correct at LEO and a small disc at GEO. Procedural material + atmosphere rim (no
+  texture asset — firewalled, R6) and flat **non-physical** lighting (the Sun vector
+  / terminator is Phase 8). An Earth/Stars/Off toggle gives Frank "pure space".
+
+**Why.** Procedural-first ships the §3.9.3 structure without being blocked on
+licensing-clean rigged art (R6), and the GLTF seam means real models drop in later
+with no rework. Deriving orientation from the velocity the stream already carries
+needs no new physics and keeps the frontend non-propagating (Decision 9); labeling
+it "estimated" is honest for an RPO tool where mis-reading pointing has
+consequences. The full ribbon path is already client-side, so ribbons are
+frontend-only. Placing Earth from the real chief radius is the only option that
+gives correct limb/altitude, and it costs exactly one additive scalar.
+
+**Alternatives considered.** Sourcing real GLTF models now (rejected — firewalled,
+licensing/rigging effort could block the slice; the swap seam defers it cheaply).
+Faked sun-tracking articulation (rejected — implies a Sun vector we don't have).
+Fat `Line2` ribbons (tried, then rejected — `depthTest:false` smeared the whole
+ephemeris over the Earth; the windowed depth-tested `THREE.Line` reads fine at 1 px
+and respects the log-depth buffer) and `TubeGeometry` ribbons (rejected — world-units
+width breaks across the scale range). Reparenting the camera under a craft for body
+modes (rejected — fights
+OrbitControls' world-space target/spherical). A frontend-only Earth at a
+representative distance (kept only as the fallback when `chiefRadiusM` is absent —
+inaccurate at GEO). Starfield-only / deferring Earth (rejected — the roadmap default
+is "yes" for orientation context).
+
+**Consequences.** New `frontend/src/proximity/{spacecraftModel,orientation,ribbons,
+cameraModes,earthBackdrop}.ts`; `ProximityView.tsx` gains a light rig + per-craft
+model groups + ribbons + the camera rig + an overlay (camera `<select>` +
+Earth/Stars/Off). One additive backend field (`chiefRadiusM`); no REST/OpenAPI
+change, so `gen:api` is a no-op. Known body-camera trade-off: a slow roll over a long
+pass (like Decision 18's ENU follow), switchable back to `external`. Articulation
+drivers (Phase 8 sun-tracking) and measured attitude (Phase 7) plug into the joints
+and the orientation source already in place.
+
+**Robustness (surfaced while validating Phase 6).** A scenario can leave the
+propagator's valid domain over its time range — a maneuvered deputy propagates
+numerically (Phase 5B), and decay or a maneuver can drive it **below the Earth's
+surface**, where the NRLMSISE-00 drag model throws Orekit's "point is inside
+ellipsoid". That previously crashed the whole per-scenario stream (close 1011 → the
+client hammered reconnects, proximity view blank). Now:
+- **Per-sample resilience.** `sampleRole` / `encodeRelative` catch the failure
+  per step and **HOLD** the last valid position for the rest (bailing on the first
+  failure — past decay every re-propagation re-fails, which is costly), so a body
+  that decays *partway* still loads with its trail simply ending. The closest-approach
+  refine (`relRange`) returns +∞ on a domain exit so it stays robust.
+- **Clean rejection when truly unprocessable.** If a body never reaches a valid
+  state in the window (`firstValid < 0`) — e.g. a degenerate maneuver — the service
+  throws `ScenarioStreamUnprocessableException` → the existing **4422** close (no
+  reconnect storm), the handler logs the reason, and the client surfaces a
+  `scenarioStreamError` banner instead of a silent blank. (A real example found in
+  testing: a saved scenario with a **12 km/s** ΔV — larger than orbital velocity —
+  applied at the start; not a Phase 6 regression, just bad maneuver data the blank
+  proximity view made visible. Long *valid* scenarios load fine, e.g. an 11-day SGP4
+  scenario.)
+- **Prevent the bad data, not just survive it.** Two maneuver-input guardrails (the
+  Phase 5C templates were easy to misuse — the altitude field is an *absolute* target,
+  not a delta, and Lambert will return a multi-km/s solution without complaint):
+  `ManeuverTemplateService.hohmann` rejects a target below 150 km ("would re-enter")
+  and the panel relabels/pre-checks it; the maneuver panel flags any deputy whose
+  cumulative |ΔV| ≥ 5 km/s as far beyond a real burn (orbital speed ≈ 7.5 km/s → it
+  re-enters or escapes). These are usability rails, not physics changes.
+- **Rendezvous template — fix + honest limits.** `ManeuverTemplateService.rendezvous`
+  was hardcoded to Lambert `nRev=0`, which is degenerate when the arrival is ≥1 orbit
+  out (target wraps back near its start → a zero-rev path between near-coincident points
+  costs tens of km/s). Now it solves across every feasible revolution count and keeps
+  the cheapest. Two limits remain, by design (it is an open-loop two-body *sketch*, not
+  a converging targeter): (a) the plan is two-body but the chief executes on SGP4 and
+  the maneuvered deputy on the numerical model, so the transfer *misses* by the
+  model difference (tens of km even in the ideal co-orbital case — a true rendezvous
+  needs differential correction, later-phase); (b) Orekit's `IodLambert` picks a poor
+  branch at some arrival times (tens of km/s) — caught by the ΔV warning. A seeded
+  "Demo — rendezvous (co-orbit approach)" (chaser ~120 km behind in the same orbit;
+  arrival ≈ 01:50Z → ~65 m/s, gap 120→~40 km) shows the concept honestly.
+
+---
+
 # Superseded decisions (pre-SRS pivot)
 
 Retained for the record. These were sound for the *public satellite tracker*
@@ -918,8 +1050,12 @@ Explicitly not decided yet; each has a tracked reason.
   vs delegated compute — decide when the analysis phase arrives.
 - **Sensor occlusion technique (§3.6.5).** Ray casting vs GPU depth methods —
   decide in the sensor-modeling phase.
-- **Spacecraft 3D model asset pipeline (§3.9.3).** GLTF sourcing, articulation
-  rig conventions — decide with the proximity view.
+- ~~**Spacecraft 3D model asset pipeline (§3.9.3).** GLTF sourcing, articulation
+  rig conventions — decide with the proximity view.~~ **Resolved (Phase 6,
+  Decision 23):** procedural placeholder craft + a `GLTFLoader` swap seam
+  (`/public/models/spacecraft.glb`); articulation = named joints at a static
+  deployed pose. Real model sourcing / rig conventions can land later through the
+  seam without rework (R6).
 - **Media export implementation (§4.2.3).** Client-side canvas capture
   (WebCodecs/MediaRecorder) vs server-side render — decide at the export phase.
 - **Self-hosting Cesium imagery tiles.** Ion for now; switch at the 5 GB/mo
@@ -941,8 +1077,11 @@ Explicitly not decided yet; each has a tracked reason.
   `PointPrimitiveCollection` fallback (R7) was **not** needed. Revisit with an
   actual FPS counter only if performance degrades (e.g. once the scenario layer
   is added on top).
-- **Earth backdrop in the proximity view.** Default yes (orientation context)
+- ~~**Earth backdrop in the proximity view.** Default yes (orientation context)
   or no (pure space) — design call when building the proximity scene
-  (Decision 4).
+  (Decision 4).~~ **Resolved (Phase 6, Decision 23):** yes — a true-scale Earth
+  sphere placed along −R from the chief's geocentric radius (a new additive
+  `chiefRadiusM` stream field), with an Earth/Stars/Off toggle ("Off" = pure
+  space). Flat non-physical lighting until the Phase 8 Sun vector.
 - **Two-body + J2 quick model.** Not needed — Orekit's fidelity modes cover the
   range.

@@ -143,6 +143,9 @@ class ScenarioStreamServiceTests {
         assertThat(rel.get("fidelity").asText()).isEqualTo("cw");
         assertThat(rel.has("maxSeparationM")).isTrue();
         assertThat(rel.has("chiefEccentricity")).isTrue();
+        // Chief geocentric radius (Phase 6 / US-PROX-05) is Earth-scale (LEO..GEO).
+        double chiefRadiusKm = rel.get("chiefRadiusM").asDouble() / 1000.0;
+        assertThat(chiefRadiusKm).isGreaterThan(6500.0).isLessThan(50000.0);
         // The CW deputy renders at a bounded LVLH separation (not Earth-scale).
         double sepKm = rel.get("maxSeparationM").asDouble() / 1000.0;
         assertThat(sepKm).isGreaterThan(0.0).isLessThan(20000.0);

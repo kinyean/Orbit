@@ -381,11 +381,83 @@ against a metric. Phase done = every criterion passes.
 
 ---
 
-## Phase 6 onwards
+## Phase 6 — Proximity visualization
 
-Acceptance criteria for Phases 6–11 will be drafted when the respective
+> Sliced **6A / 6B / 6C** (see [phase-6-plan.md](./phase-6-plan.md), Decision 23).
+>
+> **Phase 6 complete — backend tests green + frontend type-check/build green**
+> (2026-06-16). The bare `THREE.Points` proximity scene became a real scene:
+> procedural spacecraft models (+ a GLTF-swap seam) with a fixed-pixel marker LOD,
+> derived ram/LVLH orientation (estimated — attitude is Phase 7), past/predicted
+> `Line2` trajectory ribbons, camera modes (external / chief-body / deputy-body),
+> and an Earth backdrop placed from a new additive `chiefRadiusM` stream field.
+> New `frontend/src/proximity/{spacecraftModel,orientation,ribbons,cameraModes,
+> earthBackdrop}.ts`; the only backend touch is the one additive field
+> (`RelativeStateEncoder` + `ScenarioStreamService`). Backend **91 tests green**
+> (the `chiefRadiusM` assertions fold into the two stream tests); the in-browser
+> dev-stack click-through is the remaining manual nicety.
+
+**6A — spacecraft models + orientation (US-PROX-01, US-PROX-02)** ✅
+- [x] Spacecraft rendered as 3D models (`proximity/spacecraftModel.ts`): procedural
+      box bus + two solar arrays on named hinge joints + a dish gimbal
+      (`MeshStandardMaterial`, palette-tinted), built under a per-craft `Group`
+      positioned + oriented each frame. A `GLTFLoader` swaps in
+      `/public/models/spacecraft.glb` when present, falling back to the primitive (R6).
+- [x] Articulable parts present as named joints at a static **deployed** pose (no
+      faked sun-tracking — drivers arrive Phase 7/8).
+- [x] Derived orientation (`proximity/orientation.ts`): ram-pointing from the
+      LVLH-frame velocity (stride 7), fixed LVLH pose for stride-4 / the chief;
+      labeled "estimated" in the legend (attitude is Phase 7). Frontend derives
+      nothing physical — it consumes the streamed state (Decision 9, R15-clean).
+- [x] Fixed-pixel marker far-LOD keeps the colored dots at 100 km (no regression);
+      the model fades in by apparent size with a near-plane scale clamp. Lockstep
+      clock unchanged (the loop only READS `currentTime`).
+
+**6B — trajectory ribbons + camera modes (US-PROX-03, US-PROX-04)** ✅
+- [x] Past-solid / predicted-dashed trajectory ribbons per deputy
+      (`proximity/ribbons.ts`): a depth-tested, sliding-window `THREE.Line` trail
+      (±WINDOW_SECONDS around `currentTime`) selected per frame via `setDrawRange`,
+      geometry built once from the client-side `samples`. Windowed (not the whole
+      multi-orbit span) for legibility (Decision 22) and to stop the trail smearing
+      over the Earth; honors the renderer's logarithmic depth buffer.
+- [x] Renderer logarithmic depth buffer — the 1 m–100,000 km range (Earth backdrop)
+      z-fights a normal buffer (flickering Earth); fixed across the whole range.
+- [x] Camera modes (`proximity/cameraModes.ts`): external (free orbit), chief-body,
+      deputy-body — one OrbitControls + a body-ride rig with an eased target
+      transition on switch. A camera `<select>` + Earth/Stars/Off control in the
+      `.proximity-controls` overlay (React state mirrored to refs — no 60 fps Zustand).
+
+**6C — Earth backdrop (US-PROX-05)** ✅
+- [x] Backend emits the chief's geocentric radius (`chiefRadiusM`) on the
+      `scenario-relative` envelope — additive, `VERSION="1"` (R12); determinism
+      intact (R11). It is a WebSocket-payload field, not REST/OpenAPI (`gen:api`
+      is a no-op). Asserted Earth-scale in `ScenarioStreamServiceTests` (real
+      propagator) + structurally in `RelativeStateEncoderTests`.
+- [x] Earth backdrop (`proximity/earthBackdrop.ts`): a true-scale single-sphere Earth
+      along −R at the chief radius (correct limb at LEO, small disc at GEO) + starfield;
+      procedural material (no texture asset — R6), no atmosphere shell (it z-fought the
+      surface); flat non-physical lighting (Sun vector is Phase 8). Earth/Stars/Off
+      toggle ("Off" = pure space). Falls back to a representative LEO radius when absent.
+- [x] **Decaying / unprocessable scenarios handled** — a body leaving the propagator's
+      valid domain (decay, or a maneuver below the surface → Orekit "point is inside
+      ellipsoid") previously crashed the whole stream (1011 + reconnect storm + blank).
+      Now `sampleRole`/`encodeRelative` **HOLD** the last valid point per-sample (bail on
+      first failure) so a body decaying *partway* still loads with its trail ending; a
+      body *never* valid in the window → clean **4422** + logged reason + a
+      `scenarioStreamError` banner. Verified end-to-end on the dev stack: a valid 11-day
+      SGP4 scenario streams (4978 samples); the demo → `chiefRadiusM` Earth-scale; a
+      saved scenario with a degenerate **12 km/s** ΔV → 4422 ("deputy … never reaches a
+      valid relative state"), not a hang/crash.
+- [x] Ribbons render **smooth** on coarsely-sampled long scenarios (R8 step ~190 s →
+      ~28 pts/orbit) via Catmull-Rom densification — no faceted "cutting off".
+
+---
+
+## Phase 7 onwards
+
+Acceptance criteria for Phases 7–11 will be drafted when the respective
 phase begins, informed by what we learned in earlier phases. The
-[user-stories outline](./user-stories.md#phase-6--proximity-visualization-outline)
+[user-stories outline](./user-stories.md#phase-7--sensors--fov-outline)
 seeds each phase; the SRS clauses they map to are the verification source.
 
 ---

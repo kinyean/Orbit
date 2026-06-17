@@ -1,6 +1,7 @@
 package space.orbit.backend.scenario;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -96,6 +97,21 @@ class ManeuverTemplateServiceTests {
         double total = drafts.get(0).i() + drafts.get(1).i();
         assertThat(total).isBetween(10.0, 1000.0);
         assertThat(Instant.parse(drafts.get(1).epoch())).isAfter(Instant.parse(drafts.get(0).epoch()));
+    }
+
+    @Test
+    void hohmannRejectsSubAtmosphericTarget() {
+        ScenarioService scenarioService = mock(ScenarioService.class);
+        ScenarioBody b = body("2024-06-01T12:00:00Z", "2024-06-01T16:00:00Z");
+        when(scenarioService.get(any())).thenReturn(
+                new ScenarioResponse(ID.toString(), "S", "o", "2024-06-01T00:00:00Z", 1, 1, b));
+
+        // 2 km is an absolute altitude deep in the atmosphere → rejected, not inserted.
+        assertThatThrownBy(() -> service(scenarioService).hohmann(ID, 25545, 2.0))
+                .isInstanceOf(ScenarioValidationException.class)
+                .hasMessageContaining("re-enter");
+        org.mockito.Mockito.verify(scenarioService, org.mockito.Mockito.never())
+                .addManeuvers(any(), any(), any());
     }
 
     @Test

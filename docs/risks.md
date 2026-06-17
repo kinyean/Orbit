@@ -120,6 +120,12 @@ articulation rigs are rarer still.
 **Trigger.** Phase 6 work blocked on art assets → fall back to primitives
 + ship.
 
+**Status (Phase 6).** Realized exactly as the mitigation: shipped procedural
+placeholder craft (box bus + solar arrays + dish) and opened the GLTF pipeline as a
+swap seam (`proximity/spacecraftModel.ts` loads `/public/models/spacecraft.glb` when
+present, falls back to the primitive). No art assets were needed to ship; a
+licensing-clean model is a drop-in later through the seam. See Decision 23.
+
 ---
 
 ## R7 — Full catalog rendering performance (Medium impact, Low likelihood)
@@ -284,6 +290,68 @@ frame) re-introduce the bug class the design tried to eliminate.
 
 **Trigger.** Any code that introduces a raw position/velocity tuple
 without a frame field.
+
+---
+
+## R16 — Rendezvous template is an open-loop two-body sketch (Medium impact, High misuse-likelihood)
+
+**Description.** The two-impulse rendezvous (US-MAN-03) solves the transfer with
+Orekit's `IodLambert` in a **two-body** model, but the scenario then *executes*
+it with SGP4 for the chief and the high-fidelity **numerical** propagator for the
+maneuvered deputy. The plan and the execution use different physics, so the deputy
+**misses** by the model difference — tens of km even in the ideal co-orbital case
+(verified: a 120 km co-orbital approach closes only to ~40 km). `IodLambert` also
+returns a poor branch at some arrival times, yielding **tens of km/s** of ΔV. A
+user may trust an unconverged or garbage result as a real rendezvous.
+
+**Mitigation.**
+- Solve Lambert across every feasible revolution count and keep the cheapest
+  (fixed `nRev=0` was degenerate at ≥1-orbit arrivals — fixed).
+- The maneuver panel flags cumulative |ΔV| ≥ 5 km/s as far beyond a real burn.
+- Documented as a feasibility / ΔV **sketch**, not a converged trajectory
+  (Decision 23); Hohmann is the reliable template for demos.
+- A differential corrector (iterate the burns against the real propagators) is the
+  proper fix — see Phase 6 plan "Future improvements".
+
+**Trigger.** Closest approach not collapsing after a rendezvous; ΔV reported in
+km/s; the panel's ΔV warning firing.
+
+---
+
+## R17 — Placeholder orientation / articulation / lighting in the proximity view (Low–Medium impact, until Phase 7/8)
+
+**Description.** Phase 6 ships honest scaffolding, not measured physics: spacecraft
+orientation is a **derived ram/LVLH estimate** from streamed velocity (not attitude),
+articulation is a **parked deployed pose** (no sun-tracking), and the Earth backdrop
+uses **flat, non-physical lighting** (no terminator). Mis-reading which way a
+spacecraft points, or its illumination, has real consequences in RPO.
+
+**Mitigation.**
+- UI labels the estimate ("orientation: estimated"); the seam (named joints,
+  body frame, `FrameService.body`) is in place for the real values.
+- Real attitude arrives in Phase 7 (sensors); the sun vector + eclipse/lighting in
+  Phase 8.
+
+**Trigger.** Any analysis or decision that relies on true pointing or illumination
+before Phase 7/8 lands.
+
+---
+
+## R18 — Long high-fidelity (numerical) scenario propagation cost (Medium impact, Medium likelihood)
+
+**Description.** A maneuvered deputy propagates numerically; over a long window
+(e.g. 29 days) one `loadAndEncode` can take ~20 s+, exceeding the ≤5 s / 24 h target
+(§5.1.4) and feeling like a hang. A decaying body previously added repeated
+failed-step cost on top.
+
+**Mitigation.**
+- Bail on the first domain-exit (stop re-propagating past a decay) + HOLD the trail.
+- The R8 sample cap bounds sample count (not integration steps).
+- Consider an explicit window/effort cap, or async streaming with progress, for
+  heavy numerical runs — see Phase 6 plan "Future improvements".
+
+**Trigger.** Scenario load beyond a few seconds; "it hangs" reports on long /
+numerical scenarios.
 
 ---
 

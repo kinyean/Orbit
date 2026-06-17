@@ -21,6 +21,7 @@ export default function App() {
   // Split-screen: the proximity view appears only when a scenario is loaded; a
   // toggle unmounts it (frees the 2nd WebGL context). The divider sets the split.
   const scenarioActive = useStore((s) => s.loadedScenario !== null);
+  const scenarioStreamError = useStore((s) => s.scenarioStreamError);
   const [proximityEnabled, setProximityEnabled] = useState(true);
   const [splitPct, setSplitPct] = useState(55);
   const viewportsRef = useRef<HTMLDivElement>(null);
@@ -113,6 +114,19 @@ export default function App() {
         </form>
         <StatusChip />
       </header>
+
+      {scenarioStreamError && (
+        <div className="stream-error-banner" role="alert">
+          {scenarioStreamError}
+          <button
+            className="stream-error-dismiss"
+            onClick={() => useStore.getState().setScenarioStreamError(null)}
+            title="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       <FilterPanel />
       <ScenarioPanel />

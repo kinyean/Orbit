@@ -314,12 +314,18 @@ Sliced into **3A** (scenario composition on SGP4) then **3B** (physics depth).
 - Maneuver templates: Hohmann, two-impulse rendezvous.
 - Delta-V vector annotations + cumulative budget UI.
 
-### Phase 6 — Proximity visualization
-- Spacecraft GLTF models with articulable parts (solar arrays, antennas).
-- Trajectory ribbons (past solid / predicted dashed).
-- Adjustable scale 1 m–100 km.
+### Phase 6 — Proximity visualization ✅ (done)
+- Spacecraft models with articulable parts: procedural box bus + solar arrays +
+  dish (named joints, deployed pose) **plus a `GLTFLoader` swap seam** for a real
+  `.glb` (R6 — never blocked on art assets).
+- Trajectory ribbons (past solid / predicted dashed) via `Line2` fat lines, split
+  at the current time from the client-side `samples`.
+- Adjustable scale 1 m–100 km (a fixed-pixel marker is the far-LOD fallback).
 - Camera modes: chief-body, deputy-body, fixed external.
-- Earth backdrop decision (default yes — see Deferred in decisions.md).
+- Earth backdrop **decided: yes** — true-scale sphere along −R from a new additive
+  `chiefRadiusM` stream field, with an Earth/Stars/Off toggle; flat non-physical
+  lighting until the Phase 8 Sun vector. Derived ram/LVLH orientation is a labeled
+  estimate until Phase 7 attitude. See Decision 23, [phase-6-plan.md](./phase-6-plan.md).
 
 ### Phase 7 — Sensors & FOV
 - Sensor model (type, FOV geometry, range, pointing).
