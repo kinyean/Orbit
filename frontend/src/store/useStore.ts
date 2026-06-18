@@ -105,7 +105,17 @@ export interface State {
   // Inspection + camera focus
   selectedSatellite: SelectedSatellite | null;
   focus: FocusRequest | null;
+  // Proximity-view camera focus request (composer click → three.js camera rides
+  // that craft). Separate from `focus` (the Cesium globe focus) so a globe
+  // double-click doesn't also move the proximity camera. `nonce` retriggers.
+  proximityFocus: FocusRequest | null;
   cameraResetNonce: number;
+  // While a scenario is loaded the catalog layer is hidden (its live ~180 s
+  // window can't represent the scenario epoch). This toggle re-shows it so the
+  // user can pick a real satellite to add as a deputy mid-edit. Positions are
+  // approximate when the scenario time is far from "now" (dots hold at the
+  // live-window edge) — fine for composition.
+  showCatalogInScenario: boolean;
 
   // Clock control (frontend owns playback — Decision 11)
   setCurrentTime: (t: Date) => void;
@@ -126,11 +136,15 @@ export interface State {
   setSelectedSatellite: (sat: SelectedSatellite | null) => void;
   updateSelectedPosition: (latitudeDeg: number, longitudeDeg: number, altitudeKm: number) => void;
   requestFocus: (noradId: number) => void;
+  requestProximityFocus: (noradId: number) => void;
   resetCamera: () => void;
+  setShowCatalogInScenario: (show: boolean) => void;
 
   // Composer actions
   setChief: (id: number) => void;
   addDeputy: (id: number) => void;
+  /** Promote an existing deputy to chief, demoting the current chief to a deputy (swap). */
+  promoteToChief: (id: number) => void;
   removeFromScenario: (id: number) => void;
   setComposerTimeRange: (start: string, end: string) => void;
   setComposerFidelity: (fidelity: string) => void;
@@ -237,7 +251,9 @@ export const useStore = create<State>((set, get) => ({
 
   selectedSatellite: null,
   focus: null,
+  proximityFocus: null,
   cameraResetNonce: 0,
+  showCatalogInScenario: false,
 
   setCurrentTime: (t) => set({ currentTime: t }),
   togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),
@@ -301,7 +317,10 @@ export const useStore = create<State>((set, get) => ({
     ),
   requestFocus: (noradId) =>
     set((s) => ({ focus: { noradId, nonce: (s.focus?.nonce ?? 0) + 1 } })),
+  requestProximityFocus: (noradId) =>
+    set((s) => ({ proximityFocus: { noradId, nonce: (s.proximityFocus?.nonce ?? 0) + 1 } })),
   resetCamera: () => set((s) => ({ cameraResetNonce: s.cameraResetNonce + 1 })),
+  setShowCatalogInScenario: (show) => set({ showCatalogInScenario: show }),
 
   setChief: (id) =>
     set((s) => ({
@@ -316,6 +335,15 @@ export const useStore = create<State>((set, get) => ({
     set((s) => {
       if (s.composer.chiefId === id || s.composer.deputyIds.includes(id)) return s;
       return { composer: { ...s.composer, deputyIds: [...s.composer.deputyIds, id], isDirty: true } };
+    }),
+  promoteToChief: (id) =>
+    set((s) => {
+      const { chiefId, deputyIds } = s.composer;
+      if (chiefId === id) return s; // already chief
+      // Swap: the new chief leaves the deputy list; the old chief joins it.
+      const nextDeputies = deputyIds.filter((d) => d !== id);
+      if (chiefId !== null) nextDeputies.push(chiefId);
+      return { composer: { ...s.composer, chiefId: id, deputyIds: nextDeputies, isDirty: true } };
     }),
   removeFromScenario: (id) =>
     set((s) => {
@@ -405,6 +433,7 @@ export const useStore = create<State>((set, get) => ({
       // Drop any catalog selection — its dot is hidden during playback, so a
       // stale ring would track an invisible entity ("circles empty").
       selectedSatellite: null,
+      showCatalogInScenario: false, // each scenario starts with the catalog hidden
     });
 
     // Drive the shared clock from the scenario's time range and start playing
@@ -428,6 +457,7 @@ export const useStore = create<State>((set, get) => ({
       bounds: liveBounds(now),
       composer: emptyComposer,
       selectedSatellite: null,
+      showCatalogInScenario: false,
       currentTime: now,
       catalogLive: true,
       rate: 1,

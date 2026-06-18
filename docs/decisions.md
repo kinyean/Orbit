@@ -836,6 +836,25 @@ service registers (no service↔handler cycle). Verified end-to-end: a seek retu
 a `catalog-snapshot` at the chosen epoch, and a wider `windowSeconds` yields
 proportionally more samples.
 
+**Addendum (compose over a scenario — catalog refresh, Phase 6 UX).** A scenario
+hides the catalog layer (its live ~180 s window can't represent the scenario
+epoch). A `showCatalogInScenario` toggle (a floating globe button, off per load)
+re-shows it so the user can pick a real satellite to add as a deputy mid-edit.
+Because the scenario drives the clock, the revealed catalog is refreshed via the
+**same `catalog-snapshot`/`seek` machinery** as live time-travel — the only change
+was relaxing the time-travel subscription's `if (loadedScenario) return;` guard for
+this case. **Tier A** (chosen over continuously animating the catalog): refresh the
+dots + any shown orbit paths only when the clock **settles** — on reveal, pause,
+step, or scrub (debounced 120 ms) — **never per playback tick**. Rationale: a
+full-catalog snapshot is the bounded per-user compute path above, and scenarios play
+up to 10000× (vs the catalog's 100× cap), so per-tick refresh would blow up
+bandwidth; composition happens while paused/scrubbed anyway. Consequence: while a
+scenario *plays*, revealed catalog dots animate only within the last snapshot window
+then hold — pause or scrub to re-sync. Single-click path/marker toggling now branches
+on the picked entity (`scn-` member → CZML trail; `sat-` → on-demand catalog path +
+pulse) rather than on scenario-loaded state, so a revealed catalog satellite gets its
+pulse + orbit path.
+
 ---
 
 ## 22. Distance-vs-time graph: tab-in-readout, no-dep SVG, windowed (Phase 5)

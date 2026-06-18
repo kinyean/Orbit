@@ -73,6 +73,24 @@ export default function ProximityView() {
     setCamDeputy(0);
   }, [relVersion]);
 
+  // Composer click → ride that craft (US-PROX-04). A deputy → deputy mode at its
+  // index; anything else (the chief, which isn't in the deputy list) → chief mode
+  // (the LVLH origin). Guard on the nonce so a stale request can't fire on mount.
+  const proximityFocus = useStore((s) => s.proximityFocus);
+  const lastProxNonce = useRef(proximityFocus?.nonce ?? 0);
+  useEffect(() => {
+    if (!proximityFocus || proximityFocus.nonce === lastProxNonce.current) return;
+    lastProxNonce.current = proximityFocus.nonce;
+    const deps = getRelativeData()?.deputies ?? [];
+    const idx = deps.findIndex((d) => d.noradId === proximityFocus.noradId);
+    if (idx >= 0) {
+      setCamFocus('deputy');
+      setCamDeputy(idx);
+    } else {
+      setCamFocus('chief');
+    }
+  }, [proximityFocus]);
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;

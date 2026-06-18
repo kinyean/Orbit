@@ -17,6 +17,7 @@ export default function InfoPanel() {
   const composer = useStore((s) => s.composer);
   const setChief = useStore((s) => s.setChief);
   const addDeputy = useStore((s) => s.addDeputy);
+  const promoteToChief = useStore((s) => s.promoteToChief);
   const removeFromScenario = useStore((s) => s.removeFromScenario);
   const { collapsed, toggle } = useCollapsed('info');
 
@@ -73,9 +74,20 @@ export default function InfoPanel() {
 
         <div className="info-actions">
           {isMember ? (
-            <button className="role-btn" onClick={() => removeFromScenario(sat.noradId)}>
-              {isChief ? 'Remove chief from scenario' : 'Remove from scenario'}
-            </button>
+            <>
+              {isDeputy && (
+                <button
+                  className="role-btn"
+                  onClick={() => promoteToChief(sat.noradId)}
+                  title="Swap roles: make this the chief; the current chief becomes a deputy"
+                >
+                  Make chief
+                </button>
+              )}
+              <button className="role-btn" onClick={() => removeFromScenario(sat.noradId)}>
+                {isChief ? 'Remove chief from scenario' : 'Remove from scenario'}
+              </button>
+            </>
           ) : (
             <>
               <button className="role-btn" onClick={onSetChief}>

@@ -225,6 +225,7 @@ export default function Globe() {
   const cameraResetNonce = useStore((s) => s.cameraResetNonce);
   const loadedScenarioId = useStore((s) => s.loadedScenario?.id ?? null);
   const scenarioReloadNonce = useStore((s) => s.scenarioReloadNonce);
+  const showCatalogInScenario = useStore((s) => s.showCatalogInScenario);
 
   // --- mount: viewer + stream + click handler ------------------------------
   useEffect(() => {
@@ -512,21 +513,49 @@ export default function Globe() {
       }, 5000);
       stream.seek(new Date(epochMs).toISOString(), windowSec);
     };
-    const unsubscribeTravel = useStore.subscribe((state, prev) => {
-      if (state.loadedScenario) return; // a scenario owns the (hidden) catalog layer
-
-      // Live-refresh shown orbit paths: re-fetch at the current sim time once the
-      // clock has drifted past the threshold (updating lastFetchMs at request
-      // time prevents duplicate requests on the next tick).
+    // Re-fetch each explicitly-shown orbit path once the sim clock drifts past
+    // the threshold (lastFetchMs updated at request time → no duplicate requests).
+    const refreshShownOrbits = (nowMs: number) => {
       const orbits = orbitsRef.current;
-      if (orbits.shown.size > 0) {
-        const nowMs = state.currentTime.getTime();
-        orbits.shown.forEach((norad) => {
-          if (Math.abs(nowMs - (orbits.lastFetchMs.get(norad) ?? 0)) > ORBIT_REFRESH_SIM_MS) {
-            fetchOrbit(norad);
-          }
-        });
+      if (orbits.shown.size === 0) return;
+      orbits.shown.forEach((norad) => {
+        if (Math.abs(nowMs - (orbits.lastFetchMs.get(norad) ?? 0)) > ORBIT_REFRESH_SIM_MS) {
+          fetchOrbit(norad);
+        }
+      });
+    };
+
+    const unsubscribeTravel = useStore.subscribe((state, prev) => {
+      // Tier A — catalog auto-refresh while composing over a scenario (extends
+      // Decision 21). A scenario drives the clock, so the live broadcast can't
+      // represent its epoch; when the user reveals the catalog we refresh it with
+      // on-demand snapshots, but only when the clock SETTLES (reveal / pause /
+      // step / scrub) — never per playback tick, since a full-catalog snapshot is
+      // the bounded per-user compute path and scenarios play up to 10000×.
+      if (state.loadedScenario) {
+        if (!state.showCatalogInScenario) return; // catalog hidden → nothing to do
+        const clockMs = state.currentTime.getTime();
+        const dir = state.direction;
+        const justRevealed = !prev.showCatalogInScenario;
+        const settled = !state.isPlaying && (prev.isPlaying || state.currentTime !== prev.currentTime);
+        if (justRevealed) {
+          // Reveal: snapshot immediately so the dots jump to the scenario time.
+          window.clearTimeout(snapshotTimer);
+          requestCatalogSnapshot(clockMs, LIVE_FROZEN_WINDOW_S, dir);
+          refreshShownOrbits(clockMs);
+        } else if (settled) {
+          // Pause / step / scrub: debounce a snapshot at the settled instant.
+          window.clearTimeout(snapshotTimer);
+          snapshotTimer = window.setTimeout(() => {
+            requestCatalogSnapshot(clockMs, LIVE_FROZEN_WINDOW_S, dir);
+            refreshShownOrbits(clockMs);
+          }, 120);
+        }
+        return;
       }
+
+      // Live-refresh shown orbit paths (catalog mode).
+      refreshShownOrbits(state.currentTime.getTime());
 
       const justWentLive = state.catalogLive && !prev.catalogLive;
       const justClosedScenario = !state.loadedScenario && !!prev.loadedScenario;
@@ -605,11 +634,16 @@ export default function Globe() {
       useStore.getState().setSelectedSatellite(describeEntity(entity, viewer.clock.currentTime));
       const norad = noradFromEntityId(entity.id);
       if (norad === null) return;
-      // Single-click toggles the orbit path: in a scenario, toggle that
-      // satellite's built-in CZML trail; otherwise the on-demand catalog path.
+      // Single-click toggles the orbit path based on WHAT was clicked, not just
+      // whether a scenario is loaded: a scenario member (scn-<id>) toggles its
+      // built-in CZML trail; a catalog satellite (sat-<id>) — e.g. one revealed
+      // via "Show catalog" mid-scenario — uses the on-demand catalog path +
+      // pulsing marker. (pickSatellite/entityForNorad prefer the scn- entity, so
+      // members resolve correctly even with the catalog shown over them.)
+      const isScenarioEntity = typeof entity.id === 'string' && entity.id.startsWith('scn-');
       window.clearTimeout(toggleTimer);
       toggleTimer = window.setTimeout(() => {
-        if (useStore.getState().loadedScenario) toggleScenarioPath(norad);
+        if (isScenarioEntity) toggleScenarioPath(norad);
         else toggleOrbitPath(norad);
       }, CLICK_TOGGLE_DELAY_MS);
     }, ScreenSpaceEventType.LEFT_CLICK);
@@ -656,7 +690,6 @@ export default function Globe() {
   useEffect(() => {
     const viewer = viewerRef.current;
     const scenarioDs = scenarioSourceRef.current;
-    const catalogDs = dataSourceRef.current;
     if (!scenarioDs) return;
 
     // Don't leave the camera tracking a scenario entity we're about to remove.
@@ -669,15 +702,14 @@ export default function Globe() {
 
     if (!loadedScenarioId) {
       releaseScenarioTracking();
-      if (catalogDs) catalogDs.show = true;
       scenarioDs.entities.removeAll();
       clearRelativeData(); // no scenario → proximity view has nothing to show
       return;
     }
 
-    if (catalogDs) catalogDs.show = false;
-    // Catalog orbit paths (+ their pulsing markers) belong to catalog dots (now
-    // hidden) — clear them.
+    // Catalog visibility is owned by a dedicated effect (showCatalogInScenario).
+    // Catalog orbit paths (+ their pulsing markers) belong to catalog dots —
+    // clear them on scenario load.
     const orbits = orbitsRef.current;
     if (viewer) {
       orbits.shown.forEach((n) => {
@@ -744,12 +776,21 @@ export default function Globe() {
       releaseScenarioTracking();
       scenarioDs.entities.removeAll();
       clearRelativeData(); // drop relative samples on (re)connect/close
-      // Restore the catalog only if no scenario is active (id change A→B keeps it hidden).
-      if (catalogDs && !useStore.getState().loadedScenario) catalogDs.show = true;
     };
     // scenarioReloadNonce forces a reconnect when the same scenario is re-loaded
     // (e.g. after a time-range edit) so the stream recomputes for the new window.
   }, [loadedScenarioId, scenarioReloadNonce]);
+
+  // --- catalog layer visibility --------------------------------------------
+  // Shown by default; hidden while a scenario plays (its dots can't represent the
+  // scenario epoch — they'd hold at the live-window edge), UNLESS the user toggles
+  // it back on to compose by picking a real satellite (US-SCN-05). Centralized
+  // here so the scenario-stream effect doesn't fight it.
+  useEffect(() => {
+    const catalogDs = dataSourceRef.current;
+    if (!catalogDs) return;
+    catalogDs.show = !loadedScenarioId || showCatalogInScenario;
+  }, [loadedScenarioId, showCatalogInScenario]);
 
   // --- focus request: blend into the LIVE tracked pose (double-click/search)
   // Two parts make this twist-free:

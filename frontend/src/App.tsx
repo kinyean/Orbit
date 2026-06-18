@@ -22,6 +22,7 @@ export default function App() {
   // toggle unmounts it (frees the 2nd WebGL context). The divider sets the split.
   const scenarioActive = useStore((s) => s.loadedScenario !== null);
   const scenarioStreamError = useStore((s) => s.scenarioStreamError);
+  const showCatalogInScenario = useStore((s) => s.showCatalogInScenario);
   const [proximityEnabled, setProximityEnabled] = useState(true);
   const [splitPct, setSplitPct] = useState(55);
   const viewportsRef = useRef<HTMLDivElement>(null);
@@ -132,6 +133,19 @@ export default function App() {
       <ScenarioPanel />
       {scenarioActive && <ManeuverPanel />}
       <StatsOverlay />
+      {scenarioActive && (
+        <button
+          className={showCatalogInScenario ? 'catalog-toggle active' : 'catalog-toggle'}
+          onClick={() => useStore.getState().setShowCatalogInScenario(!showCatalogInScenario)}
+          title={
+            showCatalogInScenario
+              ? 'Hide the rest of the catalog'
+              : 'Show all catalog satellites so you can add one as a deputy (positions approximate at the scenario time)'
+          }
+        >
+          {showCatalogInScenario ? '◉ Hide catalog' : '◎ Show catalog'}
+        </button>
+      )}
       <button
         className="reset-view-btn"
         onClick={() => useStore.getState().resetCamera()}

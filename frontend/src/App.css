@@ -75,7 +75,10 @@
    Separate from the legend (which is pointer-events:none) so the controls click. */
 .proximity-controls {
   position: absolute;
-  top: 10px;
+  /* Clear the full-width 56px .top-bar (z-index 10) that spans over this pane —
+     at top:10px it sat *under* the bar and swallowed clicks (camera select fully,
+     backdrop all but its bottom sliver). */
+  top: 64px;
   left: 12px;
   display: flex;
   flex-direction: column;
@@ -127,9 +130,10 @@
   color: #94a3b8;
   cursor: pointer;
   font: inherit;
-  font-size: 10px;
+  font-size: 11px;
+  line-height: 1;
   letter-spacing: 0.5px;
-  padding: 2px 8px;
+  padding: 7px 14px;
   border-radius: 4px;
 }
 
@@ -159,6 +163,34 @@
 
 .proximity-toggle:hover {
   border-color: #38bdf8;
+}
+
+/* Catalog show/hide toggle — floats in the right-side button column, above
+   "Reset view" (only while a scenario is loaded). Lets the user re-show the
+   catalog to pick a satellite to add as a deputy. */
+.catalog-toggle {
+  position: absolute;
+  top: 88px;
+  right: 16px;
+  z-index: 10;
+  padding: 7px 14px;
+  background: rgba(19, 24, 38, 0.85);
+  border: 1px solid rgba(71, 85, 105, 0.3);
+  border-radius: 6px;
+  color: #e2e8f0;
+  font-size: 12px;
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+}
+
+.catalog-toggle:hover {
+  border-color: #38bdf8;
+}
+
+.catalog-toggle.active {
+  background: rgba(56, 189, 248, 0.16);
+  border-color: rgba(56, 189, 248, 0.45);
+  color: #38bdf8;
 }
 
 /* Per-scenario stream refusal banner (e.g. 4422 — a spacecraft decays/maneuvers
@@ -398,6 +430,7 @@
   border-color: rgba(71, 85, 105, 0.5);
 }
 
+
 .scenario-save-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
@@ -534,6 +567,28 @@
   margin: 0;
   padding-left: 14px;
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+.composer-deputies li {
+  margin: 2px 0;
+}
+
+/* Composer chief/deputy entries are clickable → focus + select in both views. */
+.composer-focus {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  color: #e2e8f0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer-focus:hover {
+  color: #38bdf8;
+  text-decoration: underline;
 }
 
 .composer-timerange {

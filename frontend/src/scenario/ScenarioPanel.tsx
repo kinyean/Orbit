@@ -28,6 +28,8 @@ export default function ScenarioPanel() {
   const closeScenario = useStore((s) => s.closeScenario);
   const setComposerTimeRange = useStore((s) => s.setComposerTimeRange);
   const setComposerFidelity = useStore((s) => s.setComposerFidelity);
+  const requestFocus = useStore((s) => s.requestFocus);
+  const requestProximityFocus = useStore((s) => s.requestProximityFocus);
   const { collapsed, toggle } = useCollapsed('scenarios');
 
   useEffect(() => {
@@ -36,6 +38,15 @@ export default function ScenarioPanel() {
 
   const nameFor = (id: number) =>
     catalogIndex.find((s) => s.noradId === id)?.name ?? `NORAD ${id}`;
+
+  // Composer click → focus + select in BOTH viewports: the Cesium globe
+  // recenters/tracks (and populates the info panel via requestFocus), and the
+  // proximity camera rides that craft (the chief is the LVLH origin, so the
+  // proximity view re-centers on it automatically).
+  const focusMember = (id: number) => {
+    requestFocus(id);
+    requestProximityFocus(id);
+  };
 
   // The scenario time window (UTC). <input type="datetime-local"> has no
   // timezone, so we treat its value as UTC: slice the ISO for display, append
@@ -154,14 +165,30 @@ export default function ScenarioPanel() {
           <>
             <div className="composer-row">
               <span className="composer-role">Chief</span>
-              <span className="composer-id">{nameFor(composer.chiefId)}</span>
+              <button
+                type="button"
+                className="composer-id composer-focus"
+                onClick={() => focusMember(composer.chiefId!)}
+                title="Focus this satellite in both views"
+              >
+                {nameFor(composer.chiefId)}
+              </button>
             </div>
             {composer.deputyIds.length > 0 && (
               <div className="composer-deputies">
                 <span className="composer-role">Deputies</span>
                 <ul>
                   {composer.deputyIds.map((id) => (
-                    <li key={id}>{nameFor(id)}</li>
+                    <li key={id}>
+                      <button
+                        type="button"
+                        className="composer-focus"
+                        onClick={() => focusMember(id)}
+                        title="Focus this satellite in both views"
+                      >
+                        {nameFor(id)}
+                      </button>
+                    </li>
                   ))}
                 </ul>
               </div>
