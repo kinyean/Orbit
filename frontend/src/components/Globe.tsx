@@ -7,6 +7,7 @@ import {
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
   CallbackPositionProperty,
+  CallbackProperty,
   Cartesian2,
   Cartesian3,
   Cartographic,
@@ -54,6 +55,10 @@ const CLICK_TOGGLE_DELAY_MS = 250;
 // Re-request a shown orbit when the sim clock has advanced this far from its
 // last fetch, so the path stays current as time runs (live update).
 const ORBIT_REFRESH_SIM_MS = 30_000;
+// Pulse cadence (ms) for the marker that flags a satellite whose orbit path is
+// shown — a sonar-style ping so a previously-clicked satellite stays obvious
+// after the yellow selection ring moves on to the next click.
+const ORBIT_PULSE_PERIOD_MS = 1600;
 // Round-robin palette so consecutive orbit paths are maximally distinct.
 const ORBIT_PALETTE = [
   Color.CYAN,
@@ -72,6 +77,21 @@ function noradFromEntityId(id: unknown): number | null {
   if (!id.startsWith('sat-') && !id.startsWith('scn-')) return null;
   const n = Number.parseInt(id.slice(4), 10);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Like {@link noradFromEntityId}, but also resolves the orbit-path overlay
+ * markers ("orbit-dot-25544" / "orbit-pulse-25544"). Those sit on top of the
+ * satellite dot with depth-test disabled, so a click lands on them — without
+ * this they'd swallow the pick and break inspect/focus on any satellite whose
+ * path is shown.
+ */
+function noradFromPickableId(id: unknown): number | null {
+  const direct = noradFromEntityId(id);
+  if (direct !== null) return direct;
+  if (typeof id !== 'string') return null;
+  const m = /^orbit-(?:dot|pulse)-(\d+)$/.exec(id);
+  return m ? Number.parseInt(m[1], 10) : null;
 }
 
 /**
@@ -154,13 +174,20 @@ function describeEntity(entity: Entity, time: JulianDate): SelectedSatellite | n
 }
 
 /** Pick a satellite entity at the click point, padding the search radius. */
-function pickSatellite(viewer: Viewer, position: Cartesian2): Entity | null {
+function pickSatellite(
+  viewer: Viewer,
+  position: Cartesian2,
+  scenarioSrc: CzmlDataSource | null,
+  catalogSrc: CzmlDataSource | null,
+): Entity | null {
   const tryPick = (x: number, y: number): Entity | null => {
     const picked = viewer.scene.pick(new Cartesian2(x, y));
-    if (defined(picked) && picked.id instanceof Entity && noradFromEntityId(picked.id.id) !== null) {
-      return picked.id;
-    }
-    return null;
+    if (!(defined(picked) && picked.id instanceof Entity)) return null;
+    const norad = noradFromPickableId(picked.id.id);
+    if (norad === null) return null;
+    // A click can land on the orbit-path overlay marker; map it back to the
+    // canonical satellite entity so describeEntity/focus operate on the dot.
+    return entityForNorad(norad, scenarioSrc, catalogSrc) ?? picked.id;
   };
   const direct = tryPick(position.x, position.y);
   if (direct) return direct;
@@ -365,11 +392,67 @@ export default function Globe() {
         id: `orbit-${norad}`,
         polyline: {
           positions,
-          width: 1.5,
+          width: 2,
           arcType: ArcType.NONE, // straight segments at altitude, not clamped to the surface
-          material: new PolylineDashMaterialProperty({ color: color.withAlpha(0.9), dashLength: 16 }),
+          // Fine dotted line matching the scenario trails (dashLength 6, was 16):
+          // reads as a crisp, near-solid curve rather than a coarse dashed one.
+          material: new PolylineDashMaterialProperty({ color: color.withAlpha(0.95), dashLength: 6 }),
         },
       });
+    }
+    // A persistent, color-matched marker on every satellite whose orbit path is
+    // shown, so it stays findable after the (single) selection ring moves to the
+    // next click: a solid core dot in the path's color + a sonar-ping ring that
+    // expands and fades on a loop. Both live-track the satellite via a position
+    // callback (like the selection ring) and sit in viewer.entities, so catalog
+    // chunk processing never wipes them.
+    function orbitMarkerPosition(norad: number): CallbackPositionProperty {
+      return new CallbackPositionProperty(
+        () =>
+          entityForNorad(norad, scenarioSourceRef.current, dataSourceRef.current)
+            ?.position?.getValue(viewer.clock.currentTime) ?? undefined,
+        false,
+      );
+    }
+    function addOrbitMarker(norad: number, color: Color): void {
+      viewer.entities.add({
+        id: `orbit-dot-${norad}`,
+        position: orbitMarkerPosition(norad),
+        point: {
+          pixelSize: 7,
+          color: color.withAlpha(1.0),
+          outlineColor: Color.WHITE.withAlpha(0.85),
+          outlineWidth: 1,
+          // Grow as the camera approaches (mirrors the selection ring) so zoom
+          // has feedback; the underlying catalog dot is fixed screen-space size.
+          scaleByDistance: new NearFarScalar(100_000, 2.0, 2_000_000, 1.0),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY, // always visible
+        },
+      });
+      viewer.entities.add({
+        id: `orbit-pulse-${norad}`,
+        position: orbitMarkerPosition(norad),
+        point: {
+          // Expanding ring (transparent fill, colored outline that fades out).
+          pixelSize: new CallbackProperty(() => {
+            const p = (performance.now() % ORBIT_PULSE_PERIOD_MS) / ORBIT_PULSE_PERIOD_MS;
+            return 10 + 22 * p;
+          }, false),
+          color: Color.TRANSPARENT,
+          outlineColor: new CallbackProperty(() => {
+            const p = (performance.now() % ORBIT_PULSE_PERIOD_MS) / ORBIT_PULSE_PERIOD_MS;
+            return color.withAlpha(0.8 * (1 - p));
+          }, false),
+          outlineWidth: 2,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+    }
+    // Remove an orbit's polyline AND its pulsing marker together.
+    function removeOrbitVisuals(norad: number): void {
+      viewer.entities.removeById(`orbit-${norad}`);
+      viewer.entities.removeById(`orbit-dot-${norad}`);
+      viewer.entities.removeById(`orbit-pulse-${norad}`);
     }
     // Request a shown orbit at the current sim clock and record when (for refresh).
     function fetchOrbit(norad: number): void {
@@ -382,11 +465,12 @@ export default function Globe() {
         orbits.shown.delete(norad);
         orbits.colors.delete(norad);
         orbits.lastFetchMs.delete(norad);
-        viewer.entities.removeById(`orbit-${norad}`);
+        removeOrbitVisuals(norad);
       } else {
         orbits.shown.add(norad);
-        assignOrbitColor(norad);
-        fetchOrbit(norad); // path appears when the response lands
+        const color = assignOrbitColor(norad);
+        addOrbitMarker(norad, color); // pulsing marker appears immediately
+        fetchOrbit(norad); // path polyline appears when the response lands
       }
     }
     // In scenario mode the chief/deputy trails are part of the CZML and on by
@@ -516,7 +600,7 @@ export default function Globe() {
     // cancelled by a double-click, so double-click stays pure focus (never a path).
     let toggleTimer = 0;
     handler.setInputAction((click: { position: Cartesian2 }) => {
-      const entity = pickSatellite(viewer, click.position);
+      const entity = pickSatellite(viewer, click.position, scenarioSourceRef.current, dataSourceRef.current);
       if (!entity) return;
       useStore.getState().setSelectedSatellite(describeEntity(entity, viewer.clock.currentTime));
       const norad = noradFromEntityId(entity.id);
@@ -533,7 +617,7 @@ export default function Globe() {
     // Cancel any pending single-click path toggle so it doesn't fire too.
     handler.setInputAction((click: { position: Cartesian2 }) => {
       window.clearTimeout(toggleTimer);
-      const entity = pickSatellite(viewer, click.position);
+      const entity = pickSatellite(viewer, click.position, scenarioSourceRef.current, dataSourceRef.current);
       if (!entity) return;
       const norad = noradFromEntityId(entity.id);
       if (norad !== null) useStore.getState().requestFocus(norad);
@@ -592,10 +676,15 @@ export default function Globe() {
     }
 
     if (catalogDs) catalogDs.show = false;
-    // Catalog orbit paths belong to catalog dots (now hidden) — clear them.
+    // Catalog orbit paths (+ their pulsing markers) belong to catalog dots (now
+    // hidden) — clear them.
     const orbits = orbitsRef.current;
     if (viewer) {
-      orbits.shown.forEach((n) => viewer.entities.removeById(`orbit-${n}`));
+      orbits.shown.forEach((n) => {
+        viewer.entities.removeById(`orbit-${n}`);
+        viewer.entities.removeById(`orbit-dot-${n}`);
+        viewer.entities.removeById(`orbit-pulse-${n}`);
+      });
     }
     orbits.shown.clear();
     orbits.colors.clear();

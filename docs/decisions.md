@@ -615,6 +615,29 @@ that becomes undesirable, switch the tracking frame to `VELOCITY` and match the
 animation target with `Transforms.rotationMatrixFromPositionVelocity` (the
 exact basis Cesium's velocity frame uses).
 
+**Addendum (persistent path markers + line restyle).** The yellow selection
+ring is a *single* entity that follows the last click, but orbit paths are
+toggle-on and *persist* across clicks — so after clicking a second satellite the
+first's path had no anchor and was hard to relocate. Fix: every satellite with a
+shown path gets a persistent, **path-colored** marker that live-tracks it — a
+solid core dot plus a sonar-ping ring (an expanding/fading `CallbackProperty`
+loop). Yellow ring = current selection; colored pulse = has a path shown (they
+coexist). The catalog orbit polyline was also restyled to match the scenario
+trails (fine `dashLength: 6`, was `16`). One trap this introduced and closed: the
+markers sit *over* the dot with `disableDepthTestDistance: Infinity`, so a click
+lands on them — `pickSatellite` now resolves the `orbit-dot-`/`orbit-pulse-<id>`
+ids back to the canonical `sat-`/`scn-` entity, or inspect **and** double-click
+focus silently break on any satellite whose path is shown.
+
+**Addendum (Galileo constellation classification).** `constellationOf` keyed
+constellations off a name *prefix*, but the catalog names Galileo satellites
+`GSAT0XXX (GALILEO NN)` — the `GALILEO` token is in the parenthetical, never the
+prefix — so `startsWith('GALILEO')` matched **zero** of the 33 present, and the
+Galileo filter showed nothing (they rendered as unclassified dots). Matched
+`includes('GALILEO')` instead (verified no false positives against the seed). The
+other five matchers are correct against the real data (GPS satellites are named
+`NAVSTAR …`, which the existing prefix match catches).
+
 ---
 
 ## 19. Scenario body schema v1 + persistence design (Phase 3A)

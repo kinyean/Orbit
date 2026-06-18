@@ -16,7 +16,9 @@ export function constellationOf(name: string): Constellation | null {
   if (n.startsWith('STARLINK')) return 'Starlink';
   if (n.startsWith('ONEWEB')) return 'OneWeb';
   if (n.startsWith('GPS') || n.startsWith('NAVSTAR')) return 'GPS';
-  if (n.startsWith('GALILEO')) return 'Galileo';
+  // Galileo satellites are named "GSAT0XXX (GALILEO NN)" in the catalog — the
+  // "GALILEO" token is in the parenthetical, never the prefix, so match anywhere.
+  if (n.includes('GALILEO')) return 'Galileo';
   if (n.startsWith('BEIDOU')) return 'BeiDou';
   if (n.includes('IRIDIUM')) return 'Iridium';
   return null;
