@@ -182,6 +182,14 @@ public class CzmlEncoder {
         g.writeObjectFieldStart("properties");
         writeIntProperty(g, "noradId", sat.noradId());
         writeStringProperty(g, "role", sat.role());
+        // Seed-orbit elements (mirrors the catalog packet) so the info panel shows
+        // inclination/period for scenario sats too. Static, TLE-epoch values — a
+        // maneuvered role flags `maneuvered` so the client marks them pre-burn.
+        writeNumberProperty(g, "inclinationDeg", round1(sat.inclinationDeg()));
+        writeNumberProperty(g, "periodMinutes", round1(sat.periodSeconds() / 60.0));
+        if (sat.maneuvered()) {
+            writeNumberProperty(g, "maneuvered", 1);
+        }
         g.writeEndObject();
 
         // Role-colored point, larger than the 3 px catalog dot + a white outline.

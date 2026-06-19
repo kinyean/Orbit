@@ -439,7 +439,7 @@ public class ScenarioStreamService {
      * only needs the {@link PVCoordinatesProvider} interface, so both fit uniformly.
      */
     private record PreparedRole(ScenarioBody.Role role, PVCoordinatesProvider provider,
-                                double periodSeconds, double eccentricity) {}
+                                double periodSeconds, double eccentricity, double inclinationDeg) {}
 
     private PreparedRole prepareRole(ScenarioBody.Role role, Fidelity fidelity) {
         TLE tle = rebuildTle(role);
@@ -448,7 +448,7 @@ public class ScenarioStreamService {
         Propagator propagator = propagationService.propagatorFor(tle, fidelity, toImpulses(role.maneuvers()));
         // Orbital period from the TLE mean motion (rad/s); ≥60 s guards odd elements.
         double periodSeconds = Math.max(60.0, 2.0 * Math.PI / tle.getMeanMotion());
-        return new PreparedRole(role, propagator, periodSeconds, tle.getE());
+        return new PreparedRole(role, propagator, periodSeconds, tle.getE(), Math.toDegrees(tle.getI()));
     }
 
     /**
@@ -467,7 +467,7 @@ public class ScenarioStreamService {
         double n = 2.0 * Math.PI / chief.periodSeconds(); // chief mean motion (rad/s)
         PVCoordinatesProvider cw = CwPropagation.deputyProvider(
                 lvlh, startDate, rel0, n, toImpulses(role.maneuvers()));
-        return new PreparedRole(role, cw, chief.periodSeconds(), 0.0);
+        return new PreparedRole(role, cw, chief.periodSeconds(), 0.0, Math.toDegrees(tle.getI()));
     }
 
     /** Convert a role's persisted maneuvers (RIC ΔV) into prop-layer impulses (Phase 5B). */
@@ -540,8 +540,11 @@ public class ScenarioStreamService {
                             + ") never reaches a valid state within the time range");
         }
         backfillLeading(cartesian, firstValid, 4);
+        List<ScenarioBody.Maneuver> maneuvers = role.role().maneuvers();
+        boolean maneuvered = maneuvers != null && !maneuvers.isEmpty();
         return new ScenarioSatelliteSamples(
-                role.role().role(), role.role().noradId(), role.role().name(), role.periodSeconds(), cartesian);
+                role.role().role(), role.role().noradId(), role.role().name(),
+                role.periodSeconds(), role.inclinationDeg(), maneuvered, cartesian);
     }
 
     /** Copy the first valid (x,y,z) back over any leading held-at-origin samples. */

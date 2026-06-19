@@ -71,6 +71,12 @@ export default function InfoPanel() {
         <div className="info-row"><span>Altitude</span><span>{fmt(sat.altitudeKm, 1, ' km')}</span></div>
         <div className="info-row"><span>Inclination</span><span>{fmt(sat.inclinationDeg, 2, '°')}</span></div>
         <div className="info-row"><span>Period</span><span>{fmt(sat.periodMinutes, 1, ' min')}</span></div>
+        {sat.maneuvered && (
+          <div style={{ fontSize: '0.72rem', opacity: 0.6, marginTop: 4, lineHeight: 1.35 }}>
+            Inclination &amp; period are the seed orbit at the TLE epoch — this craft has a
+            maneuver, so they don&apos;t reflect the post-burn orbit.
+          </div>
+        )}
 
         <div className="info-actions">
           {isMember ? (
