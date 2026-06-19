@@ -170,6 +170,9 @@ function describeEntity(entity: Entity, time: JulianDate): SelectedSatellite | n
     latitudeDeg,
     longitudeDeg,
     altitudeKm,
+    // Scenario stream flags maneuvered roles so the panel marks the elements
+    // pre-burn; catalog packets omit it (→ null → undefined).
+    maneuvered: readNumberProp(entity, 'maneuvered', time) === 1,
   };
 }
 

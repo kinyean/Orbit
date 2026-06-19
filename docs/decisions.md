@@ -1127,6 +1127,24 @@ until Phase 8). Backend 113 tests green; frontend type-check + build green; veri
 dev stack (sensor add → 200, bad FOV → 422, WS frame carries chief/attitude/sensors, a wide
 cone yields an acquisition at 565 m).
 
+**Addendum (scenario info-panel orbital elements).** A catalog satellite's info panel showed
+inclination + period (mean elements from its TLE), but a scenario chief/deputy showed only
+`—`: the scenario CZML packet carried just `noradId` + `role`, so the frontend's
+`readNumberProp` returned null. Closed by emitting the seed-orbit `inclinationDeg` +
+`periodMinutes` (computed once from each role's frozen TLE — `Math.toDegrees(tle.getI())` and
+the mean-motion period — mirroring the catalog packet) on the scenario packet's `properties`.
+These are static **TLE-epoch** values, not re-derived per sample: inclination is near-constant
+and period drifts only slowly (drag), so a snapshot is honest for the chief + un-maneuvered
+deputies. A **maneuvered** deputy's orbit changes discontinuously at the burn, so its packet
+also carries a `maneuvered` flag and the info panel labels the values "seed orbit at the TLE
+epoch … doesn't reflect the post-burn orbit" rather than silently hiding them (the plane is
+still an informative feasibility tell — cross-plane rendezvous is ΔV-dominated). Live
+*osculating* elements (update on scrub, reflect post-burn) were rejected as not worth the
+per-frame cost for an RPO tool whose working surface is the relative frame (Frank exports OEM
+for that precision). Additive WebSocket-payload fields only — `VERSION` stays `"1"` (R12),
+determinism intact (R11), no REST/OpenAPI change (`gen:api` is a no-op), exactly like
+`chiefRadiusM` (Decision 23).
+
 ---
 
 # Superseded decisions (pre-SRS pivot)

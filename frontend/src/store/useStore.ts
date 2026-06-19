@@ -44,6 +44,9 @@ export interface SelectedSatellite {
   latitudeDeg: number;
   longitudeDeg: number;
   altitudeKm: number;
+  /** Scenario sat whose orbit changes at a maneuver — inclination/period are the
+   *  pre-burn seed-orbit values (the client marks them). Undefined for catalog sats. */
+  maneuvered?: boolean;
 }
 
 /** A camera-focus request (search → fly-to). `nonce` retriggers the same id. */

@@ -27,12 +27,18 @@ class ScenarioCzmlEncoderTests {
                 60,  6600000.0, 1200000.0, 2200000.0,
                 90,  6500000.0, 1300000.0, 2300000.0,
         };
-        return new ScenarioSatelliteSamples("chief", 25544, "ISS (ZARYA)", 5560.0, cartesian);
+        return new ScenarioSatelliteSamples("chief", 25544, "ISS (ZARYA)", 5560.0, 51.64, false, cartesian);
     }
 
     private static ScenarioSatelliteSamples deputy() {
         double[] cartesian = {0, 6778000, 0, 0, 30, 6700000, 0, 0};
-        return new ScenarioSatelliteSamples("deputy", 33591, "NOAA 19", 6120.0, cartesian);
+        return new ScenarioSatelliteSamples("deputy", 33591, "NOAA 19", 6120.0, 99.05, false, cartesian);
+    }
+
+    /** A maneuvered deputy — its seed-orbit elements are flagged pre-burn. */
+    private static ScenarioSatelliteSamples maneuveredDeputy() {
+        double[] cartesian = {0, 6778000, 0, 0, 30, 6700000, 0, 0};
+        return new ScenarioSatelliteSamples("deputy", 40000, "CHASER", 5700.0, 51.60, true, cartesian);
     }
 
     @Test
@@ -65,6 +71,11 @@ class ScenarioCzmlEncoderTests {
         assertThat(sat.get("name").asText()).isEqualTo("ISS (ZARYA)");
         assertThat(sat.get("properties").get("role").asText()).isEqualTo("chief");
         assertThat(sat.get("properties").get("noradId").get("number").asInt()).isEqualTo(25544);
+        // Seed-orbit elements mirror the catalog packet (so the info panel shows them);
+        // a non-maneuvered role omits the `maneuvered` flag.
+        assertThat(sat.get("properties").get("inclinationDeg").get("number").asDouble()).isEqualTo(51.6);
+        assertThat(sat.get("properties").get("periodMinutes").get("number").asDouble()).isEqualTo(92.7);
+        assertThat(sat.get("properties").has("maneuvered")).isFalse();
 
         // Orbit-path trail: dotted + a finite (one-period) sweeping window, sampled
         // finer than the step so it curves smoothly.
@@ -96,5 +107,18 @@ class ScenarioCzmlEncoderTests {
         assertThat(dep.get("properties").get("role").asText()).isEqualTo("deputy");
         // 2 samples -> degree clamps to 1.
         assertThat(dep.get("position").get("interpolationDegree").asInt()).isEqualTo(1);
+    }
+
+    @Test
+    void maneuveredRoleFlagsSeedOrbitElements() throws Exception {
+        String json = encoder.encodeScenario(
+                Instant.parse("2026-06-02T01:00:00Z"), 30, List.of(chief(), maneuveredDeputy()));
+        JsonNode dep = mapper.readTree(json).get("czml").get(2);
+
+        assertThat(dep.get("properties").get("role").asText()).isEqualTo("deputy");
+        // The seed-orbit elements are still emitted (the plane is informative),
+        // but flagged so the client marks them pre-burn.
+        assertThat(dep.get("properties").get("inclinationDeg").get("number").asDouble()).isEqualTo(51.6);
+        assertThat(dep.get("properties").get("maneuvered").get("number").asInt()).isEqualTo(1);
     }
 }
