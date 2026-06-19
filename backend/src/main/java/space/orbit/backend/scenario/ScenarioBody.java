@@ -13,10 +13,13 @@ import java.util.List;
  * reproducible and does not drift on the periodic catalog refresh (SRS §5.4.1).
  *
  * <p><b>schemaVersion 2</b> (Phase 5B) adds an optional {@link Maneuver} list per
- * role. The schema is forward-additive: a stored v1 body deserializes with a null
- * maneuver list, which the {@link Role} canonical constructor coalesces to empty,
- * and {@link ScenarioService} re-stamps {@code schemaVersion = 2} on the next
- * save. No DB migration is needed (the body is raw {@code jsonb}).
+ * role. <b>schemaVersion 3</b> (Phase 7) adds an optional {@link Sensor} list and an
+ * {@link AttitudeProfile} per role (chief or deputy). The schema is forward-additive:
+ * a stored v1/v2 body deserializes with null sensor/maneuver lists (the {@link Role}
+ * canonical constructor coalesces them to empty) and a null attitude (treated as the
+ * default LVLH-aligned profile), and {@link ScenarioService} re-stamps
+ * {@code schemaVersion = 3} on the next save. No DB migration is needed (the body is
+ * raw {@code jsonb}).
  *
  * <p>{@code fidelity} is one of {@code sgp4} / {@code numerical} / {@code cw};
  * a maneuvered deputy is always propagated numerically regardless (an impulse
@@ -31,24 +34,52 @@ public record ScenarioBody(
         Role chief,
         List<Role> deputies) {
 
-    /** The current body schema version (Phase 5B). */
-    public static final int CURRENT_SCHEMA_VERSION = 2;
+    /** The current body schema version (Phase 7: sensors + attitude). */
+    public static final int CURRENT_SCHEMA_VERSION = 3;
 
     /** ISO-8601 UTC start/end of the scenario's propagation window. */
     public record TimeRange(String start, String end) {}
 
-    /** A chief or deputy: its catalog identity + frozen initial state + maneuvers. */
+    /**
+     * A chief or deputy: its catalog identity + frozen initial state + maneuvers +
+     * sensors + an attitude profile. Sensors and the attitude profile are valid on
+     * BOTH the chief and deputies (UC-4's imager rides the chief — the LVLH origin).
+     * Maneuvers stay deputy-only (the chief is the LVLH reference; enforced in
+     * {@link ScenarioService}).
+     */
     public record Role(String role, int noradId, String name, InitialState initialState,
-                       List<Maneuver> maneuvers) {
+                       List<Maneuver> maneuvers, List<Sensor> sensors, AttitudeProfile attitude) {
 
-        /** Coalesce a null maneuver list (v1 bodies, or roles built without one) to empty. */
+        /** Coalesce null maneuver/sensor lists (v1/v2 bodies, or roles built without one) to empty. */
         public Role {
             maneuvers = maneuvers == null ? List.of() : List.copyOf(maneuvers);
+            sensors = sensors == null ? List.of() : List.copyOf(sensors);
+        }
+
+        /** Convenience: maneuvers only, no sensors / default (LVLH) attitude (Phase 5B call sites, tests). */
+        public Role(String role, int noradId, String name, InitialState initialState,
+                    List<Maneuver> maneuvers) {
+            this(role, noradId, name, initialState, maneuvers, List.of(), null);
         }
 
         /** Convenience for callers with no maneuvers (composition, seeds, tests). */
         public Role(String role, int noradId, String name, InitialState initialState) {
-            this(role, noradId, name, initialState, List.of());
+            this(role, noradId, name, initialState, List.of(), List.of(), null);
+        }
+
+        /** Immutable copy with a replaced maneuver list (other fields preserved). */
+        public Role withManeuvers(List<Maneuver> next) {
+            return new Role(role, noradId, name, initialState, next, sensors, attitude);
+        }
+
+        /** Immutable copy with a replaced sensor list (other fields preserved). */
+        public Role withSensors(List<Sensor> next) {
+            return new Role(role, noradId, name, initialState, maneuvers, next, attitude);
+        }
+
+        /** Immutable copy with a replaced attitude profile (other fields preserved). */
+        public Role withAttitude(AttitudeProfile next) {
+            return new Role(role, noradId, name, initialState, maneuvers, sensors, next);
         }
     }
 
@@ -68,4 +99,39 @@ public record ScenarioBody(
 
     /** A ΔV vector in metres/second, components in the maneuver's {@code frame}. */
     public record DeltaV(double r, double i, double c) {}
+
+    /**
+     * A sensor mounted on a spacecraft (Phase 7, US-SENSE-01). v1 is a body-fixed
+     * camera/RF/lidar: a {@link Fov} shape, a working range band, and a body-fixed
+     * boresight ({@link Mount}). {@code id} is a stable UUID so FOV volumes, the
+     * sensor-frame camera, and acquisition events can reference it and edits stay
+     * idempotent. Gimbaled pointing / frustum-polygonal FOV / CCSDS AEM attitude are
+     * deferred (the records leave room — see Decision 24).
+     */
+    public record Sensor(String id, String kind, String name, Fov fov,
+                         double minRangeM, double maxRangeM, Mount mount) {}
+
+    /**
+     * FOV geometry. {@code type = "cone"} uses {@code halfAngleDeg} (circular);
+     * {@code type = "rect"} uses {@code hDeg}/{@code vDeg} (full angular width/height,
+     * e.g. UC-4's 20°×15° imager). Unused fields are ignored per type.
+     */
+    public record Fov(String type, double halfAngleDeg, double hDeg, double vDeg) {}
+
+    /**
+     * Body-fixed sensor mounting. {@code boresightBody} is the pointing axis in the
+     * spacecraft body frame (defaults to +X when null/empty); {@code clockDeg} rolls
+     * a rectangular FOV about the boresight. (Gimbal fields omitted — deferred.)
+     */
+    public record Mount(double[] boresightBody, double clockDeg) {}
+
+    /**
+     * Per-spacecraft attitude profile (Phase 7). {@code mode = "lvlh"} (the default
+     * when the field is null) is the modeled LVLH-aligned attitude built from the
+     * orbital state — the backend-authoritative successor to the Phase-6 frontend
+     * estimate (Decision 24); {@code mode = "fixed"} holds a constant ECI→body
+     * orientation given by {@code quaternion} (x,y,z,w). CCSDS AEM (measured) is a
+     * later {@code mode}.
+     */
+    public record AttitudeProfile(String mode, double[] quaternion) {}
 }

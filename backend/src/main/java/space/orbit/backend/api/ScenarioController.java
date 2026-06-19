@@ -16,9 +16,11 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import space.orbit.backend.scenario.AttitudeDraft;
 import space.orbit.backend.scenario.ManeuverDraft;
 import space.orbit.backend.scenario.ManeuverTemplateService;
 import space.orbit.backend.scenario.ScenarioDraft;
+import space.orbit.backend.scenario.SensorDraft;
 import space.orbit.backend.scenario.ScenarioResponse;
 import space.orbit.backend.scenario.ScenarioService;
 import space.orbit.backend.scenario.ScenarioSummary;
@@ -106,6 +108,26 @@ public class ScenarioController {
         return templates.rendezvous(id, req.deputyNoradId(), req.arrivalEpoch());
     }
 
+    // --- sensors & attitude (Phase 7, US-SENSE-01 / US-PROX-01) --------------
+
+    @PostMapping("/{id}/sensors")
+    public ScenarioResponse addSensor(@PathVariable UUID id, @Valid @RequestBody SensorRequest req) {
+        return service.addSensor(id, new SensorDraft(
+                req.noradId(), req.kind(), req.name(), req.fovType(),
+                req.halfAngleDeg(), req.hDeg(), req.vDeg(), req.minRangeM(), req.maxRangeM(),
+                req.boresightX(), req.boresightY(), req.boresightZ(), req.clockDeg()));
+    }
+
+    @DeleteMapping("/{id}/sensors/{sensorId}")
+    public ScenarioResponse removeSensor(@PathVariable UUID id, @PathVariable String sensorId) {
+        return service.removeSensor(id, sensorId);
+    }
+
+    @PutMapping("/{id}/attitude")
+    public ScenarioResponse setAttitude(@PathVariable UUID id, @Valid @RequestBody AttitudeRequest req) {
+        return service.setAttitude(id, new AttitudeDraft(req.noradId(), req.mode(), req.quaternion()));
+    }
+
     private static ScenarioDraft toDraft(ScenarioRequest req) {
         List<Integer> deputyIds = req.deputies() == null
                 ? List.of()
@@ -159,5 +181,34 @@ public class ScenarioController {
     public record RendezvousRequest(
             @Positive int deputyNoradId,
             @NotBlank String arrivalEpoch) {
+    }
+
+    /**
+     * Add-sensor payload (Phase 7, US-SENSE-01). {@code noradId} is the host (chief
+     * or deputy). {@code fovType} ∈ {cone, rect}; {@code halfAngleDeg} for cone,
+     * {@code hDeg}/{@code vDeg} for rect. Range in metres; boresight in body axes
+     * (defaults to +X when all zero); semantics validated in the service → 422.
+     */
+    public record SensorRequest(
+            @Positive int noradId,
+            String kind,
+            String name,
+            String fovType,
+            double halfAngleDeg,
+            double hDeg,
+            double vDeg,
+            double minRangeM,
+            double maxRangeM,
+            double boresightX,
+            double boresightY,
+            double boresightZ,
+            double clockDeg) {
+    }
+
+    /** Set-attitude payload (Phase 7). {@code mode} ∈ {lvlh, fixed}; {@code quaternion} = [x,y,z,w] for fixed. */
+    public record AttitudeRequest(
+            @Positive int noradId,
+            String mode,
+            double[] quaternion) {
     }
 }

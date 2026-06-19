@@ -6,6 +6,9 @@
 //                  direction rotates over the orbit, the view rotates with it.
 //   - deputy     : follows a selected deputy (target re-centers on it) AND rides
 //                  its body frame.
+//   - sensor     : anchors to a sensor's pointing (Phase 7 / US-SENSE-05): rides a
+//                  frame whose local +Y is the boresight, started behind the apex
+//                  looking ALONG the boresight, so a target in the FOV is centered.
 //
 // One camera + one OrbitControls throughout. In a body mode we keep the camera's
 // offset-from-target expressed in the focus BODY frame and re-apply it each frame
@@ -22,7 +25,7 @@
 import * as THREE from 'three';
 import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
-export type CameraFocus = 'external' | 'chief' | 'deputy';
+export type CameraFocus = 'external' | 'chief' | 'deputy' | 'sensor';
 const TRANSITION_MS = 400;
 
 export class CameraRig {
@@ -41,14 +44,26 @@ export class CameraRig {
     private readonly controls: OrbitControls,
   ) {}
 
-  /** Begin a transition to a new focus (or a new deputy under the same focus). */
-  setFocus(mode: CameraFocus, focusPos: THREE.Vector3): void {
+  /**
+   * Begin a transition to a new focus (or a new deputy/sensor under the same focus).
+   * When {@code initialOffsetBody} is given (sensor mode), the camera is seeded at
+   * that body-frame direction from the target (scaled to the current distance) and
+   * aimed at the target — so it looks along the boresight rather than re-using the
+   * current free-orbit offset.
+   */
+  setFocus(mode: CameraFocus, focusPos: THREE.Vector3, initialOffsetBody?: THREE.Vector3): void {
     this.mode = mode;
     this.transFrom.copy(this.controls.target);
     this.transTo.copy(focusPos);
     this.transStart = performance.now();
     this.transitioning = true;
-    this.hasOffset = false; // re-init the body offset at the new focus (no jump)
+    if (initialOffsetBody && initialOffsetBody.lengthSq() > 0) {
+      const dist = Math.max(1, this.camera.position.distanceTo(this.controls.target));
+      this.offsetBody.copy(initialOffsetBody).normalize().multiplyScalar(dist);
+      this.hasOffset = true;
+    } else {
+      this.hasOffset = false; // re-init the body offset at the new focus (no jump)
+    }
   }
 
   /**

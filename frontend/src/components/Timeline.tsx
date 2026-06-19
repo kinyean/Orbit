@@ -1,11 +1,53 @@
 import { useSyncExternalStore } from 'react';
 import { useStore } from '../store/useStore';
-import { getRelativeData, getRelativeVersion, subscribeRelative } from '../stream/relativeBuffer';
+import {
+  getRelativeData,
+  getRelativeVersion,
+  subscribeRelative,
+  type SensorEvent,
+} from '../stream/relativeBuffer';
 
 // Same deputy palette as ProximityView / RelativeReadout (color identity).
 const DEPUTY_COLORS = [
   '#38bdf8', '#ff922b', '#a3e635', '#e879f9', '#2dd4bf', '#f472b6', '#818cf8', '#facc15',
 ];
+
+interface FovWindow {
+  key: string;
+  startMs: number;
+  endMs: number;
+  label: string;
+}
+
+/**
+ * Pair acquisition→loss events per (host,sensor,target) into in-view windows
+ * (Phase 7, US-EVT-01). A dangling acquisition runs to the scenario end; a leading
+ * loss runs from the start (the target was already in view at t=0).
+ */
+function buildFovWindows(events: SensorEvent[], lo: number, hi: number): FovWindow[] {
+  const byKey = new Map<string, SensorEvent[]>();
+  for (const e of events) {
+    const k = `${e.hostId}|${e.sensorId}|${e.targetId}`;
+    (byKey.get(k) ?? byKey.set(k, []).get(k)!).push(e);
+  }
+  const windows: FovWindow[] = [];
+  for (const [k, list] of byKey) {
+    list.sort((a, b) => a.epochMs - b.epochMs);
+    let open: number | null = null;
+    for (const e of list) {
+      if (e.type === 'acquisition') {
+        open = e.epochMs;
+      } else if (open !== null) {
+        windows.push({ key: `${k}-${e.epochMs}`, startMs: open, endMs: e.epochMs, label: k });
+        open = null;
+      } else {
+        windows.push({ key: `${k}-lead-${e.epochMs}`, startMs: lo, endMs: e.epochMs, label: k });
+      }
+    }
+    if (open !== null) windows.push({ key: `${k}-tail`, startMs: open, endMs: hi, label: k });
+  }
+  return windows;
+}
 
 /** Compact UTC label for the scrub-bar endpoints. */
 function fmt(d: Date): string {
@@ -39,10 +81,26 @@ export default function Timeline() {
     .map((dep, idx) => ({ dep, idx }))
     .filter(({ dep }) => dep.tcaEpochMs !== null && dep.tcaEpochMs >= lo && dep.tcaEpochMs <= hi);
 
+  // Sensor in-view windows (US-EVT-01): translucent bands between AOS and LOS.
+  const fovWindows = buildFovWindows(rel?.events ?? [], lo, hi)
+    .filter((w) => w.endMs >= lo && w.startMs <= hi);
+
   return (
     <div className="timeline">
       <span className="timeline-label">{fmt(bounds.start)}</span>
       <div className="timeline-track">
+        {fovWindows.map((w) => {
+          const a = Math.max(lo, w.startMs);
+          const b = Math.min(hi, w.endMs);
+          return (
+            <span
+              key={w.key}
+              className="timeline-fov"
+              style={{ left: `${((a - lo) / span) * 100}%`, width: `${((b - a) / span) * 100}%` }}
+              title={`sensor in view (host|sensor|target ${w.label})`}
+            />
+          );
+        })}
         {tcaTicks.map(({ dep, idx }) => (
           <span
             key={dep.noradId}

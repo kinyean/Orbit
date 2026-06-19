@@ -201,7 +201,7 @@ public class ScenarioService {
                     List<ScenarioBody.Maneuver> kept = d.maneuvers().stream()
                             .filter(m -> !m.id().equals(maneuverId))
                             .toList();
-                    return new ScenarioBody.Role(d.role(), d.noradId(), d.name(), d.initialState(), kept);
+                    return d.withManeuvers(kept); // preserve sensors + attitude (Phase 7)
                 })
                 .toList();
         if (!removed[0]) {
@@ -211,6 +211,73 @@ public class ScenarioService {
                 body.fidelity(), body.timeRange(), body.chief(), deputies);
 
         int nextNo = saveVersion(scenario, updated, author, "MANEUVER_REMOVE", "Removed maneuver " + maneuverId);
+        return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    // --- sensors & attitude (Phase 7, US-SENSE-01 / US-PROX-01) --------------
+
+    /**
+     * Add a body-fixed sensor to a host (chief or deputy). New immutable version +
+     * one audit row (Decision 16); FOV volumes / acquisition events recompute when
+     * the client reopens the scenario stream.
+     */
+    @Transactional
+    public ScenarioResponse addSensor(UUID id, SensorDraft draft) {
+        User author = userService.currentUser();
+        Scenario scenario = activeScenario(id, author);
+        ScenarioBody body = parse(latestVersion(scenario).getBody());
+
+        validateSensor(body, draft);
+        ScenarioBody.Sensor sensor = buildSensor(draft);
+        ScenarioBody updated = withRoleSensors(body, draft.noradId(), existing -> {
+            List<ScenarioBody.Sensor> next = new ArrayList<>(existing);
+            next.add(sensor);
+            return next;
+        });
+
+        int nextNo = saveVersion(scenario, updated, author,
+                "SENSOR_ADD", "Added " + sensor.kind() + " sensor to " + draft.noradId());
+        return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    /** Remove a sensor by its id (from whichever role carries it). New version + audit. */
+    @Transactional
+    public ScenarioResponse removeSensor(UUID id, String sensorId) {
+        User author = userService.currentUser();
+        Scenario scenario = activeScenario(id, author);
+        ScenarioBody body = parse(latestVersion(scenario).getBody());
+
+        boolean[] removed = {false};
+        ScenarioBody updated = mapAllRoles(body, r -> {
+            if (r.sensors().stream().noneMatch(s -> s.id().equals(sensorId))) {
+                return r;
+            }
+            removed[0] = true;
+            return r.withSensors(r.sensors().stream().filter(s -> !s.id().equals(sensorId)).toList());
+        });
+        if (!removed[0]) {
+            throw new ScenarioValidationException("No sensor " + sensorId + " in this scenario");
+        }
+
+        int nextNo = saveVersion(scenario, updated, author, "SENSOR_REMOVE", "Removed sensor " + sensorId);
+        return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    /** Set a host's attitude profile ({@code lvlh} or {@code fixed}). New version + audit. */
+    @Transactional
+    public ScenarioResponse setAttitude(UUID id, AttitudeDraft draft) {
+        User author = userService.currentUser();
+        Scenario scenario = activeScenario(id, author);
+        ScenarioBody body = parse(latestVersion(scenario).getBody());
+
+        validateAttitude(body, draft);
+        String mode = normalizeMode(draft.mode());
+        ScenarioBody.AttitudeProfile profile = new ScenarioBody.AttitudeProfile(
+                mode, "fixed".equals(mode) ? draft.quaternion() : null);
+        ScenarioBody updated = mapRole(body, draft.noradId(), r -> r.withAttitude(profile));
+
+        int nextNo = saveVersion(scenario, updated, author,
+                "ATTITUDE_SET", "Set " + mode + " attitude on " + draft.noradId());
         return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
     }
 
@@ -312,12 +379,119 @@ public class ScenarioService {
                                              java.util.function.UnaryOperator<List<ScenarioBody.Maneuver>> edit) {
         List<ScenarioBody.Role> deputies = body.deputies().stream()
                 .map(d -> d.noradId() == deputyNoradId
-                        ? new ScenarioBody.Role(d.role(), d.noradId(), d.name(), d.initialState(),
-                                edit.apply(d.maneuvers()))
+                        ? d.withManeuvers(edit.apply(d.maneuvers())) // preserve sensors + attitude (Phase 7)
                         : d)
                 .toList();
         return new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
                 body.fidelity(), body.timeRange(), body.chief(), deputies);
+    }
+
+    /** Apply {@code edit} to the role (chief or deputy) matching {@code noradId}; others unchanged. */
+    private ScenarioBody mapRole(ScenarioBody body, int noradId,
+                                 java.util.function.UnaryOperator<ScenarioBody.Role> edit) {
+        boolean[] hit = {false};
+        ScenarioBody.Role chief = body.chief();
+        if (chief != null && chief.noradId() == noradId) {
+            chief = edit.apply(chief);
+            hit[0] = true;
+        }
+        List<ScenarioBody.Role> deputies = body.deputies().stream()
+                .map(d -> {
+                    if (d.noradId() != noradId) {
+                        return d;
+                    }
+                    hit[0] = true;
+                    return edit.apply(d);
+                })
+                .toList();
+        if (!hit[0]) {
+            throw new ScenarioValidationException("NORAD id " + noradId + " is not in this scenario");
+        }
+        return new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
+                body.fidelity(), body.timeRange(), chief, deputies);
+    }
+
+    /** Apply {@code edit} to every role (chief + deputies) — used by id-keyed sensor removal. */
+    private ScenarioBody mapAllRoles(ScenarioBody body,
+                                     java.util.function.UnaryOperator<ScenarioBody.Role> edit) {
+        ScenarioBody.Role chief = body.chief() == null ? null : edit.apply(body.chief());
+        List<ScenarioBody.Role> deputies = body.deputies().stream().map(edit).toList();
+        return new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
+                body.fidelity(), body.timeRange(), chief, deputies);
+    }
+
+    /** Replace one role's sensor list (by NORAD id; chief or deputy), preserving other fields. */
+    private ScenarioBody withRoleSensors(ScenarioBody body, int noradId,
+                                         java.util.function.UnaryOperator<List<ScenarioBody.Sensor>> edit) {
+        return mapRole(body, noradId, r -> r.withSensors(edit.apply(r.sensors())));
+    }
+
+    private ScenarioBody.Sensor buildSensor(SensorDraft d) {
+        String type = (d.fovType() == null || d.fovType().isBlank()) ? "cone" : d.fovType().toLowerCase();
+        ScenarioBody.Fov fov = new ScenarioBody.Fov(type, d.halfAngleDeg(), d.hDeg(), d.vDeg());
+        double[] boresight = {d.boresightX(), d.boresightY(), d.boresightZ()};
+        if (boresight[0] == 0 && boresight[1] == 0 && boresight[2] == 0) {
+            boresight = new double[] {1, 0, 0}; // default body +X
+        }
+        ScenarioBody.Mount mount = new ScenarioBody.Mount(boresight, d.clockDeg());
+        String kind = (d.kind() == null || d.kind().isBlank()) ? "optical" : d.kind();
+        String name = (d.name() == null || d.name().isBlank()) ? (kind + " sensor") : d.name();
+        return new ScenarioBody.Sensor(UUID.randomUUID().toString(), kind, name, fov,
+                d.minRangeM(), d.maxRangeM(), mount);
+    }
+
+    private void validateSensor(ScenarioBody body, SensorDraft draft) {
+        if (!roleExists(body, draft.noradId())) {
+            throw new ScenarioValidationException("NORAD id " + draft.noradId() + " is not in this scenario");
+        }
+        String type = draft.fovType() == null ? "cone" : draft.fovType();
+        if ("cone".equalsIgnoreCase(type)) {
+            if (!(draft.halfAngleDeg() > 0 && draft.halfAngleDeg() < 90)) {
+                throw new ScenarioValidationException("cone FOV half-angle must be in (0,90) degrees");
+            }
+        } else if ("rect".equalsIgnoreCase(type)) {
+            if (!(draft.hDeg() > 0 && draft.hDeg() < 180 && draft.vDeg() > 0 && draft.vDeg() < 180)) {
+                throw new ScenarioValidationException("rect FOV H/V must be in (0,180) degrees");
+            }
+        } else {
+            throw new ScenarioValidationException("Unsupported FOV type \"" + type + "\" (cone|rect)");
+        }
+        if (!Double.isFinite(draft.minRangeM()) || !Double.isFinite(draft.maxRangeM())
+                || draft.minRangeM() < 0 || !(draft.maxRangeM() > draft.minRangeM())) {
+            throw new ScenarioValidationException("sensor range must satisfy 0 <= minRangeM < maxRangeM");
+        }
+    }
+
+    private void validateAttitude(ScenarioBody body, AttitudeDraft draft) {
+        if (!roleExists(body, draft.noradId())) {
+            throw new ScenarioValidationException("NORAD id " + draft.noradId() + " is not in this scenario");
+        }
+        String mode = draft.mode();
+        if (mode != null && !mode.isBlank()
+                && !"lvlh".equalsIgnoreCase(mode) && !"fixed".equalsIgnoreCase(mode)) {
+            throw new ScenarioValidationException("Unsupported attitude mode \"" + mode + "\" (lvlh|fixed)");
+        }
+        if ("fixed".equalsIgnoreCase(mode)) {
+            double[] q = draft.quaternion();
+            if (q == null || q.length != 4) {
+                throw new ScenarioValidationException("fixed attitude requires a quaternion [x,y,z,w]");
+            }
+            double n2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+            if (!(n2 > 1e-9)) {
+                throw new ScenarioValidationException("fixed attitude quaternion must be non-zero");
+            }
+        }
+    }
+
+    private boolean roleExists(ScenarioBody body, int noradId) {
+        if (body.chief() != null && body.chief().noradId() == noradId) {
+            return true;
+        }
+        return body.deputies().stream().anyMatch(d -> d.noradId() == noradId);
+    }
+
+    private static String normalizeMode(String mode) {
+        return (mode == null || mode.isBlank()) ? "lvlh" : mode.toLowerCase();
     }
 
     private void validateManeuver(ScenarioBody body, ManeuverDraft draft) {
@@ -420,9 +594,10 @@ public class ScenarioService {
     private ScenarioBody parse(String json) {
         try {
             ScenarioBody body = objectMapper.readValue(json, ScenarioBody.class);
-            // Forward-migrate a v1 body: maneuver lists are already null-coalesced by
-            // the Role constructor; here we re-stamp the schema version so callers see
-            // a consistent v2 (the stored JSON is rewritten on the next save).
+            // Forward-migrate an older body: maneuver/sensor lists are already
+            // null-coalesced by the Role constructor (and a null attitude means the
+            // default LVLH profile); here we re-stamp the schema version so callers see
+            // a consistent v3 (the stored JSON is rewritten on the next save).
             if (body.schemaVersion() != ScenarioBody.CURRENT_SCHEMA_VERSION) {
                 body = new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
                         body.fidelity(), body.timeRange(), body.chief(), body.deputies());

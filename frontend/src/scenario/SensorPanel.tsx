@@ -1,0 +1,301 @@
+import { useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { useStore, type SensorRequest } from '../store/useStore';
+import { useCollapsed } from '../lib/usePanelChrome';
+
+// Same palette as ProximityView / ManeuverPanel so a craft's color is consistent.
+const CHIEF_COLOR = '#ffd166';
+const DEPUTY_COLORS = [
+  '#38bdf8', '#ff922b', '#a3e635', '#e879f9', '#2dd4bf', '#f472b6', '#818cf8', '#facc15',
+];
+
+// Sensor-type presets (usability — Maya authors in <2 min). Pick one and tweak;
+// the backend validates whatever is submitted. UC-4's imager is the wide rect.
+interface Preset extends Omit<SensorRequest, 'noradId'> {
+  label: string;
+}
+const PRESETS: Preset[] = [
+  { label: 'Narrow optical imager', kind: 'optical', name: 'Narrow imager', fovType: 'cone',
+    halfAngleDeg: 5, hDeg: 0, vDeg: 0, minRangeM: 1000, maxRangeM: 500000,
+    boresightX: 1, boresightY: 0, boresightZ: 0, clockDeg: 0 },
+  { label: 'Wide imager (20°×15°)', kind: 'optical', name: 'Wide imager', fovType: 'rect',
+    halfAngleDeg: 0, hDeg: 20, vDeg: 15, minRangeM: 100, maxRangeM: 50000,
+    boresightX: 1, boresightY: 0, boresightZ: 0, clockDeg: 0 },
+  { label: 'Rendezvous lidar', kind: 'lidar', name: 'Rdv lidar', fovType: 'cone',
+    halfAngleDeg: 10, hDeg: 0, vDeg: 0, minRangeM: 1, maxRangeM: 5000,
+    boresightX: 1, boresightY: 0, boresightZ: 0, clockDeg: 0 },
+];
+
+const BORESIGHTS: { label: string; v: [number, number, number] }[] = [
+  { label: '+X', v: [1, 0, 0] }, { label: '+Y', v: [0, 1, 0] }, { label: '+Z', v: [0, 0, 1] },
+  { label: '−X', v: [-1, 0, 0] }, { label: '−Y', v: [0, -1, 0] }, { label: '−Z', v: [0, 0, -1] },
+];
+
+function fovLabel(s: { fov?: { type?: string; halfAngleDeg?: number; hDeg?: number; vDeg?: number } }): string {
+  const f = s.fov;
+  if (!f) return '';
+  return f.type === 'rect' ? `${f.hDeg ?? 0}°×${f.vDeg ?? 0}°` : `cone ${f.halfAngleDeg ?? 0}°`;
+}
+
+function rangeLabel(min?: number, max?: number): string {
+  const fmt = (m?: number) => ((m ?? 0) >= 1000 ? `${((m ?? 0) / 1000).toFixed(0)}km` : `${(m ?? 0).toFixed(0)}m`);
+  return `${fmt(min)}–${fmt(max)}`;
+}
+
+/**
+ * Sensor panel (Phase 7, US-SENSE-01). Per-craft (chief + deputies) sensor list with
+ * an add form (type preset + FOV + range + boresight) and a remove control, plus a
+ * per-craft attitude mode toggle (lvlh / fixed-inertial). Edits go through the audited
+ * backend path and re-propagate (the store reloads), so the FOV volumes, modeled
+ * orientation, and acquisition events in the proximity view update. Mirrors
+ * ManeuverPanel's draggable/collapsible chrome.
+ */
+export default function SensorPanel() {
+  const loaded = useStore((s) => s.loadedScenario);
+  const addSensor = useStore((s) => s.addSensor);
+  const removeSensor = useStore((s) => s.removeSensor);
+  const setAttitude = useStore((s) => s.setAttitude);
+
+  const [hostId, setHostId] = useState<number | null>(null);
+  const [presetIdx, setPresetIdx] = useState(1); // wide imager default (UC-4)
+  const [form, setForm] = useState<Omit<SensorRequest, 'noradId'>>({ ...PRESETS[1] });
+  const [boresightIdx, setBoresightIdx] = useState(0);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [pos, setPos] = useState({ x: 248, y: 560 });
+  const { collapsed, toggle } = useCollapsed('sensors');
+
+  function onDragStart(e: ReactPointerEvent) {
+    if ((e.target as HTMLElement).closest('button')) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const origin = { ...pos };
+    const move = (ev: PointerEvent) => {
+      const x = Math.min(window.innerWidth - 80, Math.max(0, origin.x + (ev.clientX - startX)));
+      const y = Math.min(window.innerHeight - 60, Math.max(0, origin.y + (ev.clientY - startY)));
+      setPos({ x, y });
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
+
+  if (!loaded) return null;
+  const chief = loaded.body.chief;
+  const deputies = loaded.body.deputies ?? [];
+  if (!chief) return null;
+  const crafts = [chief, ...deputies];
+  const selectedHost = hostId ?? chief.noradId ?? null;
+
+  function applyPreset(idx: number) {
+    setPresetIdx(idx);
+    setForm({ ...PRESETS[idx] });
+    setBoresightIdx(0);
+  }
+
+  // Live field validation (mirrors the backend rules) → inline warning + disabled submit.
+  // A forward-pointed FOV can't see more than 90° off the boresight: a cone's half-angle
+  // (boresight→edge) is < 90°; a rect's full H/V widths are < 180° (each side < 90°).
+  function formError(): string | null {
+    if (form.fovType === 'cone') {
+      if (!(form.halfAngleDeg > 0 && form.halfAngleDeg < 90)) {
+        return 'Cone half-angle must be between 0° and 90° (measured boresight → edge). 90° or more is a hemisphere, not a pointed cone.';
+      }
+    } else if (!(form.hDeg > 0 && form.hDeg < 180) || !(form.vDeg > 0 && form.vDeg < 180)) {
+      return 'Rect H° and V° are full widths and must each be between 0° and 180°.';
+    }
+    if (!(form.minRangeM >= 0) || !(form.maxRangeM > form.minRangeM)) {
+      return 'Range must satisfy 0 ≤ min < max (metres).';
+    }
+    return null;
+  }
+
+  async function onAdd(e: FormEvent) {
+    e.preventDefault();
+    if (selectedHost == null) return;
+    if (formError()) return; // guard the Enter key; the button is also disabled
+    const b = BORESIGHTS[boresightIdx].v;
+    setMsg(null);
+    const err = await addSensor({
+      ...form,
+      noradId: selectedHost,
+      boresightX: b[0],
+      boresightY: b[1],
+      boresightZ: b[2],
+    });
+    setMsg(err ?? `Added ${form.name} to ${selectedHost}`);
+  }
+
+  const formErr = formError();
+
+  return (
+    <aside className="maneuver-panel" style={{ left: pos.x, top: pos.y }}>
+      <div className="mvr-drag" onPointerDown={onDragStart} title="Drag to move">
+        <span className="mvr-drag-title"><span className="mvr-grip" aria-hidden>⠿</span> Sensors · FOV</span>
+        <button className="panel-min" onClick={toggle} title={collapsed ? 'Expand' : 'Minimize'}>
+          {collapsed ? '▸' : '▾'}
+        </button>
+      </div>
+      {!collapsed && (
+        <>
+          {crafts.map((c, idx) => {
+            const sensors = c.sensors ?? [];
+            const color = idx === 0 ? CHIEF_COLOR : DEPUTY_COLORS[(idx - 1) % DEPUTY_COLORS.length];
+            const mode = c.attitude?.mode ?? 'lvlh';
+            return (
+              <div key={c.noradId ?? idx} className="mvr-deputy">
+                <div className="mvr-deputy-head">
+                  <span style={{ color }}>●</span>{' '}
+                  <span className="mvr-deputy-name">{c.name ?? `NORAD ${c.noradId}`}</span>
+                  <select
+                    className="sensor-att"
+                    value={mode}
+                    title="Attitude profile"
+                    onChange={(e) =>
+                      c.noradId != null &&
+                      void setAttitude(
+                        c.noradId,
+                        e.target.value as 'lvlh' | 'fixed',
+                        e.target.value === 'fixed' ? [0, 0, 0, 1] : undefined,
+                      )
+                    }
+                  >
+                    <option value="lvlh">att: LVLH</option>
+                    <option value="fixed">att: fixed</option>
+                  </select>
+                </div>
+                {sensors.length === 0 ? (
+                  <div className="mvr-empty">no sensors</div>
+                ) : (
+                  <ul className="mvr-list">
+                    {sensors.map((s) => (
+                      <li key={s.id}>
+                        <span className="mvr-epoch">{s.kind}</span>
+                        <span className="mvr-dv">
+                          {s.name} · {fovLabel(s)} · {rangeLabel(s.minRangeM, s.maxRangeM)}
+                        </span>
+                        <button
+                          className="mvr-remove"
+                          title="Remove sensor"
+                          onClick={() => s.id && void removeSensor(s.id)}
+                        >
+                          ×
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            );
+          })}
+
+          <form className="mvr-add" onSubmit={onAdd}>
+            <div className="mvr-add-title">Add sensor</div>
+            <select value={selectedHost ?? ''} onChange={(e) => setHostId(Number(e.target.value))} aria-label="Host">
+              {crafts.map((c, idx) => (
+                <option key={c.noradId ?? idx} value={c.noradId ?? ''}>
+                  {c.name ?? `NORAD ${c.noradId}`}
+                </option>
+              ))}
+            </select>
+            <select value={presetIdx} onChange={(e) => applyPreset(Number(e.target.value))} aria-label="Preset">
+              {PRESETS.map((p, i) => (
+                <option key={p.label} value={i}>{p.label}</option>
+              ))}
+            </select>
+            <div className="mvr-ric">
+              <label>
+                type
+                <select
+                  value={form.fovType}
+                  onChange={(e) => setForm({ ...form, fovType: e.target.value as 'cone' | 'rect' })}
+                >
+                  <option value="cone">cone</option>
+                  <option value="rect">rect</option>
+                </select>
+              </label>
+              {form.fovType === 'cone' ? (
+                <label title="Measured from the boresight (centre) to the cone edge. 0–90°.">
+                  half-angle°
+                  <input
+                    type="number"
+                    step="any"
+                    min={0}
+                    max={90}
+                    value={form.halfAngleDeg}
+                    onChange={(e) => setForm({ ...form, halfAngleDeg: Number(e.target.value) })}
+                  />
+                </label>
+              ) : (
+                <>
+                  <label title="Full horizontal width of the field of view. 0–180°.">
+                    H° (full)
+                    <input
+                      type="number"
+                      step="any"
+                      min={0}
+                      max={180}
+                      value={form.hDeg}
+                      onChange={(e) => setForm({ ...form, hDeg: Number(e.target.value) })}
+                    />
+                  </label>
+                  <label title="Full vertical width of the field of view. 0–180°.">
+                    V° (full)
+                    <input
+                      type="number"
+                      step="any"
+                      min={0}
+                      max={180}
+                      value={form.vDeg}
+                      onChange={(e) => setForm({ ...form, vDeg: Number(e.target.value) })}
+                    />
+                  </label>
+                </>
+              )}
+            </div>
+            <div className="mvr-note">
+              {form.fovType === 'cone'
+                ? 'Cone: half-angle from the boresight to the edge (0–90°).'
+                : 'Rect: full H×V angular widths (0–180° each).'}{' '}
+              max = the sensor's straight-line detection range.
+            </div>
+            <div className="mvr-ric">
+              <label>
+                min m
+                <input
+                  type="number"
+                  step="any"
+                  value={form.minRangeM}
+                  onChange={(e) => setForm({ ...form, minRangeM: Number(e.target.value) })}
+                />
+              </label>
+              <label>
+                max m
+                <input
+                  type="number"
+                  step="any"
+                  value={form.maxRangeM}
+                  onChange={(e) => setForm({ ...form, maxRangeM: Number(e.target.value) })}
+                />
+              </label>
+              <label>
+                boresight
+                <select value={boresightIdx} onChange={(e) => setBoresightIdx(Number(e.target.value))}>
+                  {BORESIGHTS.map((b, i) => (
+                    <option key={b.label} value={i}>{b.label}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {formErr && <div className="mvr-budget-warn">⚠ {formErr}</div>}
+            <button type="submit" disabled={!!formErr}>Add sensor</button>
+            <div className="mvr-note">FOV volumes + acquisition events appear in the proximity view.</div>
+            {msg && <div className="mvr-msg">{msg}</div>}
+          </form>
+        </>
+      )}
+    </aside>
+  );
+}

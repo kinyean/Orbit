@@ -54,6 +54,7 @@ considered**, **Consequences**.
 18. [Global-view camera: click-to-inspect, double-click focus](#18-global-view-camera-click-to-inspect-double-click-focus)
 22. [Distance-vs-time graph: tab-in-readout, no-dep SVG, windowed (Phase 5)](#22-distance-vs-time-graph-tab-in-readout-no-dep-svg-windowed-phase-5)
 23. [Proximity scene: procedural models + derived orientation + correct Earth backdrop (Phase 6)](#23-proximity-scene-procedural-models--derived-orientation--correct-earth-backdrop-phase-6)
+24. [Sensors & FOV: modeled backend attitude + cone/rect FOV + sampled occlusion-aware events (Phase 7)](#24-sensors--fov-modeled-backend-attitude--conerect-fov--sampled-occlusion-aware-events-phase-7)
 
 [Superseded decisions (pre-SRS pivot)](#superseded-decisions-pre-srs-pivot)
 ·
@@ -1041,6 +1042,93 @@ client hammered reconnects, proximity view blank). Now:
 
 ---
 
+## 24. Sensors & FOV: modeled backend attitude + cone/rect FOV + sampled occlusion-aware events (Phase 7)
+
+**Context.** Phase 7 (SRS §3.6 / §3.9.4 / §3.12.2; US-SENSE-01..05, US-EVT-01) makes
+**sensors** first-class scenario objects and visualizes/analyzes them — Gita's UC-4
+("when is the deputy inside my imager's FOV with a clear line of sight?"). A sensor's
+FOV only has meaning relative to the host's **attitude**, which Phase 6 left as a
+frontend-only *estimate* (R17). Two long-standing forks came due: how real attitude
+should be, and the occlusion technique (a Deferred item).
+
+**Decision.**
+- **Sensor model: cone + rectangular, body-fixed.** `ScenarioBody` schema **v3** adds a
+  per-role (chief OR deputy) `List<Sensor>` + `AttitudeProfile`, forward-additive exactly
+  like the v2 maneuver list (null-coalesced; `parse()` re-stamps v3; no DB migration). A
+  `Sensor` is `{id, kind, Fov{type: cone|rect, halfAngleDeg | hDeg/vDeg}, minRangeM,
+  maxRangeM, Mount{boresightBody, clockDeg}}`. Gimbaled pointing and frustum/polygonal
+  FOV are deferred (the records leave room). All edits go through the single audited
+  `ScenarioService` path (`addSensor`/`removeSensor`/`setAttitude`, new audit actions).
+- **Attitude: backend-authoritative + modeled.** A craft's body orientation is computed
+  on the backend (the Phase-6 frontend estimate is retired) and streamed, so the FOV
+  volume the client draws and the acquisition events the backend computes share ONE
+  source of truth (Decision 9). `mode="lvlh"` (default) builds an LVLH-aligned frame from
+  the orbital state (nose +Y = velocity/ram, top +Z = radial-out, +X = Y×Z — the same
+  convention as the Phase-6 estimate, now authoritative); `mode="fixed"` holds a constant
+  ECI orientation. Streamed as a **three.js-convention quaternion** — the basis→quaternion
+  conversion is implemented explicitly in `FrameService` (NOT via Hipparchus `Rotation`)
+  and pinned to three.js by a signed-axis test (R15), so SLERP/apply on the client matches
+  exactly. CCSDS AEM (measured) attitude is deferred (a future `mode`).
+- **Events: from the sampled trajectory, occlusion-aware, deterministic.**
+  `analysis/SensorEventComputer` detects acquisition/loss by evaluating the predicate
+  *in-FOV ∧ in-range ∧ line-of-sight unobstructed* over the **already-sampled** per-craft
+  position + body-attitude (a `SampledCraft` carrying the same arrays that drive the
+  rendered scene), in the **chief-LVLH scene frame**, on the sample grid + a fixed-iteration
+  bisection refine (mirroring the golden-section TCA refine). It does **not** re-propagate —
+  reusing the samples makes events consistent <em>by construction</em> with the drawn FOV
+  and the closest approach, and is cheaper. (An earlier version re-propagated independently;
+  for a maneuvered deputy — a stateful Orekit numerical+`ImpulseManeuver` propagator — the
+  out-of-order grid+bisection access returned a trajectory inconsistent with the sampled
+  one, so events disagreed with the drawn cone by minutes. Fixed by reading the samples; the
+  guard is a maneuvered-scenario test asserting event range == sampled range at each epoch.)
+  **v1 simplifications:** the FOV containment test treats both shapes as a circular cone (a
+  rectangle uses its larger half-angle as a bounding cone); occlusion is **Earth-only** (ray
+  vs the WGS84 sphere in the LVLH scene — inter-spacecraft blocking is negligible for
+  point-like targets at these ranges); the **Sun** (occlusion + sun-keep-out) is **Phase 8**.
+- **Stream: additive, `VERSION="1"` (R12).** The `scenario-relative` envelope gains a
+  top-level `chief` block (`{noradId, att, sensors}` — the chief is the LVLH origin but
+  has attitude + sensors that must be drawn), per-deputy `att` (stride-5 quaternion
+  samples) + `sensors` descriptors, and a top-level `events` array. All optional; older
+  clients ignore them. Determinism (R11) holds — no wall-clock/RNG, fixed iteration counts.
+- **Frontend.** `proximity/sensors.ts` builds translucent cone/rect FOV volumes attached
+  under each craft's `root` (true-metre, ride the body frame); `orientation.ts`
+  `bodyOrientationAt` consumes the streamed quaternion (SLERP) and falls back to the
+  derived estimate, flipping the legend "estimated"→"modeled"; `cameraModes.ts` gains a
+  `sensor` mode (anchor behind the apex, look along the boresight); `Timeline.tsx` draws
+  AOS/LOS windows; `SensorPanel.tsx` adds/removes sensors + sets attitude through the
+  audited store actions, with **type presets** (narrow imager / wide 20°×15° / rendezvous
+  lidar) so authoring stays fast (personas "<2 min").
+
+**Why.** Backend-authoritative modeled attitude is the smallest change that makes sensor
+events trustworthy without an AEM IO pipeline, and keeping it the SAME convention as the
+Phase-6 estimate means the visual doesn't jump. A circular-cone event test + Earth-only
+occlusion is the bounded, honest v1 (the drawn volume is the exact shape; the AOS/LOS uses
+a representative cone — documented). Reusing the sample-grid + bisection refine keeps it
+inside the precompute-once architecture and deterministic. Sensor mounting is a *design
+input* (TLEs carry no payload data), so the user specifies it — presets keep that quick.
+
+**Alternatives considered.** Frontend-only attitude with FOV mounted on it (rejected — the
+backend then can't compute events consistently with what's drawn, breaking the decoupling).
+Orekit `FieldOfViewDetector` + `AttitudeProvider` for events (viable, but the Hipparchus
+attitude/quaternion conventions are error-prone to match against the rendered volume, and
+event detectors don't cover Earth/inter-spacecraft occlusion uniformly — the sampled
+predicate does). Exact rectangular containment for events (deferred — needs a pinned
+sensor-frame roll matching the renderer's `setFromUnitVectors`; the bounding cone is the
+v1). Pulling the Sun vector forward (rejected — it belongs with Phase 8 lighting/eclipse).
+
+**Consequences.** New `backend/.../analysis/` package (`SensorEventComputer`, `SensorEvent`,
+`SampledCraft`); `FrameService` grows `bodyQuaternionInLvlh`; `ScenarioBody`
+schema v3; new REST endpoints (`gen:api` regenerated). New
+`frontend/src/proximity/sensors.ts` + `scenario/SensorPanel.tsx`; `relativeBuffer`,
+`orientation`, `cameraModes`, `ProximityView`, `Timeline`, `useStore`, `App` extended.
+This closes the Deferred "Sensor occlusion technique" item (sampled ray-vs-sphere for now).
+R17 is partially resolved: orientation is now modeled + authoritative (lighting stays flat
+until Phase 8). Backend 113 tests green; frontend type-check + build green; verified on the
+dev stack (sensor add → 200, bad FOV → 422, WS frame carries chief/attitude/sensors, a wide
+cone yields an acquisition at 565 m).
+
+---
+
 # Superseded decisions (pre-SRS pivot)
 
 Retained for the record. These were sound for the *public satellite tracker*
@@ -1090,8 +1178,12 @@ Explicitly not decided yet; each has a tracked reason.
   now (Decision 16); concrete OIDC/SAML integration chosen with deployment.
 - **Monte Carlo execution model (§3.12.4).** In-process Java vs a worker pool
   vs delegated compute — decide when the analysis phase arrives.
-- **Sensor occlusion technique (§3.6.5).** Ray casting vs GPU depth methods —
-  decide in the sensor-modeling phase.
+- ~~**Sensor occlusion technique (§3.6.5).** Ray casting vs GPU depth methods —
+  decide in the sensor-modeling phase.~~ **Resolved (Phase 7, Decision 24):** analytic
+  ray-vs-sphere (Earth) on the backend, evaluated on the sample grid + bisection refine,
+  for acquisition/loss events. Inter-spacecraft blocking is negligible (point-like
+  targets); the Sun is Phase 8. GPU-depth occlusion of the drawn FOV volume can come
+  later if needed.
 - ~~**Spacecraft 3D model asset pipeline (§3.9.3).** GLTF sourcing, articulation
   rig conventions — decide with the proximity view.~~ **Resolved (Phase 6,
   Decision 23):** procedural placeholder craft + a `GLTFLoader` swap seam

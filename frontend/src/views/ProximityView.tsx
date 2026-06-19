@@ -9,12 +9,15 @@ import {
   deputyPositionAt,
   deputyStateAt,
   subscribeRelative,
+  type SensorDef,
+  type SensorEvent,
 } from '../stream/relativeBuffer';
 import { createSpacecraftModel, type SpacecraftModel } from '../proximity/spacecraftModel';
-import { deriveBodyQuaternion } from '../proximity/orientation';
+import { bodyOrientationAt } from '../proximity/orientation';
 import { createRibbon, type Ribbon } from '../proximity/ribbons';
 import { CameraRig, type CameraFocus } from '../proximity/cameraModes';
 import { createEarthBackdrop, type BackdropMode } from '../proximity/earthBackdrop';
+import { createSensorFov, type SensorFov } from '../proximity/sensors';
 
 // Marker / model colors. Chief = amber (matches the globe's CHIEF_RGB); deputies
 // cycle a palette matching the globe's SCENARIO_DEPUTY_PALETTE so a deputy is the
@@ -31,6 +34,41 @@ const FADE_HI = 20;
 
 function fmtDistance(m: number): string {
   return m >= 1000 ? `${(m / 1000).toFixed(m >= 100000 ? 0 : 1)} km` : `${m.toFixed(0)} m`;
+}
+
+/** Pair acquisition→loss events into in-view windows (ms) per sensorId (US-EVT-01). */
+function buildSensorWindows(events: SensorEvent[], loMs: number, hiMs: number): Map<string, [number, number][]> {
+  const byKey = new Map<string, SensorEvent[]>();
+  for (const e of events) {
+    const k = `${e.hostId}|${e.sensorId}|${e.targetId}`;
+    (byKey.get(k) ?? byKey.set(k, []).get(k)!).push(e);
+  }
+  const out = new Map<string, [number, number][]>();
+  const push = (sid: string, a: number, b: number) => (out.get(sid) ?? out.set(sid, []).get(sid)!).push([a, b]);
+  for (const [k, list] of byKey) {
+    const sensorId = k.split('|')[1];
+    list.sort((a, b) => a.epochMs - b.epochMs);
+    let open: number | null = null;
+    for (const e of list) {
+      if (e.type === 'acquisition') open = e.epochMs;
+      else if (open !== null) {
+        push(sensorId, open, e.epochMs);
+        open = null;
+      } else {
+        push(sensorId, loMs, e.epochMs);
+      }
+    }
+    if (open !== null) push(sensorId, open, hiMs);
+  }
+  return out;
+}
+
+function inWindow(wins: [number, number][] | undefined, t: number): boolean {
+  if (!wins) return false;
+  for (const [a, b] of wins) {
+    if (t >= a && t <= b) return true;
+  }
+  return false;
 }
 
 /**
@@ -57,20 +95,37 @@ export default function ProximityView() {
   const [camFocus, setCamFocus] = useState<CameraFocus>('external');
   const [camDeputy, setCamDeputy] = useState(0);
   const [backdrop, setBackdrop] = useState<BackdropMode>('earth');
+  const [showSensors, setShowSensors] = useState(true);
+  const [fovOpacity, setFovOpacity] = useState(15); // percent
+  const [camSensorKey, setCamSensorKey] = useState(''); // selected sensor option (US-SENSE-05)
   const camFocusRef = useRef(camFocus);
   const camDeputyRef = useRef(camDeputy);
   const backdropRef = useRef(backdrop);
+  const showSensorsRef = useRef(showSensors);
+  const fovOpacityRef = useRef(fovOpacity);
+  const camSensorKeyRef = useRef(camSensorKey);
+  // The resolved host model index + body-frame boresight for the selected sensor.
+  const camSensorRef = useRef<{ modelIdx: number; boresight: [number, number, number] } | null>(null);
   camFocusRef.current = camFocus;
   camDeputyRef.current = camDeputy;
   backdropRef.current = backdrop;
+  showSensorsRef.current = showSensors;
+  fovOpacityRef.current = fovOpacity;
+  camSensorKeyRef.current = camSensorKey;
 
   // Re-render (refresh the focus dropdown) when the deputy set changes; reset the
   // selectors on any scenario change so a stale deputy index can't linger.
   const relVersion = useSyncExternalStore(subscribeRelative, getRelativeVersion);
-  const deputies = getRelativeData()?.deputies ?? [];
+  const relData = getRelativeData();
+  const deputies = relData?.deputies ?? [];
+  // Phase 7: the legend reads "modeled" once the stream carries attitude, else
+  // "estimated" (the derived fallback). Re-evaluated on relVersion change.
+  const orientationModeled = !!(relData?.chief?.attitude || deputies.some((d) => d.attitude));
   useEffect(() => {
     setCamFocus('external');
     setCamDeputy(0);
+    setCamSensorKey('');
+    camSensorRef.current = null;
   }, [relVersion]);
 
   // Composer click → ride that craft (US-PROX-04). A deputy → deputy mode at its
@@ -145,6 +200,8 @@ export default function ProximityView() {
     // Spacecraft models (index 0 = chief) + per-deputy trajectory ribbons.
     let models: SpacecraftModel[] = [];
     let ribbons: Ribbon[] = [];
+    let sensorFovs: { fov: SensorFov; sensorId: string }[] = []; // flattened across all craft (Phase 7)
+    let sensorWindows = new Map<string, [number, number][]>(); // per-sensor in-view windows (ms)
     let builtVersion = -1;
 
     // LOD projection scale: apparent_px(radius) = radius / camDist * projScale.
@@ -156,7 +213,24 @@ export default function ProximityView() {
     const quat = new THREE.Quaternion();
     const out6 = new Float64Array(6);
 
+    // Build a craft's sensor FOV volumes, attach them under its root (so they ride
+    // the body orientation), and collect them for toggling + disposal (Phase 7).
+    const buildSensors = (host: SpacecraftModel, defs: SensorDef[], color: THREE.Color) => {
+      for (const def of defs) {
+        const fov = createSensorFov(def, color);
+        fov.setVisible(showSensorsRef.current);
+        fov.setOpacity(fovOpacityRef.current / 100);
+        host.root.add(fov.root);
+        sensorFovs.push({ fov, sensorId: def.id });
+      }
+    };
+
     const disposeModelsAndRibbons = () => {
+      for (const f of sensorFovs) {
+        f.fov.root.parent?.remove(f.fov.root);
+        f.fov.dispose();
+      }
+      sensorFovs = [];
       for (const m of models) {
         scene.remove(m.root);
         m.dispose();
@@ -180,13 +254,16 @@ export default function ProximityView() {
 
       const h = Math.max(1, container.clientHeight);
 
-      // Chief model at the origin, fixed LVLH pose.
+      // Chief model at the origin. Seed its orientation from the streamed attitude
+      // (Phase 7) at t=0, falling back to the fixed LVLH pose; the loop keeps it live.
       const chief = createSpacecraftModel(CHIEF_COLOR);
       out6[0] = out6[1] = out6[2] = out6[3] = out6[4] = out6[5] = 0;
-      deriveBodyQuaternion(out6, false, quat);
+      bodyOrientationAt(data?.chief?.attitude ?? null, data?.chief?.attitude ? data.chief.attitude[0] : 0,
+        out6, false, quat);
       chief.root.quaternion.copy(quat);
       scene.add(chief.root);
       models.push(chief);
+      if (data?.chief?.sensors?.length) buildSensors(chief, data.chief.sensors, CHIEF_COLOR);
 
       let maxDist = 1000; // ≥1 km so the initial framing isn't degenerate
       const out: [number, number, number] = [0, 0, 0];
@@ -199,6 +276,7 @@ export default function ProximityView() {
         scene.add(m.root);
         models.push(m);
         ribbons.push(createRibbon(dep.samples, dep.stride, color));
+        if (dep.sensors.length) buildSensors(m, dep.sensors, color);
         maxDist = Math.max(maxDist, Math.hypot(out[0], out[1], out[2]));
       });
       for (const r of ribbons) {
@@ -208,6 +286,18 @@ export default function ProximityView() {
 
       // Earth backdrop distance from the chief's geocentric radius (US-PROX-05).
       earth.setChiefRadius(data?.chiefRadiusM ?? 0);
+
+      // Per-sensor in-view windows (ms) for the acquisition highlight (US-EVT-01).
+      if (data?.events && data.events.length > 0) {
+        const loMs = data.epochMs;
+        let maxT = 0;
+        for (const d of data.deputies) {
+          if (d.samples.length >= d.stride) maxT = Math.max(maxT, d.samples[d.samples.length - d.stride]);
+        }
+        sensorWindows = buildSensorWindows(data.events, loMs, loMs + maxT * 1000);
+      } else {
+        sensorWindows = new Map();
+      }
 
       // Auto-frame: resize axes/grid + place the camera so the deputies fit.
       scene.remove(axes);
@@ -266,8 +356,14 @@ export default function ProximityView() {
     let lastFocus: CameraFocus = 'external';
     let lastDeputy = 0;
     let lastBackdrop: BackdropMode = backdropRef.current;
+    let lastShowSensors = showSensorsRef.current;
+    let lastFovOpacity = fovOpacityRef.current;
+    let lastSensorKey = camSensorKeyRef.current;
     const focusPos = new THREE.Vector3();
     const focusQuat = new THREE.Quaternion();
+    const UP_Y = new THREE.Vector3(0, 1, 0);
+    const SENSOR_BACK = new THREE.Vector3(0, -1, 0); // sit behind the apex along -boresight
+    const bvec = new THREE.Vector3();
     const resolveFocus = (data: ReturnType<typeof getRelativeData>, pos: THREE.Vector3, q: THREE.Quaternion) => {
       const focus = camFocusRef.current;
       if (focus === 'chief' && models[0]) {
@@ -279,6 +375,20 @@ export default function ProximityView() {
         if (m) {
           pos.copy(m.root.position);
           q.copy(m.root.quaternion);
+          return;
+        }
+        pos.set(0, 0, 0);
+        q.identity();
+      } else if (focus === 'sensor' && camSensorRef.current) {
+        const m = models[camSensorRef.current.modelIdx];
+        if (m) {
+          pos.copy(m.root.position);
+          const b = camSensorRef.current.boresight;
+          // World boresight = host body orientation · body-frame boresight; aim local +Y at it.
+          bvec.set(b[0], b[1], b[2]);
+          if (bvec.lengthSq() === 0) bvec.set(1, 0, 0);
+          bvec.normalize().applyQuaternion(m.root.quaternion);
+          q.setFromUnitVectors(UP_Y, bvec);
           return;
         }
         pos.set(0, 0, 0);
@@ -307,16 +417,38 @@ export default function ProximityView() {
         earth.setMode(lastBackdrop);
       }
 
+      // Sensor FOV visibility / opacity (polled from refs — changes are rare).
+      if (showSensorsRef.current !== lastShowSensors || fovOpacityRef.current !== lastFovOpacity) {
+        lastShowSensors = showSensorsRef.current;
+        lastFovOpacity = fovOpacityRef.current;
+        for (const f of sensorFovs) {
+          f.fov.setVisible(lastShowSensors);
+          f.fov.setOpacity(lastFovOpacity / 100);
+        }
+      }
+      // Light each FOV green while its sensor currently has a target acquired (US-EVT-01).
+      if (sensorFovs.length) {
+        const nowMs = useStore.getState().currentTime.getTime();
+        for (const f of sensorFovs) {
+          f.fov.setAcquired(inWindow(sensorWindows.get(f.sensorId), nowMs));
+        }
+      }
+
       let maxDistNow = 1000;
       if (data && models.length) {
         const t = simTimeToT(data.epochMs, useStore.getState().currentTime);
-        // Deputies: position + derived orientation + ribbon split.
+        // Chief: keep its modeled body orientation live (varies for eccentric orbits).
+        if (data.chief?.attitude && models[0]) {
+          bodyOrientationAt(data.chief.attitude, t, out6, false, quat);
+          models[0].root.quaternion.copy(quat);
+        }
+        // Deputies: position + orientation (modeled if streamed, else derived) + ribbon.
         data.deputies.forEach((dep, i) => {
           deputyStateAt(dep.samples, dep.stride, dep.hasVelocity, t, out6);
           const m = models[i + 1];
           if (m) {
             m.root.position.set(out6[0], out6[1], out6[2]);
-            deriveBodyQuaternion(out6, dep.hasVelocity, quat);
+            bodyOrientationAt(dep.attitude, t, out6, dep.hasVelocity, quat);
             m.root.quaternion.copy(quat);
           }
           ribbons[i]?.setSplit(t);
@@ -366,12 +498,15 @@ export default function ProximityView() {
         for (let k = gi; k < glyphs.length; k++) glyphs[k].visible = false;
       }
 
-      // Camera mode: re-sync the rig when the selector changes, then update.
-      if (camFocusRef.current !== lastFocus || camDeputyRef.current !== lastDeputy) {
+      // Camera mode: re-sync the rig when the selector (or selected sensor) changes.
+      if (camFocusRef.current !== lastFocus || camDeputyRef.current !== lastDeputy
+          || camSensorKeyRef.current !== lastSensorKey) {
         lastFocus = camFocusRef.current;
         lastDeputy = camDeputyRef.current;
+        lastSensorKey = camSensorKeyRef.current;
         resolveFocus(data, focusPos, focusQuat);
-        rig.setFocus(lastFocus, focusPos);
+        // Sensor mode starts behind the apex looking along the boresight.
+        rig.setFocus(lastFocus, focusPos, lastFocus === 'sensor' ? SENSOR_BACK : undefined);
       }
       resolveFocus(data, focusPos, focusQuat);
       rig.update(now, focusPos, focusQuat); // calls controls.update() internally
@@ -417,13 +552,38 @@ export default function ProximityView() {
     };
   }, []);
 
-  const focusValue = camFocus === 'deputy' ? `deputy:${camDeputy}` : camFocus;
+  // Flat list of sensor camera options (US-SENSE-05): chief sensors, then each
+  // deputy's. modelIdx is the index into the proximity `models[]` array (0 = chief).
+  const sensorOptions: { value: string; label: string; modelIdx: number; boresight: [number, number, number] }[] = [];
+  (relData?.chief?.sensors ?? []).forEach((s, j) =>
+    sensorOptions.push({ value: `sensor:0:${j}`, label: `Chief — ${s.name}`, modelIdx: 0, boresight: s.mount.boresightBody }),
+  );
+  deputies.forEach((d, i) =>
+    d.sensors.forEach((s, j) =>
+      sensorOptions.push({
+        value: `sensor:${i + 1}:${j}`,
+        label: `${d.name} — ${s.name}`,
+        modelIdx: i + 1,
+        boresight: s.mount.boresightBody,
+      }),
+    ),
+  );
+
+  const focusValue =
+    camFocus === 'deputy' ? `deputy:${camDeputy}` : camFocus === 'sensor' ? camSensorKey : camFocus;
   const onFocusChange = (v: string) => {
     if (v === 'external' || v === 'chief') {
       setCamFocus(v);
     } else if (v.startsWith('deputy:')) {
       setCamFocus('deputy');
       setCamDeputy(Number(v.slice('deputy:'.length)) || 0);
+    } else if (v.startsWith('sensor:')) {
+      const opt = sensorOptions.find((o) => o.value === v);
+      if (opt) {
+        camSensorRef.current = { modelIdx: opt.modelIdx, boresight: opt.boresight };
+        setCamSensorKey(v);
+        setCamFocus('sensor');
+      }
     }
   };
 
@@ -440,6 +600,11 @@ export default function ProximityView() {
             {deputies.map((d, i) => (
               <option key={d.noradId} value={`deputy:${i}`}>
                 Deputy: {d.name}
+              </option>
+            ))}
+            {sensorOptions.map((o) => (
+              <option key={o.value} value={o.value}>
+                Sensor: {o.label}
               </option>
             ))}
           </select>
@@ -459,12 +624,31 @@ export default function ProximityView() {
             ))}
           </div>
         </div>
+        <div className="prox-ctrl">
+          <span>Sensors</span>
+          <div className="prox-seg">
+            <button className={showSensors ? 'active' : ''} onClick={() => setShowSensors(true)}>View</button>
+            <button className={!showSensors ? 'active' : ''} onClick={() => setShowSensors(false)}>Off</button>
+          </div>
+        </div>
+        {showSensors && (
+          <label className="prox-ctrl">
+            <span>FOV opacity</span>
+            <input
+              type="range"
+              min={5}
+              max={60}
+              value={fovOpacity}
+              onChange={(e) => setFovOpacity(Number(e.target.value))}
+            />
+          </label>
+        )}
       </div>
 
       <div className="proximity-legend">
         chief <span style={{ color: '#ffd166' }}>●</span> · R<span style={{ color: '#f87171' }}>x</span>{' '}
         I<span style={{ color: '#4ade80' }}>y</span> C<span style={{ color: '#60a5fa' }}>z</span>
-        <span className="proximity-caveat"> · orientation: estimated</span>
+        <span className="proximity-caveat"> · orientation: {orientationModeled ? 'modeled' : 'estimated'}</span>
         <span ref={readoutRef} className="proximity-scale" />
       </div>
     </div>

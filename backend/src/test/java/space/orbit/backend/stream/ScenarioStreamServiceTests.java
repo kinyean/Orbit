@@ -2,6 +2,7 @@ package space.orbit.backend.stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -284,6 +285,132 @@ class ScenarioStreamServiceTests {
             sampledMin = Math.min(sampledMin, Math.sqrt(r * r + i * i + c * c));
         }
         assertThat(tcaDist).as("refined TCA ≤ coarse sample minimum").isLessThanOrEqualTo(sampledMin + 1.0);
+    }
+
+    @Test
+    void relativeEnvelopeCarriesAttitudeAndSensors() throws Exception {
+        // Phase 7: the chief carries a sensor + default LVLH attitude; the deputy gets
+        // modeled attitude samples on the position grid. All additive (VERSION "1").
+        ScenarioBody.Role chief = role("chief", leoTle(25544, "ISS (ZARYA)", 325.0), "ISS (ZARYA)")
+                .withSensors(List.of(new ScenarioBody.Sensor("cx", "optical", "Chief imager",
+                        new ScenarioBody.Fov("rect", 0, 20, 15), 100, 50000,
+                        new ScenarioBody.Mount(new double[] {1, 0, 0}, 0))));
+        ScenarioBody.Role deputy = role("deputy", leoTle(25545, "DEPUTY-1", 5.0), "DEPUTY-1");
+        ScenarioBody body = new ScenarioBody(3, "sgp4",
+                new ScenarioBody.TimeRange("2024-06-01T12:00:00Z", "2024-06-01T12:30:00Z"),
+                chief, List.of(deputy));
+        ScenarioStreamService svc = service(new ScenarioStreamProperties(30, 5000, true, true), mockBody(body));
+
+        JsonNode rel = MAPPER.readTree(svc.loadAndEncode(ID, EMAIL).relative());
+        assertThat(rel.get("contractVersion").asText()).isEqualTo(StreamContract.VERSION);
+
+        // Chief block: attitude samples + the chief's sensor descriptor.
+        JsonNode cb = rel.get("chief");
+        assertThat(cb.get("noradId").asInt()).isEqualTo(25544);
+        assertThat(cb.get("att").size() % 5).isZero();
+        assertThat(cb.get("att").size()).isGreaterThan(0);
+        assertThat(cb.get("sensors").get(0).get("fov").get("type").asText()).isEqualTo("rect");
+        assertThat(cb.get("sensors").get(0).get("fov").get("hDeg").asDouble()).isEqualTo(20.0);
+
+        // Deputy attitude samples on the same grid as positions; quaternions unit-norm.
+        JsonNode d0 = rel.get("deputies").get(0);
+        int attCount = d0.get("att").size() / 5;
+        int posCount = d0.get("samples").size() / rel.get("stride").asInt();
+        assertThat(attCount).as("attitude on the position grid").isEqualTo(posCount);
+        double qx = d0.get("att").get(1).asDouble(), qy = d0.get("att").get(2).asDouble();
+        double qz = d0.get("att").get(3).asDouble(), qw = d0.get("att").get(4).asDouble();
+        assertThat(Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw))
+                .as("modeled attitude is a unit quaternion").isCloseTo(1.0, within(0.01));
+    }
+
+    /** {@link #bodyWithManeuver} plus a wide cone on the chief aimed back at the trailing deputy. */
+    private static ScenarioBody bodyManeuverWithChiefSensor() {
+        ScenarioBody base = bodyWithManeuver("2024-06-01T12:00:00Z", "2024-06-01T12:15:00Z", 30.0);
+        ScenarioBody.Role chiefWithSensor = base.chief().withSensors(List.of(
+                new ScenarioBody.Sensor("cam", "optical", "wide",
+                        new ScenarioBody.Fov("cone", 89, 0, 0), 1, 5_000_000,
+                        new ScenarioBody.Mount(new double[] {0, -1, 0}, 0)))); // boresight body −Y (toward the trailing deputy)
+        return new ScenarioBody(base.schemaVersion(), base.fidelity(), base.timeRange(),
+                chiefWithSensor, base.deputies());
+    }
+
+    @Test
+    void maneuveredScenarioWithSensorIsDeterministicAndEventsMatchSamples() throws Exception {
+        // Regression guard for the maneuvered-deputy re-propagation bug (Decision 24): events are
+        // now computed from the SAME sampled trajectory, so (a) they're deterministic and (b) each
+        // event's range matches the deputy's sampled range at its epoch.
+        ScenarioStreamProperties props = new ScenarioStreamProperties(30, 5000, true, true);
+        ScenarioBody body = bodyManeuverWithChiefSensor();
+        EncodedScenario a = service(props, mockBody(body)).loadAndEncode(ID, EMAIL);
+        EncodedScenario b = service(props, mockBody(body)).loadAndEncode(ID, EMAIL);
+        assertThat(a.relative()).as("deterministic with a sensor on a maneuvered scenario (R11)")
+                .isEqualTo(b.relative());
+
+        JsonNode rel = MAPPER.readTree(a.relative());
+        JsonNode events = rel.get("events");
+        if (events != null && events.size() > 0) {
+            long epochMs = java.time.Instant.parse(rel.get("epoch").asText()).toEpochMilli();
+            int stride = rel.get("stride").asInt();
+            double[] samples = toDoubleArray(rel.get("deputies").get(0).get("samples"));
+            for (JsonNode e : events) {
+                double tSec = (java.time.Instant.parse(e.get("epoch").asText()).toEpochMilli() - epochMs) / 1000.0;
+                double sampleRange = interpRange(samples, stride, tSec);
+                assertThat(e.get("rangeM").asDouble())
+                        .as("event range agrees with the sampled trajectory at its epoch")
+                        .isCloseTo(sampleRange, within(Math.max(100.0, sampleRange * 0.02)));
+            }
+        }
+    }
+
+    /** |R,I,C| of the deputy samples interpolated at {@code t} seconds since epoch. */
+    private static double interpRange(double[] s, int stride, double t) {
+        int n = s.length / stride;
+        if (n == 0) {
+            return 0;
+        }
+        double r;
+        double i;
+        double c;
+        double tFirst = s[0];
+        double tLast = s[(n - 1) * stride];
+        if (t <= tFirst || n == 1) {
+            r = s[1];
+            i = s[2];
+            c = s[3];
+        } else if (t >= tLast) {
+            int b = (n - 1) * stride;
+            r = s[b + 1];
+            i = s[b + 2];
+            c = s[b + 3];
+        } else {
+            int lo = 0;
+            int hi = n - 1;
+            while (lo + 1 < hi) {
+                int m = (lo + hi) >>> 1;
+                if (s[m * stride] <= t) {
+                    lo = m;
+                } else {
+                    hi = m;
+                }
+            }
+            int ba = lo * stride;
+            int bb = hi * stride;
+            double ta = s[ba];
+            double tb = s[bb];
+            double f = tb > ta ? (t - ta) / (tb - ta) : 0;
+            r = s[ba + 1] + (s[bb + 1] - s[ba + 1]) * f;
+            i = s[ba + 2] + (s[bb + 2] - s[ba + 2]) * f;
+            c = s[ba + 3] + (s[bb + 3] - s[ba + 3]) * f;
+        }
+        return Math.sqrt(r * r + i * i + c * c);
+    }
+
+    private static double[] toDoubleArray(JsonNode arr) {
+        double[] out = new double[arr.size()];
+        for (int k = 0; k < arr.size(); k++) {
+            out[k] = arr.get(k).asDouble();
+        }
+        return out;
     }
 
     @Test

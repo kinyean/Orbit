@@ -167,6 +167,30 @@ export interface State {
   // and reload (re-propagate). Return an error message on failure (else null).
   applyHohmann: (deputyNoradId: number, targetAltitudeKm: number) => Promise<string | null>;
   applyRendezvous: (deputyNoradId: number, arrivalEpoch: string) => Promise<string | null>;
+
+  // Sensors & attitude (Phase 7, US-SENSE-01 / US-PROX-01). Edit → new version +
+  // audit (backend) → reload so the stream re-emits FOV/attitude/events. Return an
+  // error message on failure (else null).
+  addSensor: (req: SensorRequest) => Promise<string | null>;
+  removeSensor: (sensorId: string) => Promise<string | null>;
+  setAttitude: (noradId: number, mode: 'lvlh' | 'fixed', quaternion?: number[]) => Promise<string | null>;
+}
+
+/** Add-sensor request shape (mirrors the backend SensorRequest DTO). */
+export interface SensorRequest {
+  noradId: number;
+  kind: string;
+  name: string;
+  fovType: 'cone' | 'rect';
+  halfAngleDeg: number;
+  hDeg: number;
+  vDeg: number;
+  minRangeM: number;
+  maxRangeM: number;
+  boresightX: number;
+  boresightY: number;
+  boresightZ: number;
+  clockDeg: number;
 }
 
 /** Build a create/update request from the composer. Defaults to a 24-hour window
@@ -524,6 +548,41 @@ export const useStore = create<State>((set, get) => ({
     const { error } = await api.POST('/scenarios/{id}/maneuvers/rendezvous', {
       params: { path: { id } },
       body: { deputyNoradId, arrivalEpoch },
+    });
+    if (error) return errorMessage(error);
+    await get().loadScenario(id);
+    return null;
+  },
+
+  addSensor: async (req) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { error } = await api.POST('/scenarios/{id}/sensors', {
+      params: { path: { id } },
+      body: req,
+    });
+    if (error) return errorMessage(error);
+    await get().loadScenario(id); // re-propagate: FOV/attitude/events re-emit
+    return null;
+  },
+
+  removeSensor: async (sensorId) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { error } = await api.DELETE('/scenarios/{id}/sensors/{sensorId}', {
+      params: { path: { id, sensorId } },
+    });
+    if (error) return errorMessage(error);
+    await get().loadScenario(id);
+    return null;
+  },
+
+  setAttitude: async (noradId, mode, quaternion) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { error } = await api.PUT('/scenarios/{id}/attitude', {
+      params: { path: { id } },
+      body: { noradId, mode, quaternion },
     });
     if (error) return errorMessage(error);
     await get().loadScenario(id);

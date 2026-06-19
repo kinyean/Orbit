@@ -327,12 +327,17 @@ Sliced into **3A** (scenario composition on SGP4) then **3B** (physics depth).
   lighting until the Phase 8 Sun vector. Derived ram/LVLH orientation is a labeled
   estimate until Phase 7 attitude. See Decision 23, [phase-6-plan.md](./phase-6-plan.md).
 
-### Phase 7 — Sensors & FOV
-- Sensor model (type, FOV geometry, range, pointing).
-- Translucent FOV volumes in the proximity view.
-- Occlusion against other spacecraft, Earth, Sun.
-- Sensor-frame view (camera anchored to a sensor's pointing).
-- Acquisition / loss-of-sight events on the timeline.
+### Phase 7 — Sensors & FOV ✅ (done)
+- Sensor model (type, FOV geometry, range, pointing) — cone + rectangular, body-fixed;
+  first-class scenario objects (`ScenarioBody` schema v3) on the audited path.
+- Translucent FOV volumes in the proximity view (`proximity/sensors.ts`), riding a
+  **backend-authoritative modeled attitude** (LVLH-aligned / fixed; streamed quaternion).
+- Occlusion: Earth line-of-sight (analytic ray-vs-sphere). *Sun occlusion deferred to
+  Phase 8 with the Sun vector; inter-spacecraft is negligible for point targets.*
+- Sensor-frame view (camera anchored along a sensor's boresight).
+- Acquisition / loss-of-sight events (`analysis/SensorEventComputer`) on the timeline.
+- See [phase-7-plan.md](./phase-7-plan.md), Decision 24. *(Deferred: CCSDS AEM measured
+  attitude, gimbaled pointing, frustum/polygonal FOV, sun-keep-out.)*
 
 ### Phase 8 — Environment & events
 - Sun/Moon positions; eclipse umbra/penumbra per spacecraft.
@@ -342,8 +347,14 @@ Sliced into **3A** (scenario composition on SGP4) then **3B** (physics depth).
 - Timeline event annotations populated.
 
 ### Phase 9 — Advanced maneuvers & analysis
+- **Flight-ready rendezvous** — move the two-impulse Lambert template (Phase 5C) from an
+  open-loop two-body *sketch* toward a converged plan: a **differential corrector** against
+  the real propagators (fixes the R16 model-mismatch miss), an **arrival-time × revolution
+  ΔV search** (so finding a cheap/feasible transfer isn't trial-and-error), and a
+  **phasing-orbit planner** (the realistic multi-rev co-elliptic approach). See
+  [phase-6-plan.md](./phase-6-plan.md) "Future improvements" + risks R16.
 - Maneuver templates: glideslope, V-bar/R-bar hold, NMC ellipse,
-  station-keeping.
+  station-keeping (closed-loop terminal approaches on the existing CW engine).
 - Finite-burn maneuvers (thrust, Isp, duration).
 - Monte Carlo dispersion on initial state + maneuver execution.
 - Covariance ellipsoids in the relative frame.

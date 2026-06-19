@@ -317,3 +317,53 @@ instants.
   is not near-circular (CW is a small-separation linearization). In CW mode the
   chief propagates with SGP4 and each deputy is a closed-form CW state-transition
   provider seeded R15-correctly from the chief's live LVLH frame.
+- **`chiefRadiusM`** (Phase 6, US-PROX-05, additive): the chief's geocentric radius
+  at the epoch — the proximity view places the Earth backdrop at `(−chiefRadiusM,0,0)`.
+
+#### Phase 7 additive fields (sensors, attitude, events — `VERSION` stays `"1"`, R12)
+
+```jsonc
+{
+  // … all of the above, plus:
+  "chief": {                         // the LVLH origin's attitude + sensors (it has no R/I/C)
+    "noradId": 25544,
+    "att": [ t, qx,qy,qz,qw,  … ],   // stride 5; body orientation in the chief-LVLH scene
+    "sensors": [ /* Sensor, see below */ ]
+  },
+  "deputies": [
+    { "noradId": 25545, "…": "…",
+      "att": [ t, qx,qy,qz,qw,  … ], // stride 5, on the position grid (Phase 7)
+      "sensors": [
+        { "id": "…", "kind": "optical", "name": "V-bar imager",
+          "fov": { "type": "rect", "halfAngleDeg": 0, "hDeg": 20, "vDeg": 15 },  // or type "cone" → halfAngleDeg
+          "minRangeM": 100, "maxRangeM": 50000,
+          "mount": { "boresightBody": [1,0,0], "clockDeg": 0 } }
+      ] }
+  ],
+  "events": [                        // acquisition / loss-of-sight (US-EVT-01); omitted if empty
+    { "type": "acquisition", "hostId": 25544, "sensorId": "…", "targetId": 25545,
+      "epoch": "2026-06-11T00:49:25Z", "rangeM": 565 },
+    { "type": "los",         "hostId": 25544, "sensorId": "…", "targetId": 25545,
+      "epoch": "2026-06-11T00:58:02Z", "rangeM": 1820 }
+  ]
+}
+```
+
+- **`att`** (per-deputy + in the `chief` block): body-orientation **quaternion samples**
+  (three.js convention `(x,y,z,w)`) expressing the craft's body frame in the chief-LVLH
+  *scene* frame, on the position grid (stride 5: `[t,qx,qy,qz,qw]`). Computed on the
+  backend from a per-craft **attitude profile** (`lvlh` = LVLH-aligned from the orbital
+  state — nose +Y along velocity, top +Z radial-out; or `fixed` = constant ECI). The
+  client SLERPs between samples; when absent it falls back to a derived estimate. This
+  retires the Phase-6 frontend "estimated" orientation (now backend-authoritative).
+- **`chief`** block: the chief is excluded from `deputies` (it's the origin), but it has
+  attitude + sensors that must render — carried here. `noradId` echoes the chief id.
+- **`sensors`** (per craft): static FOV descriptors the client builds geometry from —
+  `fov.type` ∈ {`cone` (uses `halfAngleDeg`), `rect` (uses `hDeg`/`vDeg`)}, a range band,
+  and a body-fixed `mount.boresightBody` axis.
+- **`events`**: acquisition / loss-of-sight crossings over the window — a target enters
+  ({`acquisition`}) or leaves ({`los`}) a host sensor's FOV with a clear (Earth-unobstructed)
+  line of sight and within range. Computed on the live propagators (sample grid + bisection
+  refine), deterministic (R11). The client pairs them into in-view windows on the timeline.
+  v1: the FOV test is a circular bound (a rect uses its larger half-angle); occlusion is
+  Earth-only; the Sun is Phase 8. See Decision 24.

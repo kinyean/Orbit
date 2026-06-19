@@ -170,7 +170,7 @@ class ScenarioServiceTests {
         ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
         verify(versions).saveAndFlush(vCap.capture());
         assertThat(vCap.getValue().getVersionNo()).isEqualTo(2);
-        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":2").contains("delta_v");
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":3").contains("delta_v");
         assertThat(s.getLatestVersionId()).isEqualTo(vCap.getValue().getId());
         verify(auditLog, times(1)).save(any());
 
@@ -189,9 +189,9 @@ class ScenarioServiceTests {
 
         ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
         verify(versions).saveAndFlush(vCap.capture());
-        // The v1 body deserialized (null maneuvers → empty), then re-stamped to v2.
-        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":2").contains("delta_v");
-        assertThat(resp.body().schemaVersion()).isEqualTo(2);
+        // The v1 body deserialized (null maneuvers/sensors → empty), then re-stamped to v3.
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":3").contains("delta_v");
+        assertThat(resp.body().schemaVersion()).isEqualTo(3);
         assertThat(resp.body().chief().noradId()).isEqualTo(25544);
         assertThat(resp.body().deputies().get(0).maneuvers()).hasSize(1);
     }
@@ -257,6 +257,128 @@ class ScenarioServiceTests {
                 .isInstanceOf(ScenarioValidationException.class);
         verify(versions, never()).saveAndFlush(any());
         verify(auditLog, never()).save(any());
+    }
+
+    // --- sensors & attitude (Phase 7, US-SENSE-01 / US-PROX-01) --------------
+
+    @Test
+    void addSensorOnChiefWritesV3VersionWithOneAudit() {
+        // UC-4: the imager rides the chief (the LVLH origin) — sensors are allowed there.
+        UUID id = UUID.randomUUID();
+        Scenario s = existingWithBody(id, DEPUTY_TLE_BODY_V2);
+
+        ScenarioResponse resp = service.addSensor(id, new SensorDraft(
+                25544, "optical", "Imager", "rect", 0, 20, 15, 100, 50000, 1, 0, 0, 0));
+
+        ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
+        verify(versions).saveAndFlush(vCap.capture());
+        assertThat(vCap.getValue().getVersionNo()).isEqualTo(2);
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":3").contains("Imager");
+        assertThat(s.getLatestVersionId()).isEqualTo(vCap.getValue().getId());
+        verify(auditLog, times(1)).save(any());
+        assertThat(resp.body().chief().sensors()).hasSize(1);
+        assertThat(resp.body().chief().sensors().get(0).fov().type()).isEqualTo("rect");
+    }
+
+    @Test
+    void addSensorOnDeputyAndRemoveByIdRoundTrips() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        ScenarioResponse added = service.addSensor(id, new SensorDraft(
+                33591, "lidar", "Rdv lidar", "cone", 10, 0, 0, 1, 5000, 1, 0, 0, 0));
+        String sensorId = added.body().deputies().get(0).sensors().get(0).id();
+        assertThat(sensorId).isNotBlank();
+
+        // The remove reads the latest version — point findById at the just-saved one.
+        ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
+        verify(versions).saveAndFlush(vCap.capture());
+        ScenarioVersion saved = vCap.getValue();
+        when(versions.findById(saved.getId())).thenReturn(Optional.of(saved));
+
+        ScenarioResponse removed = service.removeSensor(id, sensorId);
+        assertThat(removed.body().deputies().get(0).sensors()).isEmpty();
+        verify(auditLog, times(2)).save(any()); // add + remove
+    }
+
+    @Test
+    void rejectsSensorWithBadConeFov() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        assertThatThrownBy(() -> service.addSensor(id, new SensorDraft(
+                25544, "optical", "X", "cone", 120, 0, 0, 100, 5000, 1, 0, 0, 0)))
+                .isInstanceOf(ScenarioValidationException.class);
+        verify(versions, never()).saveAndFlush(any());
+        verify(auditLog, never()).save(any());
+    }
+
+    @Test
+    void rejectsSensorWithInvertedRange() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        assertThatThrownBy(() -> service.addSensor(id, new SensorDraft(
+                33591, "optical", "X", "cone", 10, 0, 0, 5000, 100, 1, 0, 0, 0)))
+                .isInstanceOf(ScenarioValidationException.class);
+        verify(auditLog, never()).save(any());
+    }
+
+    @Test
+    void rejectsRemovingUnknownSensor() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        assertThatThrownBy(() -> service.removeSensor(id, "nope"))
+                .isInstanceOf(ScenarioValidationException.class);
+        verify(versions, never()).saveAndFlush(any());
+        verify(auditLog, never()).save(any());
+    }
+
+    @Test
+    void setFixedAttitudeWritesNewVersionWithOneAudit() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        ScenarioResponse resp = service.setAttitude(id,
+                new AttitudeDraft(33591, "fixed", new double[] {0, 0, 0, 1}));
+
+        ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
+        verify(versions).saveAndFlush(vCap.capture());
+        assertThat(vCap.getValue().getBody()).contains("\"mode\":\"fixed\"");
+        verify(auditLog, times(1)).save(any());
+        assertThat(resp.body().deputies().get(0).attitude().mode()).isEqualTo("fixed");
+    }
+
+    @Test
+    void rejectsFixedAttitudeWithoutQuaternion() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        assertThatThrownBy(() -> service.setAttitude(id, new AttitudeDraft(25544, "fixed", null)))
+                .isInstanceOf(ScenarioValidationException.class);
+        verify(auditLog, never()).save(any());
+    }
+
+    @Test
+    void rejectsAttitudeOnUnknownNorad() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        assertThatThrownBy(() -> service.setAttitude(id, new AttitudeDraft(99999, "lvlh", null)))
+                .isInstanceOf(ScenarioValidationException.class);
+        verify(auditLog, never()).save(any());
+    }
+
+    @Test
+    void editingManeuverPreservesSensors() {
+        // Regression: adding/removing a maneuver must not wipe a deputy's sensors (Phase 7).
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        service.addSensor(id, new SensorDraft(33591, "optical", "S", "cone", 8, 0, 0, 1, 5000, 1, 0, 0, 0));
+        // The next mutation reads the latest body; re-stub findById's version to the just-saved one.
+        ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
+        verify(versions).saveAndFlush(vCap.capture());
+        ScenarioVersion saved = vCap.getValue();
+        when(versions.findById(saved.getId())).thenReturn(Optional.of(saved));
+
+        ScenarioResponse resp = service.addManeuver(id,
+                new ManeuverDraft(33591, "2024-06-01T06:00:00Z", "ric", 0.0, 1.0, 0.0));
+        assertThat(resp.body().deputies().get(0).sensors()).as("sensors survive a maneuver edit").hasSize(1);
+        assertThat(resp.body().deputies().get(0).maneuvers()).hasSize(1);
     }
 
     @Test

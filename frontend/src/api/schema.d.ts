@@ -20,6 +20,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/scenarios/{id}/attitude": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["setAttitude"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/scenarios": {
         parameters: {
             query?: never;
@@ -30,6 +46,22 @@ export interface paths {
         get: operations["list"];
         put?: never;
         post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scenarios/{id}/sensors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["addSensor"];
         delete?: never;
         options?: never;
         head?: never;
@@ -116,6 +148,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/scenarios/{id}/sensors/{sensorId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["removeSensor"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/scenarios/{id}/maneuvers/{maneuverId}": {
         parameters: {
             query?: never;
@@ -151,6 +199,10 @@ export interface components {
             start: string;
             end: string;
         };
+        AttitudeProfile: {
+            mode?: string;
+            quaternion?: number[];
+        };
         DeltaV: {
             /** Format: double */
             r?: number;
@@ -158,6 +210,15 @@ export interface components {
             i?: number;
             /** Format: double */
             c?: number;
+        };
+        Fov: {
+            type?: string;
+            /** Format: double */
+            halfAngleDeg?: number;
+            /** Format: double */
+            hDeg?: number;
+            /** Format: double */
+            vDeg?: number;
         };
         InitialState: {
             kind?: string;
@@ -170,6 +231,11 @@ export interface components {
             frame?: string;
             deltaV?: components["schemas"]["DeltaV"];
         };
+        Mount: {
+            boresightBody?: number[];
+            /** Format: double */
+            clockDeg?: number;
+        };
         Role: {
             role?: string;
             /** Format: int32 */
@@ -177,6 +243,8 @@ export interface components {
             name?: string;
             initialState?: components["schemas"]["InitialState"];
             maneuvers?: components["schemas"]["Maneuver"][];
+            sensors?: components["schemas"]["Sensor"][];
+            attitude?: components["schemas"]["AttitudeProfile"];
         };
         ScenarioBody: {
             /** Format: int32 */
@@ -197,6 +265,17 @@ export interface components {
             versionCount?: number;
             body?: components["schemas"]["ScenarioBody"];
         };
+        Sensor: {
+            id?: string;
+            kind?: string;
+            name?: string;
+            fov?: components["schemas"]["Fov"];
+            /** Format: double */
+            minRangeM?: number;
+            /** Format: double */
+            maxRangeM?: number;
+            mount?: components["schemas"]["Mount"];
+        };
         TimeRange: {
             start?: string;
             end?: string;
@@ -205,6 +284,37 @@ export interface components {
             line1?: string;
             line2?: string;
             epoch?: string;
+        };
+        AttitudeRequest: {
+            /** Format: int32 */
+            noradId?: number;
+            mode?: string;
+            quaternion?: number[];
+        };
+        SensorRequest: {
+            /** Format: int32 */
+            noradId?: number;
+            kind?: string;
+            name?: string;
+            fovType?: string;
+            /** Format: double */
+            halfAngleDeg?: number;
+            /** Format: double */
+            hDeg?: number;
+            /** Format: double */
+            vDeg?: number;
+            /** Format: double */
+            minRangeM?: number;
+            /** Format: double */
+            maxRangeM?: number;
+            /** Format: double */
+            boresightX?: number;
+            /** Format: double */
+            boresightY?: number;
+            /** Format: double */
+            boresightZ?: number;
+            /** Format: double */
+            clockDeg?: number;
         };
         ManeuverRequest: {
             /** Format: int32 */
@@ -333,6 +443,32 @@ export interface operations {
             };
         };
     };
+    setAttitude: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttitudeRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScenarioResponse"];
+                };
+            };
+        };
+    };
     list: {
         parameters: {
             query?: never;
@@ -368,6 +504,32 @@ export interface operations {
         responses: {
             /** @description Created */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScenarioResponse"];
+                };
+            };
+        };
+    };
+    addSensor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SensorRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -494,6 +656,29 @@ export interface operations {
                 };
                 content: {
                     "*/*": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    removeSensor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sensorId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScenarioResponse"];
                 };
             };
         };

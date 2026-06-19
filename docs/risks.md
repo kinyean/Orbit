@@ -332,8 +332,16 @@ spacecraft points, or its illumination, has real consequences in RPO.
 - Real attitude arrives in Phase 7 (sensors); the sun vector + eclipse/lighting in
   Phase 8.
 
-**Trigger.** Any analysis or decision that relies on true pointing or illumination
-before Phase 7/8 lands.
+**Status (Phase 7, Decision 24).** Orientation is **partially resolved**: it is now a
+**modeled, backend-authoritative attitude** (LVLH-aligned from the orbital state, or a
+fixed inertial profile), streamed as a quaternion and consumed by the proximity view +
+the acquisition-event detector (one source of truth) — the legend reads "modeled", not
+"estimated". It is still *modeled*, not *measured*: CCSDS AEM attitude is deferred, and a
+real spacecraft can point any way it likes regardless of its orbit. Articulation is still
+a parked pose, and **lighting is still flat** (the Sun vector / terminator is Phase 8).
+
+**Trigger.** Any analysis or decision that relies on *measured* pointing (vs the LVLH
+model) or on illumination before AEM attitude / the Phase 8 Sun vector land.
 
 ---
 

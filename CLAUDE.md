@@ -24,19 +24,29 @@ pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
 ## Current phase
-**Phase 6 complete (6A/6B/6C) — proximity visualization.** Backend 91 tests green,
-frontend type-check + build green. Procedural spacecraft models (box bus + solar
-arrays + dish, with a `GLTFLoader` swap seam) replace the bare points, with a
-fixed-pixel marker as the far-LOD fallback; derived ram/LVLH orientation (estimated
-— attitude is Phase 7); past-solid / predicted-dashed windowed `THREE.Line` trajectory
-ribbons; camera modes (external / chief-body / deputy-body); and an Earth backdrop
-along −R from a new additive `chiefRadiusM` stream field (Earth/Stars/Off toggle),
-flat non-physical lighting until the Phase 8 Sun vector. Renderer uses a **logarithmic
-depth buffer** (the 1 m–100,000 km range z-fights a normal one — flickering Earth). A
-scenario that propagates below the surface (decay/maneuver over a long window) now
-fails gracefully (clean 4422 + a `scenarioStreamError` banner) instead of a 1011
-reconnect storm. Verified on the dev stack: `chiefRadiusM` round-trips (demo) and
-"t2" → 4422. **Phase 7 next** — sensors & FOV (roadmap §7). See Decision 23.
+**Phase 7 complete (7A/7B) — sensors & FOV.** Backend 113 tests green, frontend
+type-check + build green. Sensors are first-class scenario objects (per-craft, on the
+chief or a deputy): a FOV shape (cone half-angle or rectangular H×V°), a working range
+band, and a body-fixed boresight (`ScenarioBody` schema v3, audited via `ScenarioService`
+`addSensor`/`removeSensor`/`setAttitude`). Spacecraft **orientation is now
+backend-authoritative + modeled** (not the Phase-6 frontend estimate): a per-craft
+attitude profile (`lvlh` LVLH-aligned from the orbital state via the basis builder, or
+`fixed` constant-inertial) streamed as a three.js-convention quaternion on the additive
+`scenario-relative` envelope (`chief` block + per-deputy `att`), consumed by the
+proximity view (SLERP). The proximity scene draws **translucent FOV volumes**
+(`proximity/sensors.ts`) riding each craft's body frame, with a Sensors view/opacity
+control and a **sensor-frame camera** mode (look down the boresight). The backend
+`analysis/SensorEventComputer` detects **acquisition / loss-of-sight** events (in-FOV +
+range + Earth line-of-sight occlusion, sampled grid + bisection refine — deterministic),
+streamed in an additive top-level `events` array and rendered as **timeline AOS/LOS
+windows**. Contract `VERSION` stays `"1"` (R12); `gen:api` regenerated for the new sensor
+REST endpoints (stream fields are WebSocket-only). Verified on the dev stack: add a
+sensor → 200 with the sensor in the body; bad FOV → 422; the WS relative frame carries
+the chief block + attitude + sensors; a wide cone acquires a deputy (one acquisition at
+range 565 m). **Deferred (Decision 24):** CCSDS AEM measured attitude, gimbaled pointing,
+frustum/polygonal FOV, and Sun occlusion / sun-keep-out (Phase 8). **Phase 8 next** —
+environment & events (roadmap §8): Sun/Moon, eclipse, lighting, conjunctions. See
+Decision 24.
 
 Per-phase detail lives in `docs/phase-*-plan.md` and the rationale in
 [decisions.md](docs/decisions.md); this is just the map of what exists:
@@ -70,6 +80,15 @@ Per-phase detail lives in `docs/phase-*-plan.md` and the rationale in
   (`proximity/cameraModes.ts`); Earth backdrop from the additive `chiefRadiusM`
   field (`proximity/earthBackdrop.ts`). [phase-6-plan.md](docs/phase-6-plan.md),
   Decision 23.
+- **Phase 7** — sensors & FOV: `Sensor`/`Fov`/`Mount`/`AttitudeProfile` in
+  `ScenarioBody` (schema v3); backend-authoritative modeled attitude
+  (`FrameService.bodyQuaternionInLvlh` LVLH basis, streamed as a quaternion); translucent
+  FOV volumes + sensor-frame camera (`proximity/sensors.ts`, `cameraModes.ts` `sensor`
+  mode, `orientation.ts` `bodyOrientationAt`); acquisition/loss-of-sight detection
+  (`analysis/SensorEventComputer` — in-FOV + range + Earth occlusion, computed from the
+  rendered samples in the LVLH scene, deterministic) streamed in `events` and drawn as
+  timeline AOS/LOS windows; `SensorPanel.tsx` (+ type presets) on the audited path.
+  [phase-7-plan.md](docs/phase-7-plan.md), Decision 24.
 
 Invariants to preserve (see `decisions.md`): one streaming contract, `VERSION="1"`,
 additive only (R12); every state frame-tagged via `FrameService` — relative velocity

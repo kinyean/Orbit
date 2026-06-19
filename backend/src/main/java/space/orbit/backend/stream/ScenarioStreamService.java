@@ -10,6 +10,7 @@ import java.util.UUID;
 import org.hipparchus.geometry.euclidean.threed.Vector3D;
 import org.orekit.errors.OrekitException;
 import org.orekit.frames.Frame;
+import org.orekit.frames.Transform;
 import org.orekit.propagation.Propagator;
 import org.orekit.propagation.analytical.tle.TLE;
 import org.orekit.time.AbsoluteDate;
@@ -19,6 +20,9 @@ import org.orekit.utils.PVCoordinates;
 import org.orekit.utils.PVCoordinatesProvider;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Service;
+import space.orbit.backend.analysis.SampledCraft;
+import space.orbit.backend.analysis.SensorEvent;
+import space.orbit.backend.analysis.SensorEventComputer;
 import space.orbit.backend.prop.CwPropagation;
 import space.orbit.backend.prop.Fidelity;
 import space.orbit.backend.prop.FrameService;
@@ -51,6 +55,7 @@ public class ScenarioStreamService {
     private final ScenarioStreamProperties props;
 
     private TimeScale utc;
+    private SensorEventComputer sensorEvents;
 
     public ScenarioStreamService(ScenarioService scenarioService,
                                  PropagationService propagationService,
@@ -69,6 +74,7 @@ public class ScenarioStreamService {
     @PostConstruct
     void init() {
         utc = TimeScalesFactory.getUTC(); // safe: @DependsOn orekitConfig
+        sensorEvents = new SensorEventComputer(); // pure: works on the sampled trajectory, no propagation
     }
 
     /**
@@ -162,11 +168,19 @@ public class ScenarioStreamService {
         int stride = withVel ? 7 : 4;
         int degree = Math.max(1, Math.min(5, steps));
 
+        // Chief body attitude in its own LVLH frame (Phase 7) so the chief's FOV
+        // volumes render. The chief is the LVLH origin (no relative position).
+        double[] chiefAttitude = sampleAttitude(chief, eci, lvlh, startDate, firstT, step, steps);
+
         double maxSeparation = 0.0; // over all deputies, within the scenario window (CW hint)
         List<RelativeSamples> deputies = new ArrayList<>();
         for (int i = 1; i < roles.size(); i++) { // skip chief (the LVLH origin)
             PVCoordinatesProvider depProp = roles.get(i).provider();
+            ScenarioBody.Role role = roles.get(i).role();
+            String attMode = attitudeMode(role);
+            double[] attFixedQuat = attitudeQuat(role);
             double[] s = new double[(steps + 1) * stride];
+            double[] a = new double[(steps + 1) * ATT_STRIDE]; // [t,qx,qy,qz,qw, ...]
             // Coarse closest-approach bracket comes free from the sampling loop:
             // |rel| is the chief-relative range (frame-invariant). Restrict to the
             // scenario window [0, durationSec] (the sampled span also has margin).
@@ -176,15 +190,18 @@ public class ScenarioStreamService {
             int firstValid = -1;
             boolean decayed = false; // once a step leaves the domain, stop re-propagating
             double hR = 0, hI = 0, hC = 0, hvR = 0, hvI = 0, hvC = 0;
+            double hqx = 0, hqy = 0, hqz = 0, hqw = 1; // held attitude quaternion
             for (int k = 0; k <= steps; k++) {
                 double t = firstT + (double) k * step;
                 int base = k * stride;
                 s[base] = t;
+                a[k * ATT_STRIDE] = t;
                 if (!decayed) {
                     try {
                         AbsoluteDate date = startDate.shiftedBy(t);
+                        Transform toLvlh = eci.getTransformTo(lvlh, date);
                         PVCoordinates depEci = depProp.getPVCoordinates(date, eci);
-                        PVCoordinates rel = eci.getTransformTo(lvlh, date).transformPVCoordinates(depEci);
+                        PVCoordinates rel = toLvlh.transformPVCoordinates(depEci);
                         Vector3D p = rel.getPosition();
                         hR = p.getX(); // radial
                         hI = p.getY(); // in-track
@@ -195,6 +212,13 @@ public class ScenarioStreamService {
                             hvI = v.getY();
                             hvC = v.getZ();
                         }
+                        // Body attitude in the chief-LVLH scene frame (Phase 7) — reuse the
+                        // same state + transform (no extra propagation).
+                        double[] q = frames.bodyQuaternionInLvlh(depEci, toLvlh, attMode, attFixedQuat);
+                        hqx = q[0];
+                        hqy = q[1];
+                        hqz = q[2];
+                        hqw = q[3];
                         if (firstValid < 0) {
                             firstValid = k;
                         }
@@ -219,12 +243,17 @@ public class ScenarioStreamService {
                     s[base + 5] = hvI;
                     s[base + 6] = hvC;
                 }
+                a[k * ATT_STRIDE + 1] = hqx;
+                a[k * ATT_STRIDE + 2] = hqy;
+                a[k * ATT_STRIDE + 3] = hqz;
+                a[k * ATT_STRIDE + 4] = hqw;
             }
             if (firstValid < 0) {
                 throw new ScenarioStreamUnprocessableException("deputy "
                         + roles.get(i).role().noradId() + " never reaches a valid relative state");
             }
             backfillLeading(s, firstValid, stride);
+            backfillLeadingAttitude(a, firstValid);
             // Refine the closest approach on the live propagators around the coarse
             // bracket (US-REL-02). Distance is frame-invariant — compute it in ECI.
             double[] tca = refineTca(depProp, chief.provider(), eci, startDate,
@@ -232,11 +261,117 @@ public class ScenarioStreamService {
                     coarseMinT, coarseMinDist);
             Instant tcaEpoch = epoch.plusMillis(Math.round(tca[0] * 1000.0));
 
-            ScenarioBody.Role role = roles.get(i).role();
-            deputies.add(new RelativeSamples(role.noradId(), role.name(), degree, s, tcaEpoch, tca[1]));
+            deputies.add(new RelativeSamples(role.noradId(), role.name(), degree, s, tcaEpoch, tca[1],
+                    a, role.sensors()));
         }
-        return relativeEncoder.encodeRelative(epoch, step, chief.role().noradId(), deputies, withVel,
-                fidelity, maxSeparation, chiefEccentricity, chiefRadiusM);
+
+        // Acquisition / loss-of-sight events (Phase 7, US-EVT-01) — computed from the SAME
+        // sampled trajectory + attitude this method just built (NOT a second propagation), so
+        // events are consistent with the drawn FOV + the closest approach (Decision 24). Only
+        // when some craft carries a sensor; every craft is both a potential host and target.
+        List<SensorEvent> events = sensorEvents(chief, chiefAttitude, deputies, stride, firstT, step, steps,
+                epoch, durationSec, chiefRadiusM);
+
+        return relativeEncoder.encodeRelative(epoch, step, chief.role().noradId(),
+                chiefAttitude, chief.role().sensors(), deputies, withVel,
+                fidelity, maxSeparation, chiefEccentricity, chiefRadiusM, events);
+    }
+
+    /**
+     * Detect acquisition/loss events over the already-sampled trajectory (Phase 7). The chief is
+     * the LVLH origin (position {@code null} → (0,0,0)); deputies carry their sampled position +
+     * attitude. Reuses the rendered samples so events agree with the drawn FOV.
+     */
+    private List<SensorEvent> sensorEvents(PreparedRole chief, double[] chiefAttitude,
+                                           List<RelativeSamples> deputies, int stride, double firstT,
+                                           int step, int steps, Instant epoch, long durationSec,
+                                           double chiefRadiusM) {
+        boolean anySensors = chief.role().sensors() != null && !chief.role().sensors().isEmpty();
+        for (RelativeSamples d : deputies) {
+            anySensors |= d.sensors() != null && !d.sensors().isEmpty();
+        }
+        if (!anySensors) {
+            return List.of();
+        }
+        List<SampledCraft> crafts = new ArrayList<>(deputies.size() + 1);
+        crafts.add(new SampledCraft(chief.role().noradId(), null, stride, chiefAttitude, chief.role().sensors()));
+        for (RelativeSamples d : deputies) {
+            crafts.add(new SampledCraft(d.noradId(), d.samples(), stride, d.attitude(), d.sensors()));
+        }
+        return sensorEvents.compute(crafts, firstT, step, steps, epoch, durationSec, chiefRadiusM);
+    }
+
+    /** Attitude sample stride: {@code [t,qx,qy,qz,qw]} (matches the encoder). */
+    private static final int ATT_STRIDE = 5;
+
+    /**
+     * Sample a role's body attitude (three.js-convention quaternion in the chief-LVLH
+     * scene frame) on the position grid (Phase 7). HOLDs the last valid quaternion past
+     * a domain exit, mirroring the position sampler. Used for the chief (the deputy loop
+     * computes its own attitude inline to reuse the per-step transform).
+     */
+    private double[] sampleAttitude(PreparedRole role, Frame eci, Frame lvlh, AbsoluteDate startDate,
+                                    double firstT, int step, int steps) {
+        String mode = attitudeMode(role.role());
+        double[] fixedQuat = attitudeQuat(role.role());
+        double[] a = new double[(steps + 1) * ATT_STRIDE];
+        int firstValid = -1;
+        boolean decayed = false;
+        double hqx = 0, hqy = 0, hqz = 0, hqw = 1;
+        for (int k = 0; k <= steps; k++) {
+            double t = firstT + (double) k * step;
+            a[k * ATT_STRIDE] = t;
+            if (!decayed) {
+                try {
+                    double[] q = frames.bodyQuaternionInLvlh(
+                            role.provider(), lvlh, startDate.shiftedBy(t), mode, fixedQuat);
+                    hqx = q[0];
+                    hqy = q[1];
+                    hqz = q[2];
+                    hqw = q[3];
+                    if (firstValid < 0) {
+                        firstValid = k;
+                    }
+                } catch (OrekitException leftDomain) {
+                    decayed = true;
+                }
+            }
+            a[k * ATT_STRIDE + 1] = hqx;
+            a[k * ATT_STRIDE + 2] = hqy;
+            a[k * ATT_STRIDE + 3] = hqz;
+            a[k * ATT_STRIDE + 4] = hqw;
+        }
+        // If the chief never reached a valid state the whole stream already fails in
+        // sampleRole; here we just backfill any leading held identity quaternions.
+        backfillLeadingAttitude(a, Math.max(firstValid, 0));
+        return a;
+    }
+
+    /** Copy the first valid quaternion back over any leading held-identity samples. */
+    private static void backfillLeadingAttitude(double[] att, int firstValidIdx) {
+        if (firstValidIdx <= 0) {
+            return;
+        }
+        double qx = att[firstValidIdx * ATT_STRIDE + 1];
+        double qy = att[firstValidIdx * ATT_STRIDE + 2];
+        double qz = att[firstValidIdx * ATT_STRIDE + 3];
+        double qw = att[firstValidIdx * ATT_STRIDE + 4];
+        for (int k = 0; k < firstValidIdx; k++) {
+            att[k * ATT_STRIDE + 1] = qx;
+            att[k * ATT_STRIDE + 2] = qy;
+            att[k * ATT_STRIDE + 3] = qz;
+            att[k * ATT_STRIDE + 4] = qw;
+        }
+    }
+
+    private static String attitudeMode(ScenarioBody.Role role) {
+        ScenarioBody.AttitudeProfile a = role.attitude();
+        return (a == null || a.mode() == null || a.mode().isBlank()) ? "lvlh" : a.mode();
+    }
+
+    private static double[] attitudeQuat(ScenarioBody.Role role) {
+        ScenarioBody.AttitudeProfile a = role.attitude();
+        return a == null ? null : a.quaternion();
     }
 
     /**

@@ -453,11 +453,55 @@ against a metric. Phase done = every criterion passes.
 
 ---
 
-## Phase 7 onwards
+## Phase 7 — Sensors & FOV
 
-Acceptance criteria for Phases 7–11 will be drafted when the respective
+> Sliced **7A / 7B** (see [phase-7-plan.md](./phase-7-plan.md), Decision 24).
+>
+> **Phase 7 complete — backend 113 tests green + frontend type-check/build green**
+> (2026-06-18). Sensors are first-class scenario objects + backend-authoritative modeled
+> attitude (7A); acquisition/loss-of-sight events + occlusion + sensor-frame camera (7B).
+> New backend `analysis/` package + `FrameService` attitude helpers + `ScenarioBody`
+> schema v3; new `frontend/src/proximity/sensors.ts` + `scenario/SensorPanel.tsx`. The
+> only contract change is additive WebSocket-payload fields (`VERSION="1"`, R12). Verified
+> on the dev stack (sensor add → 200, bad FOV → 422, WS frame carries chief/attitude/
+> sensors, a wide cone yields an acquisition at 565 m).
+
+**7A — sensor model + modeled attitude + FOV rendering (US-SENSE-01/02, US-PROX-01)** ✅
+- [x] Sensors as first-class scenario entities: `ScenarioBody` schema v3
+      (`Sensor`/`Fov`/`Mount`/`AttitudeProfile` on chief OR deputy), forward-additive
+      (v1/v2 bodies migrate; no DB migration). Add/remove/set-attitude through the single
+      audited `ScenarioService` path (`SENSOR_ADD`/`SENSOR_REMOVE`/`ATTITUDE_SET`); REST
+      `POST/DELETE /scenarios/{id}/sensors`, `PUT /scenarios/{id}/attitude`
+      (`gen:api` regenerated). Cone (half-angle) + rectangular (H×V°), body-fixed pointing.
+- [x] Backend-authoritative **modeled** attitude (`FrameService.bodyQuaternionInLvlh`):
+      `lvlh` (LVLH-aligned from the orbital state) or `fixed` (constant inertial), streamed
+      as a three.js-convention quaternion (`chief` block + per-deputy `att`, additive). The
+      convention is pinned to three.js by a signed-axis test (R15). Frontend consumes it
+      (SLERP), retiring the Phase-6 estimate; legend reads "modeled".
+- [x] Translucent FOV volumes in the proximity view (`proximity/sensors.ts`), riding each
+      craft's body frame, with a Sensors view/opacity control. `SensorPanel.tsx` with
+      type presets (narrow imager / wide 20°×15° / rendezvous lidar).
+
+**7B — acquisition/loss events + occlusion + sensor-frame camera (US-SENSE-04/05, US-EVT-01)** ✅
+- [x] Acquisition / loss-of-sight detection (`analysis/SensorEventComputer`): in-FOV ∧
+      in-range ∧ Earth line-of-sight unobstructed, on the sample grid + bisection refine;
+      deterministic (R11). Streamed in an additive top-level `events` array.
+- [x] Occlusion: Earth (analytic ray vs the WGS84 sphere). Inter-spacecraft is negligible
+      (point targets); the **Sun (occlusion + sun-keep-out) is deferred to Phase 8**.
+- [x] Timeline AOS/LOS windows (`Timeline.tsx` — acquisition→loss bands).
+- [x] Sensor-frame camera mode (`cameraModes.ts` `sensor` — look along the boresight).
+
+**Deferred (Decision 24):** CCSDS AEM measured attitude; gimbaled pointing;
+frustum/polygonal FOV; exact rectangular FOV containment for events (v1 uses a bounding
+cone); Sun occlusion / sun-keep-out (Phase 8); GPU-depth occlusion of the drawn volume.
+
+---
+
+## Phase 8 onwards
+
+Acceptance criteria for Phases 8–11 will be drafted when the respective
 phase begins, informed by what we learned in earlier phases. The
-[user-stories outline](./user-stories.md#phase-7--sensors--fov-outline)
+[user-stories outline](./user-stories.md#phase-8--environment--events-outline)
 seeds each phase; the SRS clauses they map to are the verification source.
 
 ---

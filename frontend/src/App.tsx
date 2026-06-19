@@ -10,6 +10,7 @@ import FilterPanel from './components/FilterPanel';
 import StatusChip from './components/StatusChip';
 import ScenarioPanel from './scenario/ScenarioPanel';
 import ManeuverPanel from './scenario/ManeuverPanel';
+import SensorPanel from './scenario/SensorPanel';
 import { useStore } from './store/useStore';
 import { startClockEngine } from './store/clockEngine';
 import './App.css';
@@ -132,6 +133,7 @@ export default function App() {
       <FilterPanel />
       <ScenarioPanel />
       {scenarioActive && <ManeuverPanel />}
+      {scenarioActive && <SensorPanel />}
       <StatsOverlay />
       {scenarioActive && (
         <button

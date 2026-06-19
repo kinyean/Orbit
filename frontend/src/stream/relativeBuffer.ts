@@ -11,6 +11,20 @@
 
 import type { ScenarioRelativeMessage } from './ScenarioStreamClient';
 
+/** Attitude sample stride: [t, qx, qy, qz, qw] (Phase 7). */
+export const ATT_STRIDE = 5;
+
+/** A body-fixed sensor descriptor (Phase 7); the proximity view builds FOV geometry from it. */
+export interface SensorDef {
+  id: string;
+  kind: string;
+  name: string;
+  fov: { type: string; halfAngleDeg: number; hDeg: number; vDeg: number };
+  minRangeM: number;
+  maxRangeM: number;
+  mount: { boresightBody: [number, number, number]; clockDeg: number };
+}
+
 export interface DeputyRelative {
   noradId: number;
   name: string;
@@ -19,6 +33,28 @@ export interface DeputyRelative {
   samples: Float64Array; // [t,R,I,C,(vR,vI,vC), ...]
   tcaEpochMs: number | null; // closest approach to the chief (Phase 5A); null if absent
   tcaDistanceM: number | null; // chief-relative range at TCA, metres
+  // Phase 7: modeled body-orientation samples in the chief-LVLH scene frame,
+  // [t,qx,qy,qz,qw, ...] (three.js convention), and this deputy's sensors. Both
+  // optional — absent on older backends (the view falls back to a derived estimate).
+  attitude: Float64Array | null;
+  sensors: SensorDef[];
+}
+
+/** The chief block (Phase 7): the LVLH origin's attitude + sensors so its FOV renders. */
+export interface ChiefRelative {
+  noradId: number;
+  attitude: Float64Array | null;
+  sensors: SensorDef[];
+}
+
+/** A sensor acquisition / loss-of-sight event (Phase 7, US-EVT-01). */
+export interface SensorEvent {
+  type: 'acquisition' | 'los';
+  hostId: number;
+  sensorId: string;
+  targetId: number;
+  epochMs: number;
+  rangeM: number;
 }
 
 export interface RelativeFrameData {
@@ -36,6 +72,10 @@ export interface RelativeFrameData {
   // places the Earth backdrop at (−chiefRadiusM, 0, 0) in the LVLH scene. 0 when
   // absent (older backend) → the view falls back to a representative LEO radius.
   chiefRadiusM: number;
+  // Chief attitude + sensors (Phase 7); null when absent (older backend).
+  chief: ChiefRelative | null;
+  // Acquisition / loss-of-sight events over the window (Phase 7); empty when absent.
+  events: SensorEvent[];
 }
 
 let current: RelativeFrameData | null = null;
@@ -190,6 +230,99 @@ export function deputyStateAt(
   }
 }
 
+/**
+ * Write the body-orientation quaternion at time `t` (seconds since epoch) into
+ * `out4 = [x, y, z, w]` (three.js convention). SLERP between the bracketing
+ * samples; HOLD-clamps at the ends. Falls back to identity for an empty array.
+ * Allocation-free — safe per craft per frame.
+ */
+export function deputyAttitudeAt(att: Float64Array, t: number, out4: number[] | Float64Array): void {
+  const n = Math.floor(att.length / ATT_STRIDE);
+  if (n === 0) {
+    out4[0] = out4[1] = out4[2] = 0;
+    out4[3] = 1;
+    return;
+  }
+  const tFirst = att[0];
+  const tLast = att[(n - 1) * ATT_STRIDE];
+  if (t <= tFirst || n === 1) {
+    copyQuat(att, 0, out4);
+    return;
+  }
+  if (t >= tLast) {
+    copyQuat(att, (n - 1) * ATT_STRIDE, out4);
+    return;
+  }
+  let lo = 0;
+  let hi = n - 1;
+  while (lo + 1 < hi) {
+    const mid = (lo + hi) >> 1;
+    if (att[mid * ATT_STRIDE] <= t) lo = mid;
+    else hi = mid;
+  }
+  const ba = lo * ATT_STRIDE;
+  const bb = hi * ATT_STRIDE;
+  const ta = att[ba];
+  const tb = att[bb];
+  const f = tb > ta ? (t - ta) / (tb - ta) : 0;
+  slerp(att, ba, att, bb, f, out4);
+}
+
+function copyQuat(src: Float64Array, base: number, out4: number[] | Float64Array): void {
+  out4[0] = src[base + 1];
+  out4[1] = src[base + 2];
+  out4[2] = src[base + 3];
+  out4[3] = src[base + 4];
+}
+
+/** Spherical-linear interpolation between two stride-5 quaternion samples into `out4`. */
+function slerp(
+  a: Float64Array,
+  ba: number,
+  b: Float64Array,
+  bb: number,
+  t: number,
+  out4: number[] | Float64Array,
+): void {
+  const ax = a[ba + 1];
+  const ay = a[ba + 2];
+  const az = a[ba + 3];
+  const aw = a[ba + 4];
+  let bx = b[bb + 1];
+  let by = b[bb + 2];
+  let bz = b[bb + 3];
+  let bw = b[bb + 4];
+  let cos = ax * bx + ay * by + az * bz + aw * bw;
+  if (cos < 0) {
+    // shorter arc (quaternion double-cover)
+    bx = -bx;
+    by = -by;
+    bz = -bz;
+    bw = -bw;
+    cos = -cos;
+  }
+  let s0: number;
+  let s1: number;
+  if (cos > 0.9995) {
+    s0 = 1 - t;
+    s1 = t;
+  } else {
+    const theta = Math.acos(cos);
+    const sin = Math.sin(theta);
+    s0 = Math.sin((1 - t) * theta) / sin;
+    s1 = Math.sin(t * theta) / sin;
+  }
+  const x = s0 * ax + s1 * bx;
+  const y = s0 * ay + s1 * by;
+  const z = s0 * az + s1 * bz;
+  const w = s0 * aw + s1 * bw;
+  const norm = Math.hypot(x, y, z, w) || 1;
+  out4[0] = x / norm;
+  out4[1] = y / norm;
+  out4[2] = z / norm;
+  out4[3] = w / norm;
+}
+
 /** Parse a `scenario-relative` envelope into buffer data; null if malformed. */
 export function parseRelativeMessage(msg: ScenarioRelativeMessage): RelativeFrameData | null {
   const epochMs = Date.parse(String(msg.epoch));
@@ -205,6 +338,8 @@ export function parseRelativeMessage(msg: ScenarioRelativeMessage): RelativeFram
       samples?: unknown;
       tcaEpoch?: unknown;
       tcaDistanceM?: unknown;
+      att?: unknown;
+      sensors?: unknown;
     };
     if (typeof d.noradId !== 'number' || !Array.isArray(d.samples)) continue;
     const tcaMs = typeof d.tcaEpoch === 'string' ? Date.parse(d.tcaEpoch) : NaN;
@@ -216,6 +351,8 @@ export function parseRelativeMessage(msg: ScenarioRelativeMessage): RelativeFram
       samples: Float64Array.from(d.samples as number[]),
       tcaEpochMs: Number.isNaN(tcaMs) ? null : tcaMs,
       tcaDistanceM: typeof d.tcaDistanceM === 'number' ? d.tcaDistanceM : null,
+      attitude: parseAttitude(d.att),
+      sensors: parseSensors(d.sensors),
     });
   }
 
@@ -229,5 +366,88 @@ export function parseRelativeMessage(msg: ScenarioRelativeMessage): RelativeFram
     maxSeparationM: typeof msg.maxSeparationM === 'number' ? msg.maxSeparationM : 0,
     chiefEccentricity: typeof msg.chiefEccentricity === 'number' ? msg.chiefEccentricity : 0,
     chiefRadiusM: typeof msg.chiefRadiusM === 'number' ? msg.chiefRadiusM : 0,
+    chief: parseChief(msg.chief),
+    events: parseEvents(msg.events),
   };
+}
+
+/** Parse the optional top-level `events` array (Phase 7); empty when absent. */
+function parseEvents(raw: unknown): SensorEvent[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SensorEvent[] = [];
+  for (const item of raw) {
+    const e = item as {
+      type?: unknown;
+      hostId?: unknown;
+      sensorId?: unknown;
+      targetId?: unknown;
+      epoch?: unknown;
+      rangeM?: unknown;
+    };
+    const epochMs = typeof e.epoch === 'string' ? Date.parse(e.epoch) : NaN;
+    if ((e.type !== 'acquisition' && e.type !== 'los') || Number.isNaN(epochMs)) continue;
+    out.push({
+      type: e.type,
+      hostId: num(e.hostId, -1),
+      sensorId: typeof e.sensorId === 'string' ? e.sensorId : '',
+      targetId: num(e.targetId, -1),
+      epochMs,
+      rangeM: num(e.rangeM, 0),
+    });
+  }
+  return out;
+}
+
+/** Parse the optional `att` array into a Float64Array (stride 5); null when absent. */
+function parseAttitude(raw: unknown): Float64Array | null {
+  return Array.isArray(raw) && raw.length >= ATT_STRIDE ? Float64Array.from(raw as number[]) : null;
+}
+
+/** Parse the optional `sensors` descriptor list; empty when absent/malformed. */
+function parseSensors(raw: unknown): SensorDef[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SensorDef[] = [];
+  for (const item of raw) {
+    const s = item as {
+      id?: unknown;
+      kind?: unknown;
+      name?: unknown;
+      fov?: { type?: unknown; halfAngleDeg?: unknown; hDeg?: unknown; vDeg?: unknown };
+      minRangeM?: unknown;
+      maxRangeM?: unknown;
+      mount?: { boresightBody?: unknown; clockDeg?: unknown };
+    };
+    if (typeof s.id !== 'string') continue;
+    const b = Array.isArray(s.mount?.boresightBody) ? (s.mount!.boresightBody as number[]) : [1, 0, 0];
+    out.push({
+      id: s.id,
+      kind: typeof s.kind === 'string' ? s.kind : 'optical',
+      name: typeof s.name === 'string' ? s.name : 'sensor',
+      fov: {
+        type: typeof s.fov?.type === 'string' ? s.fov.type : 'cone',
+        halfAngleDeg: num(s.fov?.halfAngleDeg, 10),
+        hDeg: num(s.fov?.hDeg, 0),
+        vDeg: num(s.fov?.vDeg, 0),
+      },
+      minRangeM: num(s.minRangeM, 0),
+      maxRangeM: num(s.maxRangeM, 1000),
+      mount: { boresightBody: [num(b[0], 1), num(b[1], 0), num(b[2], 0)], clockDeg: num(s.mount?.clockDeg, 0) },
+    });
+  }
+  return out;
+}
+
+/** Parse the optional top-level `chief` block (attitude + sensors); null when absent. */
+function parseChief(raw: unknown): ChiefRelative | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const c = raw as { noradId?: unknown; att?: unknown; sensors?: unknown };
+  return {
+    noradId: typeof c.noradId === 'number' ? c.noradId : -1,
+    attitude: parseAttitude(c.att),
+    sensors: parseSensors(c.sensors),
+  };
+}
+
+function num(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }

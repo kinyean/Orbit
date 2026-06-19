@@ -178,27 +178,53 @@ colored dot so there is **no regression** at 100 km.
 Captured while building + validating Phase 6 (see also risks R16–R18). Not in scope for
 the phase; listed so they're not lost.
 
-1. **Rendezvous differential corrector** (proper fix for R16). The Lambert template is an
-   open-loop two-body *sketch*: it plans in two-body but executes with SGP4 (chief) +
-   numerical (deputy), so it misses by tens of km. Iterate the two burns against the
-   *real* propagators (finite-difference Newton on Δv1 vs the arrival miss, fixed
-   iterations for R11 determinism) so the closest approach converges to ~0. This is the
-   single biggest credibility win for the maneuver feature.
-2. **Robust Lambert solver.** Replace/augment Orekit `IodLambert` with a min-ΔV branch
-   search (short-way vs long-way × multi-revolution) to remove the wild-ΔV spikes at
-   certain arrival times (currently only *flagged* by the ≥5 km/s warning).
-3. **Real GLTF spacecraft models** (R6). Drop licensing-clean `.glb` into
+1. **Flight-ready rendezvous planning (proper fix for R16; Phase 9 "advanced maneuvers").**
+   Today the rendezvous template is a single **open-loop two-body Lambert shot**: it plans
+   in two-body but executes with SGP4 (chief) + numerical (deputy), so it misses by tens of
+   km, and finding a feasible/cheap solution is manual trial-and-error (cross-plane /
+   cross-altitude / bad arrival-time geometry → km/s, only *flagged* by the ≥5 km/s warning).
+   The goal is to move it from a *feasibility sketch* toward a *flight-ready plan*, in four
+   layers (highest leverage first — all backend physics behind the streaming contract, so
+   the frontend barely changes; new ΔV values flow through the existing audited maneuver
+   path):
+   - **(a) Differential corrector — the single biggest credibility win.** Iterate the two
+     burns against the *real* propagators the sim uses (finite-difference Newton/shooting on
+     Δv1 vs the arrival position miss; the second burn matches the chief's velocity), fixed
+     iterations for R11 determinism, so the closest approach converges to ~0 instead of the
+     ~40 km model-mismatch miss. Turns the open-loop sketch into a converged transfer. Purely
+     additive (better ΔV through the audited path; no contract/frontend change).
+   - **(b) Arrival-time + revolution search ("porkchop").** Sweep arrival times × short/long
+     way × multi-rev, compute ΔV for each, and surface the **cheapest feasible** transfer —
+     so finding a solution stops being guesswork (subsumes the old "robust Lambert solver"
+     note: replace/augment Orekit `IodLambert`'s single branch with a min-ΔV branch search,
+     removing the wild-ΔV spikes). Optionally decompose ΔV into in-plane vs plane-change so
+     the user sees *why* a burn is expensive.
+   - **(c) Phasing-orbit planner — the realistic multi-rev approach.** For a co-orbital
+     chaser, plan a co-elliptic **phasing** maneuver (drop/raise a bit, drift over N revs to
+     null the along-track gap, then a small transfer) instead of one big Lambert — cheaper
+     and closer to how missions actually fly.
+   - **(d) Closed-loop terminal approaches + validation (Phase 9).** Glideslope / V-bar /
+     R-bar holds / station-keeping built on the existing **CW** engine; then Monte Carlo
+     dispersion + covariance ellipsoids + safety-corridor checks (already roadmapped Phase 9)
+     so the plan is *trustworthy* under navigation + execution error, not just correct in one
+     deterministic run.
+2. **Real GLTF spacecraft models** (R6). Drop licensing-clean `.glb` into
    `/public/models/` via the existing `GLTFLoader` swap seam; map the model's named
    nodes to the articulation joints (`arrayPort`/`arrayStarboard`/`dish`).
-4. **Phase 7 attitude.** Replace the derived ram/LVLH orientation estimate with real
-   attitude profiles; drive the articulation joints; add body/sensor frames. The
-   orientation seam (`deriveBodyQuaternion`, `FrameService.body`) is the plug-in point.
-5. **Phase 8 lighting.** Real sun vector → Earth terminator / day-night shading,
+3. ~~**Phase 7 attitude.**~~ **Done (Phase 7, Decision 24):** the derived ram/LVLH estimate
+   is replaced by a backend-authoritative *modeled* attitude (`lvlh`/`fixed`), streamed as a
+   quaternion and consumed via `orientation.ts` `bodyOrientationAt`; sensors + sensor/body
+   frames added. Still *modeled*, not *measured* — **CCSDS AEM** attitude import (a new
+   `AttitudeProfile.mode`) and **gimbaled** sensor pointing remain follow-ups; the
+   articulation joints are still parked (driving them is Phase 8 sun-tracking).
+4. **Phase 8 lighting.** Real sun vector → Earth terminator / day-night shading,
    physically-consistent spacecraft illumination, eclipse — replacing the flat
-   non-physical light rig.
-6. **Ribbon polish.** Optional fade-to-transparent at the window edge (comet-tail) in
+   non-physical light rig. Also unblocks **sensor sun-keep-out + Sun occlusion** (deferred
+   from Phase 7, Decision 24).
+5. **Ribbon polish.** Optional fade-to-transparent at the window edge (comet-tail) in
    place of the current hard cut; tune `WINDOW_SECONDS` / the Catmull-Rom subdivision per
    feedback.
-7. **Numerical-cost guardrail** (R18). Warn or cap very long numerical windows, and/or
+6. **Numerical-cost guardrail** (R18). Warn or cap very long numerical windows, and/or
    stream with progress for heavy loads, so a long high-fidelity scenario can't read as a
-   hang (the ≤5 s/24 h target is for a 24 h window).
+   hang (the ≤5 s/24 h target is for a 24 h window). Note: sensor event detection adds
+   per-step propagation per (sensor, target) — bound it for long numerical scenarios.

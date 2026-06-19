@@ -8,6 +8,8 @@ import java.io.UncheckedIOException;
 import java.time.Instant;
 import java.util.List;
 import org.springframework.stereotype.Component;
+import space.orbit.backend.analysis.SensorEvent;
+import space.orbit.backend.scenario.ScenarioBody;
 
 /**
  * Encodes per-deputy LVLH relative-state samples into the {@code scenario-relative}
@@ -39,11 +41,20 @@ public class RelativeStateEncoder {
      *                          proximity view place the Earth backdrop along −R at
      *                          the right altitude (Phase 6 / US-PROX-05). Additive —
      *                          contract stays VERSION "1".
+     * @param chiefAttitude     chief body-orientation samples in the chief-LVLH scene
+     *                          frame (Phase 7), {@code [t,qx,qy,qz,qw, ...]} (stride 5),
+     *                          three.js convention; null/empty when absent. Carried in
+     *                          a top-level {@code chief} block (the chief is the LVLH
+     *                          origin but it has attitude + sensors that must be drawn).
+     * @param chiefSensors      the chief's body-fixed sensors (Phase 7); null/empty if none
+     * @param events            sensor acquisition/loss events over the window (Phase 7,
+     *                          US-EVT-01); null/empty if no sensors. Top-level array.
      */
     public String encodeRelative(Instant epoch, int stepSeconds, int chiefId,
+                                 double[] chiefAttitude, List<ScenarioBody.Sensor> chiefSensors,
                                  List<RelativeSamples> deputies, boolean includeVelocity,
                                  String fidelity, double maxSeparationM, double chiefEccentricity,
-                                 double chiefRadiusM) {
+                                 double chiefRadiusM, List<SensorEvent> events) {
         int stride = includeVelocity ? 7 : 4;
         StringWriter writer = new StringWriter(1 << 14);
         try (JsonGenerator g = JSON.createGenerator(writer)) {
@@ -68,11 +79,21 @@ public class RelativeStateEncoder {
             // centers the Earth backdrop at (−chiefRadiusM, 0, 0) in the LVLH scene.
             g.writeNumberField("chiefRadiusM", Math.round(chiefRadiusM));
 
+            // Chief block (Phase 7): the LVLH origin's attitude + sensors so its FOV
+            // volumes render and a sensor-frame camera can anchor to them.
+            g.writeObjectFieldStart("chief");
+            g.writeNumberField("noradId", chiefId);
+            writeAttitude(g, chiefAttitude);
+            writeSensors(g, chiefSensors);
+            g.writeEndObject();
+
             g.writeArrayFieldStart("deputies");
             for (RelativeSamples dep : deputies) {
                 writeDeputy(g, dep, stride);
             }
             g.writeEndArray();
+
+            writeEvents(g, events);
 
             g.writeEndObject();
         } catch (IOException e) {
@@ -108,10 +129,104 @@ public class RelativeStateEncoder {
             }
         }
         g.writeEndArray();
+
+        // Attitude + sensors (Phase 7) — additive, written only when present.
+        writeAttitude(g, dep.attitude());
+        writeSensors(g, dep.sensors());
+
         g.writeEndObject();
     }
 
+    /**
+     * Attitude samples as a flat {@code att} array {@code [t,qx,qy,qz,qw, ...]}
+     * (stride 5). Times whole seconds; quaternion components to 1e-6. Omitted when
+     * null/empty (older bodies / stride mismatch) — the client falls back to the
+     * derived estimate.
+     */
+    private void writeAttitude(JsonGenerator g, double[] att) throws IOException {
+        if (att == null || att.length < ATT_STRIDE) {
+            return;
+        }
+        g.writeArrayFieldStart("att");
+        for (int base = 0; base + ATT_STRIDE <= att.length; base += ATT_STRIDE) {
+            g.writeNumber(Math.round(att[base]));            // t (whole seconds)
+            g.writeNumber(roundMicros(att[base + 1]));       // qx
+            g.writeNumber(roundMicros(att[base + 2]));       // qy
+            g.writeNumber(roundMicros(att[base + 3]));       // qz
+            g.writeNumber(roundMicros(att[base + 4]));       // qw
+        }
+        g.writeEndArray();
+    }
+
+    /** Static FOV descriptors the frontend builds geometry from. Omitted when empty. */
+    private void writeSensors(JsonGenerator g, List<ScenarioBody.Sensor> sensors) throws IOException {
+        if (sensors == null || sensors.isEmpty()) {
+            return;
+        }
+        g.writeArrayFieldStart("sensors");
+        for (ScenarioBody.Sensor s : sensors) {
+            g.writeStartObject();
+            g.writeStringField("id", s.id());
+            g.writeStringField("kind", s.kind());
+            g.writeStringField("name", s.name());
+            g.writeObjectFieldStart("fov");
+            ScenarioBody.Fov fov = s.fov();
+            g.writeStringField("type", fov != null ? fov.type() : "cone");
+            if (fov != null) {
+                g.writeNumberField("halfAngleDeg", fov.halfAngleDeg());
+                g.writeNumberField("hDeg", fov.hDeg());
+                g.writeNumberField("vDeg", fov.vDeg());
+            }
+            g.writeEndObject();
+            g.writeNumberField("minRangeM", Math.round(s.minRangeM()));
+            g.writeNumberField("maxRangeM", Math.round(s.maxRangeM()));
+            g.writeObjectFieldStart("mount");
+            double[] b = s.mount() != null ? s.mount().boresightBody() : null;
+            g.writeArrayFieldStart("boresightBody");
+            if (b != null && b.length == 3) {
+                g.writeNumber(roundMicros(b[0]));
+                g.writeNumber(roundMicros(b[1]));
+                g.writeNumber(roundMicros(b[2]));
+            } else {
+                g.writeNumber(1);
+                g.writeNumber(0);
+                g.writeNumber(0);
+            }
+            g.writeEndArray();
+            g.writeNumberField("clockDeg", s.mount() != null ? s.mount().clockDeg() : 0.0);
+            g.writeEndObject(); // end mount
+            g.writeEndObject(); // end sensor
+        }
+        g.writeEndArray();
+    }
+
+    /** Acquisition/loss events (Phase 7, US-EVT-01). Top-level; omitted when empty. */
+    private void writeEvents(JsonGenerator g, List<SensorEvent> events) throws IOException {
+        if (events == null || events.isEmpty()) {
+            return;
+        }
+        g.writeArrayFieldStart("events");
+        for (SensorEvent e : events) {
+            g.writeStartObject();
+            g.writeStringField("type", e.type());
+            g.writeNumberField("hostId", e.hostId());
+            g.writeStringField("sensorId", e.sensorId());
+            g.writeNumberField("targetId", e.targetId());
+            g.writeStringField("epoch", e.epoch().toString());
+            g.writeNumberField("rangeM", Math.round(e.rangeM()));
+            g.writeEndObject();
+        }
+        g.writeEndArray();
+    }
+
+    /** Attitude sample stride: {@code [t,qx,qy,qz,qw]}. */
+    static final int ATT_STRIDE = 5;
+
     private static double roundMillis(double v) {
         return Math.round(v * 1000.0) / 1000.0;
+    }
+
+    private static double roundMicros(double v) {
+        return Math.round(v * 1e6) / 1e6;
     }
 }
