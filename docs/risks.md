@@ -363,6 +363,41 @@ numerical scenarios.
 
 ---
 
+## R19 — Measured-data ingestion: interpolation & illustrative deputies (Medium impact, Medium likelihood)
+
+**Description.** Serving a measured ephemeris (Decision 26) has two foot-guns. (1) **Interpolation
+degree:** Orekit's `Ephemeris(states, N)` Hermite-fits degree (2N−1) through N nodes; over the WOD's
+~5-min/~22° spacing, N≥4 overshoots wildly *between* nodes (Runge) — nodes look exact while
+interpolated points fly to ~1e11 km. (2) **Illustrative deputies:** catalog deputies added onto a
+measured chief use current-epoch TLEs (months from the data window), so their in-window positions are
+co-planar but phase-approximate — not a real RPO pair.
+
+**Mitigation.**
+- Pin `EPHEMERIS_INTERP_POINTS = 2` (cubic Hermite w/ velocity — stable + accurate); regression test
+  `interpolatesStablyBetweenNodes` samples a circular orbit between nodes and fails on overshoot.
+- Document deputies-on-a-measured-chief as illustrative; a genuine measured pair needs two datasets
+  (slice 3).
+
+**Trigger.** An orbit rendering as huge crossing lines / radius far from ~Earth+altitude; a "measured"
+RPO geometry being trusted as truth when a deputy is a catalog TLE.
+
+---
+
+## R20 — Measured-attitude quaternion frame convention (Medium impact, until slice 2)
+
+**Description.** Slice 2 streams the satellite's measured `EST_ATTD` quaternion. Its frame convention
+(almost certainly ECI→body) must be converted to the project's three.js streaming convention
+(`FrameService.bodyQuaternionInLvlh`). A silent mismatch points the craft the wrong way — exactly the
+R15 frame-bug class, and consequential for an RPO/GN&C tool.
+
+**Mitigation.** Pin the conversion with a **signed-axis test** (as Phase 7 did for the modeled
+quaternion); cross-check against the star-tracker body-frame quaternion (`STS_BF_Q*`) as an independent
+source. Until slice 2 lands, measured craft keep the *modeled* LVLH attitude (R17).
+
+**Trigger.** A measured craft's body axes / FOV pointing disagreeing with its velocity/sensor geometry.
+
+---
+
 ## Watch list (not yet risks)
 
 Things to keep an eye on; promote to a numbered risk if they grow:

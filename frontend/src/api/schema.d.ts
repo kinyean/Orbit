@@ -116,6 +116,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/scenarios/import/measured": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["importMeasured"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/scenarios/{id}/versions/{v}": {
         parameters: {
             query?: never;
@@ -223,6 +239,7 @@ export interface components {
         InitialState: {
             kind?: string;
             tle?: components["schemas"]["Tle"];
+            datasetId?: string;
         };
         Maneuver: {
             id?: string;
@@ -338,6 +355,11 @@ export interface components {
             deputyNoradId?: number;
             /** Format: double */
             targetAltitudeKm?: number;
+        };
+        MeasuredImportRequest: {
+            path: string;
+            /** Format: int32 */
+            noradId?: number;
         };
         ScenarioSummary: {
             id?: string;
@@ -608,6 +630,30 @@ export interface operations {
         responses: {
             /** @description OK */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScenarioResponse"];
+                };
+            };
+        };
+    };
+    importMeasured: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MeasuredImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };

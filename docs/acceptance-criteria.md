@@ -497,6 +497,36 @@ cone); Sun occlusion / sun-keep-out (Phase 8); GPU-depth occlusion of the drawn 
 
 ---
 
+## Measured-data ingestion *(feature track — Decision 26, [measured-data-plan.md](./measured-data-plan.md))*
+
+> Slice 1 complete & verified end-to-end (2026-06-22). Backend 119 tests green; frontend
+> type-check + build green.
+
+**Slice 1 — reader → dataset → playable measured position** ✅
+- [x] `WodCsvReader` streams a WOD CSV → `MeasuredEphemeris` (6 ECI pos/vel channels, km→m,
+      invalid-(0,0,0) drop, timestamp-aligned, ascending, EME2000). Verified vs the file's own
+      ECEF channels (~1 m). (`WodCsvReaderTest`.)
+- [x] Samples frozen into an immutable, content-hashed `MeasuredDataset` (V5 `measured_dataset`
+      table; gzipped `bytea`, deterministic — `MeasuredDatasetCodecTest`); referenced by
+      `InitialState{kind:"ephemeris", datasetId}` (`ScenarioBody` schema v4, forward-additive).
+- [x] `POST /scenarios/import/measured {path, noradId?}` on the audited path (`IMPORT_MEASURED`);
+      path constrained to `orbit.import.allowed-root` (traversal → 422); NORAD auto-resolved from
+      the file name (override optional). `update()` preserves the ephemeris chief on edit.
+- [x] Served via Orekit tabulated `Ephemeris` in `prepareEphemerisRole` (per-role source, not a
+      `Fidelity`); stream/encoders unchanged. **Stable interpolation** (2-point cubic Hermite;
+      guarded by `interpolatesStablyBetweenNodes` against the Runge overshoot).
+- [x] Frontend: `importMeasuredScenario` + collapsible import UI in `ScenarioPanel`.
+- [x] Dev-stack: TELEOS-2 (570 MB) → 201 in ~3.2 s, 55,744 samples; orbit radius holds
+      ~6953 km; co-launch deputies (LUMELITE-4/POEM-2) show a real ~76 km closest approach;
+      bad/outside-root/blank path → 422.
+
+**Slice 2 — measured attitude** *(planned)* — extract `EST_ATTD_Q1..Q4`, `AttitudeProfile.mode="measured"`,
+SLERP in the stream; **pin the quaternion frame with a signed-axis test (R15)**.
+
+**Slice 3 — measured deputies / numerical handoff / OEM-AEM readers / browser upload** *(planned)*.
+
+---
+
 ## Phase 8 onwards
 
 Acceptance criteria for Phases 8–11 will be drafted when the respective

@@ -443,6 +443,97 @@
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
+.scenario-import {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(71, 85, 105, 0.35);
+}
+
+.scenario-import-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 0;
+  background: none;
+  border: none;
+  color: #93a4c8;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.scenario-import-toggle:hover {
+  color: #e2e8f0;
+}
+
+.scenario-import-caret {
+  width: 10px;
+  flex: 0 0 auto;
+  color: #64748b;
+}
+
+.scenario-import-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.scenario-import-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.scenario-import-path,
+.scenario-import-norad {
+  height: 26px;
+  padding: 0 8px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(71, 85, 105, 0.5);
+  border-radius: 6px;
+  color: #e2e8f0;
+  font-size: 11px;
+  box-sizing: border-box; /* keep width:100% / flex children inside the padded panel */
+}
+
+.scenario-import-path {
+  width: 100%;
+}
+
+.scenario-import-norad {
+  flex: 1 1 auto;
+  min-width: 0; /* allow the field to shrink so the button is never clipped */
+}
+
+.scenario-import-btn {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 14px;
+  background: rgba(56, 189, 248, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  border-radius: 6px;
+  color: #e2e8f0;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.scenario-import-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.scenario-import-hint {
+  font-size: 10px;
+  line-height: 1.4;
+  color: #64748b;
+}
+
+.scenario-import-err {
+  font-size: 11px;
+  color: #fca5a5;
+}
+
 .scenario-empty {
   font-size: 12px;
   color: #64748b;

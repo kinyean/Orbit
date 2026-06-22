@@ -45,6 +45,7 @@ considered**, **Consequences**.
 14. [Scenario data model: chief + deputies](#14-scenario-data-model-chief--deputies)
 15. [Data formats: TLE, CCSDS, Keplerian, CZML](#15-data-formats-tle-ccsds-keplerian-czml)
 19. [Scenario body schema v1 + persistence design (Phase 3A)](#19-scenario-body-schema-v1--persistence-design-phase-3a)
+26. [Measured-data ingestion: WOD CSV as an ephemeris-role scenario](#26-measured-data-ingestion-wod-csv-as-an-ephemeris-role-scenario)
 
 **Cross-cutting / enterprise**
 16. [Enterprise posture: professional-grade from the start](#16-enterprise-posture-professional-grade-from-the-start)
@@ -1144,6 +1145,93 @@ per-frame cost for an RPO tool whose working surface is the relative frame (Fran
 for that precision). Additive WebSocket-payload fields only — `VERSION` stays `"1"` (R12),
 determinism intact (R11), no REST/OpenAPI change (`gen:api` is a no-op), exactly like
 `chiefRadiusM` (Decision 23).
+
+---
+
+## 26. Measured-data ingestion: WOD CSV as an ephemeris-role scenario
+
+> (Decision 25 is reserved for Phase 8 — Environment & Events; see
+> [phase-8-plan.md](./phase-8-plan.md). This feature track is numbered 26 to avoid
+> renumbering that reserved entry.)
+
+**Context.** Real flight telemetry arrived mid-Phase-8: "Whole-Orbit Data" (WOD) CSV
+dumps from TELEOS-2 (1–7 Jan 2026, ~570 MB) carrying measured GNSS ECI position/
+velocity and ADCS attitude quaternions. Until now every scenario role was a *modeled*
+source (a frozen TLE propagated by SGP4/numerical/CW). We want to ingest measured data
+as a scenario so the real craft becomes a reference to compose RPO around — and to
+validate the propagators against truth (Frank, §5.2). This generalizes two deferred
+items: CCSDS OEM import (Decision 19 / US-SCN-06) and CCSDS AEM measured attitude
+(Decision 24 / R17).
+
+**Decision.** Sliced (see [measured-data-plan.md](./measured-data-plan.md)); slice 1
+landed the spine + measured position.
+- **One internal artifact, many readers.** A reader normalizes a measured file into a
+  frame-tagged `MeasuredEphemeris` (EME2000 pos/vel samples). `WodCsvReader` is the
+  first reader (streaming single-pass over the stacked-block WOD format; extracts the 6
+  ECI pos/vel channels, km→m, drops invalid `(0,0,0)` GNSS fixes, aligns by onboard
+  timestamp); CCSDS OEM/AEM readers can later feed the same artifact. Nothing downstream
+  sees the WOD format.
+- **Stored outside the jsonb body.** Samples are frozen into an immutable, content-hashed
+  `MeasuredDataset` (a gzipped `bytea` blob in a new `measured_dataset` table, V5); the
+  scenario role references it by id via `InitialState{kind:"ephemeris", datasetId}`
+  (schema **v4**, forward-additive). Deterministic blob → reproducible (R11), the
+  larger-artifact analogue of the frozen-TLE snapshot (Decision 19).
+- **Per-role source, not a new fidelity.** "Measured" is a property of a *role*
+  (`initialState.kind`), so a measured chief coexists with TLE/numerical deputies; the
+  `Fidelity` enum is untouched. `ScenarioStreamService.prepareRole` branches on `kind`
+  and serves the dataset through an Orekit tabulated **`Ephemeris`** (a
+  `PVCoordinatesProvider`) — the sampling/encoding/streaming pipeline is unchanged.
+- **Server-path import first.** Files already land on the server; a `POST /scenarios/
+  import/measured {path, noradId?}` reads server-side (path constrained to
+  `orbit.import.allowed-root`). Plain JSON → the generated client works, no multipart.
+  Browser upload is deferred (slice 3). NORAD is auto-resolved from the file's satellite
+  name via the catalog, with an optional override.
+- **Audited + edit-safe.** Import goes through the single `ScenarioService` path
+  (`IMPORT_MEASURED`). `update()` now MERGES against the current body so editing a
+  measured scenario preserves the ephemeris chief instead of rebuilding it from the
+  catalog (which would clobber it).
+
+**Why.** The internal artifact decouples format from use (WOD now, OEM/AEM later). A
+tabulated `Ephemeris` is the cheapest correct way to serve measured states through the
+existing decoupled stream (Decision 9 — the frontend still never propagates). Per-role
+`kind` (vs a scenario-wide fidelity) is what lets a real chief carry hypothetical or
+measured deputies. Freezing the samples (content-hashed) keeps a referencing scenario
+reproducible (R11). Server-path keeps slice 1 small and avoids 570 MB multipart plumbing.
+
+**Alternatives considered.** A scenario-wide `MEASURED` fidelity (rejected — a measured
+chief must coexist with non-measured deputies). Samples in the jsonb body (rejected —
+~55k samples; the body is small reproducible metadata). Convert WOD→OEM first and import
+via OEM (viable and still planned as a *second reader*, but the bespoke WOD format is the
+data we have now; the internal artifact means OEM is additive). Browser upload now
+(deferred — multipart limits + progress + async for a 570 MB file; the reader takes an
+`InputStream`, so it drops in later). Re-propagating instead of interpolating (rejected —
+the measured track IS the truth; within the window we interpolate, not propagate).
+
+**Consequences.** New `io/{WodCsvReader,MeasuredEphemeris}`, `scenario/{MeasuredDataset,
+MeasuredDatasetRepository,MeasuredDatasetCodec}`, `V5__measured_dataset.sql`, a REST
+endpoint (`gen:api` regenerated). `ScenarioBody` schema v4; `VERSION` stays `"1"` (R12,
+WebSocket payload unchanged). Partially resolves the Deferred "CCSDS OEM import" item
+(measured ephemeris generalizes it; standard OEM/AEM readers are slice 3) and sets up R17's
+final resolution (measured attitude is slice 2). The dev `docker-compose` bind-mounts the
+shared data folder read-only.
+
+**Addendum (the interpolation-degree bug — a 977-billion-km orbit).** Orekit's
+`Ephemeris(states, N)` fits a degree-(2N−1) Hermite (each state carries velocity) through N
+nodes. At the WOD's ~5-min / ~22°-of-arc spacing, N=4 (degree-7) **overshoots violently
+between nodes** (Runge phenomenon) — the nodes are exact (so `chiefRadiusM` and node-sampled
+checks looked right) but interpolated points flew to ~1e11 km, drawing the orbit as huge
+crossing lines with a tiny Earth. Fixed by **`EPHEMERIS_INTERP_POINTS = 2`** (cubic Hermite
+per segment: position + velocity at the two bracketing samples — stable and accurate for
+dense ephemeris). Pinned by a regression test (`interpolatesStablyBetweenNodes`) that samples
+a circular orbit BETWEEN nodes and fails on the overshoot. Also fixed the per-sample HOLD so a
+*leading* gap (the path margin before the first measured sample) retries until data starts,
+while a *trailing* decay still holds (the `firstValid >= 0` guard).
+
+**Addendum (illustrative catalog deputies).** Deputies added from the catalog onto a measured
+chief use current-epoch TLEs (months from the data window), so SGP4 in the window gives a
+co-planar but phase-approximate orbit — fine as an example (LUMELITE-4 / POEM-2 share TELEOS-2's
+PSLV-C55 plane; LUMELITE-4 makes a real ~76 km closest approach), but a genuine measured RPO
+pair needs two datasets (slice 3, R19).
 
 ---
 

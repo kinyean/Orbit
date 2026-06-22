@@ -22,6 +22,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import space.orbit.backend.catalog.CatalogService;
 import space.orbit.backend.catalog.TleSnapshot;
+import space.orbit.backend.io.WodCsvReader;
 
 /**
  * Service-layer behavior with mocked repos + catalog (no DB, no Orekit). Pins
@@ -38,14 +39,17 @@ class ScenarioServiceTests {
     @Mock private ScenarioRepository scenarios;
     @Mock private ScenarioVersionRepository versions;
     @Mock private AuditLogRepository auditLog;
+    @Mock private MeasuredDatasetRepository measuredDatasets;
     @Mock private UserService userService;
     @Mock private CatalogService catalog;
+    @Mock private WodCsvReader wodReader;
 
     private ScenarioService service;
 
     @BeforeEach
     void setUp() {
-        service = new ScenarioService(scenarios, versions, auditLog, userService, catalog, new ObjectMapper());
+        service = new ScenarioService(scenarios, versions, auditLog, measuredDatasets, userService, catalog,
+                wodReader, new ObjectMapper(), "/shared_folder");
         when(userService.currentUser()).thenReturn(new User(OWNER, "dev@orbit.local", List.of("admin")));
         when(scenarios.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
         when(scenarios.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -84,10 +88,20 @@ class ScenarioServiceTests {
     void updateCreatesMonotonicNextVersionAndTracksLatest() {
         UUID id = UUID.randomUUID();
         Scenario existing = new Scenario(id, OWNER, "Rendezvous");
-        existing.setLatestVersionId(UUID.randomUUID());
+        UUID priorVersionId = UUID.randomUUID();
+        existing.setLatestVersionId(priorVersionId);
         when(scenarios.findById(id)).thenReturn(Optional.of(existing));
         when(versions.findMaxVersionNo(id)).thenReturn(Optional.of(1));
         when(versions.countByScenarioId(id)).thenReturn(2L);
+        // update() now merges against the current body (to preserve measured roles),
+        // so it reads the latest version. Provide a plain TLE-chief prior body.
+        when(versions.findById(priorVersionId)).thenReturn(Optional.of(new ScenarioVersion(
+                priorVersionId, id, 1, OWNER,
+                "{\"schemaVersion\":4,\"fidelity\":\"sgp4\","
+                        + "\"timeRange\":{\"start\":\"2024-06-01T00:00:00Z\",\"end\":\"2024-06-02T00:00:00Z\"},"
+                        + "\"chief\":{\"role\":\"chief\",\"noradId\":25544,\"name\":\"ISS (ZARYA)\","
+                        + "\"initialState\":{\"kind\":\"tle\",\"tle\":{\"line1\":\"1 25544U L1\","
+                        + "\"line2\":\"2 25544 L2\",\"epoch\":\"2024-06-01T12:00:00.000\"}}},\"deputies\":[]}")));
 
         ScenarioResponse resp = service.update(id, draft("Rendezvous v2", 25544, List.of()));
 
@@ -170,7 +184,7 @@ class ScenarioServiceTests {
         ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
         verify(versions).saveAndFlush(vCap.capture());
         assertThat(vCap.getValue().getVersionNo()).isEqualTo(2);
-        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":3").contains("delta_v");
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":4").contains("delta_v");
         assertThat(s.getLatestVersionId()).isEqualTo(vCap.getValue().getId());
         verify(auditLog, times(1)).save(any());
 
@@ -190,8 +204,8 @@ class ScenarioServiceTests {
         ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
         verify(versions).saveAndFlush(vCap.capture());
         // The v1 body deserialized (null maneuvers/sensors → empty), then re-stamped to v3.
-        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":3").contains("delta_v");
-        assertThat(resp.body().schemaVersion()).isEqualTo(3);
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":4").contains("delta_v");
+        assertThat(resp.body().schemaVersion()).isEqualTo(4);
         assertThat(resp.body().chief().noradId()).isEqualTo(25544);
         assertThat(resp.body().deputies().get(0).maneuvers()).hasSize(1);
     }
@@ -273,7 +287,7 @@ class ScenarioServiceTests {
         ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
         verify(versions).saveAndFlush(vCap.capture());
         assertThat(vCap.getValue().getVersionNo()).isEqualTo(2);
-        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":3").contains("Imager");
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":4").contains("Imager");
         assertThat(s.getLatestVersionId()).isEqualTo(vCap.getValue().getId());
         verify(auditLog, times(1)).save(any());
         assertThat(resp.body().chief().sensors()).hasSize(1);

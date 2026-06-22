@@ -57,6 +57,18 @@ public class ScenarioController {
         return service.create(toDraft(req));
     }
 
+    /**
+     * Import a measured ephemeris (a WOD CSV already on the server) as a new
+     * scenario whose chief is the measured craft (US-SCN-06 generalized). JSON
+     * body — the file is read server-side from {@code path} (constrained to
+     * {@code orbit.import.allowed-root}); no upload. Returns the created scenario.
+     */
+    @PostMapping("/import/measured")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ScenarioResponse importMeasured(@Valid @RequestBody MeasuredImportRequest req) {
+        return service.importMeasured(req.path(), req.noradId());
+    }
+
     @GetMapping
     public List<ScenarioSummary> list() {
         return service.list();
@@ -153,6 +165,14 @@ public class ScenarioController {
     }
 
     public record TimeRangeRequest(@NotBlank String start, @NotBlank String end) {
+    }
+
+    /**
+     * Measured-data import payload. {@code path} is a server-side file path
+     * (within {@code orbit.import.allowed-root}); {@code noradId} is optional —
+     * used when the satellite name isn't resolvable from the catalog.
+     */
+    public record MeasuredImportRequest(@NotBlank String path, Integer noradId) {
     }
 
     public record RoleRef(@Positive int noradId) {

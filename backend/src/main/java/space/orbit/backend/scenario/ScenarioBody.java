@@ -34,8 +34,8 @@ public record ScenarioBody(
         Role chief,
         List<Role> deputies) {
 
-    /** The current body schema version (Phase 7: sensors + attitude). */
-    public static final int CURRENT_SCHEMA_VERSION = 3;
+    /** The current body schema version (v4: measured-ephemeris initial state). */
+    public static final int CURRENT_SCHEMA_VERSION = 4;
 
     /** ISO-8601 UTC start/end of the scenario's propagation window. */
     public record TimeRange(String start, String end) {}
@@ -83,8 +83,20 @@ public record ScenarioBody(
         }
     }
 
-    /** Initial-state source. Phase 3A: {@code kind = "tle"} only. */
-    public record InitialState(String kind, Tle tle) {}
+    /**
+     * Initial-state source. {@code kind = "tle"} carries a frozen {@link Tle}
+     * (Phase 3A). {@code kind = "ephemeris"} (v4) carries no TLE — instead a
+     * {@code datasetId} referencing a stored {@link MeasuredDataset} of real
+     * measured states, served via an Orekit tabulated ephemeris. Forward-additive:
+     * older bodies deserialize with {@code datasetId = null}.
+     */
+    public record InitialState(String kind, Tle tle, String datasetId) {
+
+        /** Convenience for TLE-sourced roles (no measured dataset). */
+        public InitialState(String kind, Tle tle) {
+            this(kind, tle, null);
+        }
+    }
 
     /** A frozen TLE (the two line strings + epoch). */
     public record Tle(String line1, String line2, String epoch) {}

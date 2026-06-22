@@ -48,6 +48,22 @@ frustum/polygonal FOV, and Sun occlusion / sun-keep-out (Phase 8). **Phase 8 nex
 environment & events (roadmap §8): Sun/Moon, eclipse, lighting, conjunctions. See
 Decision 24.
 
+**Measured-data ingestion — slice 1 complete (2026-06-22; feature track, not a roadmap
+phase).** Real flight telemetry (TELEOS-2 "Whole-Orbit Data" CSVs: measured GNSS ECI
+pos/vel + ADCS quaternions) imports as a scenario whose chief is the measured craft
+(read-only truth). `io/WodCsvReader` (streaming parse) → immutable content-hashed
+`MeasuredDataset` (`measured_dataset` table, V5; samples OUT of the jsonb body) →
+`InitialState{kind:"ephemeris", datasetId}` (`ScenarioBody` schema **v4**) → served via an
+Orekit tabulated `Ephemeris` in `ScenarioStreamService.prepareEphemerisRole` (the
+sampling/stream pipeline is unchanged — "measured" is a per-ROLE source, not a `Fidelity`).
+Server-path import (`POST /scenarios/import/measured {path,noradId?}`, path constrained to
+`orbit.import.allowed-root`); `update()` merges so editing preserves the ephemeris chief.
+Backend **119 tests green**, frontend green; verified end-to-end (570 MB → ~3.2 s; orbit
+radius holds ~6953 km). **Gotcha:** keep `EPHEMERIS_INTERP_POINTS = 2` — higher overshoots
+between nodes (Runge → 1e11 km orbit). **Slices 2–3 next:** measured attitude (R15 quaternion
+frame-pinning), measured deputies / numerical handoff / OEM-AEM readers / browser upload. See
+[measured-data-plan.md](docs/measured-data-plan.md), Decision 26.
+
 Per-phase detail lives in `docs/phase-*-plan.md` and the rationale in
 [decisions.md](docs/decisions.md); this is just the map of what exists:
 
@@ -144,6 +160,11 @@ maneuvers) go through the single audited `ScenarioService` path (Decision 16).
 - `docker compose down -v` — stop and wipe db.
 - Backend: http://localhost:8081  ·  Frontend: http://localhost:5174
   (host ports 8080 / 5173 are taken by other services on this shared box).
+- The backend mounts `/mnt/disk_large/shared_folder → /shared_folder:ro` (measured-data
+  import root, `orbit.import.allowed-root`). Import a measured CSV:
+  `curl -X POST localhost:8081/scenarios/import/measured -H 'Content-Type: application/json'
+  -d '{"path":"/shared_folder/<…>.csv"}'` (see [measured-data-plan.md](docs/measured-data-plan.md)).
+  `_teleos_samples/` holds throwaway sample CSVs (gitignored).
 
 ### Frontend (`frontend/`)
 - `npm run dev` — Vite dev server on port 5173 (inside container; 5174 from host).

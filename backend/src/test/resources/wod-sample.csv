@@ -1,0 +1,79 @@
+Satellite:,TELEOS-2-TEST
+
+
+Parameter No:,0x80000001
+Telemetry Mnemonic:,SW_TM_ODCS_GNSS_ECI_POS_X
+Component:,AOCSSWTMRAW
+Category:,software
+
+Data Order:,1,Data Mnemonic:,ODCS_GNSS_ECI_POS_X
+Data Value,Data Value Type,OBC Source,Virtual Channel,SID,Receive Timestamp (UTC),Cds Day,Cds Ms,Onboard Timestamp (UTC)
+"6953.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","0","01/01/2026 00:00:00"
+"6900.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","300000","01/01/2026 00:05:00"
+"6800.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","600000","01/01/2026 00:10:00"
+"0.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","900000","01/01/2026 00:15:00"
+"6700.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","1200000","01/01/2026 00:20:00"
+
+Parameter No:,0x80000002
+Telemetry Mnemonic:,SW_TM_ODCS_GNSS_ECI_POS_Y
+Component:,AOCSSWTMRAW
+Category:,software
+
+Data Order:,1,Data Mnemonic:,ODCS_GNSS_ECI_POS_Y
+Data Value,Data Value Type,OBC Source,Virtual Channel,SID,Receive Timestamp (UTC),Cds Day,Cds Ms,Onboard Timestamp (UTC)
+"0.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","0","01/01/2026 00:00:00"
+"500.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","300000","01/01/2026 00:05:00"
+"1000.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","600000","01/01/2026 00:10:00"
+"0.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","900000","01/01/2026 00:15:00"
+"1500.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","1200000","01/01/2026 00:20:00"
+
+Parameter No:,0x80000003
+Telemetry Mnemonic:,SW_TM_ODCS_GNSS_ECI_POS_Z
+Component:,AOCSSWTMRAW
+Category:,software
+
+Data Order:,1,Data Mnemonic:,ODCS_GNSS_ECI_POS_Z
+Data Value,Data Value Type,OBC Source,Virtual Channel,SID,Receive Timestamp (UTC),Cds Day,Cds Ms,Onboard Timestamp (UTC)
+"0.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","0","01/01/2026 00:00:00"
+"100.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","300000","01/01/2026 00:05:00"
+"200.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","600000","01/01/2026 00:10:00"
+"0.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","900000","01/01/2026 00:15:00"
+"300.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","1200000","01/01/2026 00:20:00"
+
+Parameter No:,0x80000004
+Telemetry Mnemonic:,SW_TM_ODCS_GNSS_ECI_VEL_X
+Component:,AOCSSWTMRAW
+Category:,software
+
+Data Order:,1,Data Mnemonic:,ODCS_GNSS_ECI_VEL_X
+Data Value,Data Value Type,OBC Source,Virtual Channel,SID,Receive Timestamp (UTC),Cds Day,Cds Ms,Onboard Timestamp (UTC)
+"0.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","0","01/01/2026 00:00:00"
+"-0.5","Double","2","1","2147483736","01/01/2026 01:00:00","16797","300000","01/01/2026 00:05:00"
+"-1.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","600000","01/01/2026 00:10:00"
+"0.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","900000","01/01/2026 00:15:00"
+"-1.5","Double","2","1","2147483736","01/01/2026 01:00:00","16797","1200000","01/01/2026 00:20:00"
+
+Parameter No:,0x80000005
+Telemetry Mnemonic:,SW_TM_ODCS_GNSS_ECI_VEL_Y
+Component:,AOCSSWTMRAW
+Category:,software
+
+Data Order:,1,Data Mnemonic:,ODCS_GNSS_ECI_VEL_Y
+Data Value,Data Value Type,OBC Source,Virtual Channel,SID,Receive Timestamp (UTC),Cds Day,Cds Ms,Onboard Timestamp (UTC)
+"7.5","Double","2","1","2147483736","01/01/2026 01:00:00","16797","0","01/01/2026 00:00:00"
+"7.4","Double","2","1","2147483736","01/01/2026 01:00:00","16797","300000","01/01/2026 00:05:00"
+"7.3","Double","2","1","2147483736","01/01/2026 01:00:00","16797","600000","01/01/2026 00:10:00"
+"0.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","900000","01/01/2026 00:15:00"
+"7.2","Double","2","1","2147483736","01/01/2026 01:00:00","16797","1200000","01/01/2026 00:20:00"
+
+Parameter No:,0x80000006
+Telemetry Mnemonic:,SW_TM_ODCS_GNSS_ECI_VEL_Z
+Component:,AOCSSWTMRAW
+Category:,software
+
+Data Order:,1,Data Mnemonic:,ODCS_GNSS_ECI_VEL_Z
+Data Value,Data Value Type,OBC Source,Virtual Channel,SID,Receive Timestamp (UTC),Cds Day,Cds Ms,Onboard Timestamp (UTC)
+"0.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","0","01/01/2026 00:00:00"
+"0.2","Double","2","1","2147483736","01/01/2026 01:00:00","16797","300000","01/01/2026 00:05:00"
+"0.4","Double","2","1","2147483736","01/01/2026 01:00:00","16797","600000","01/01/2026 00:10:00"
+"0.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","900000","01/01/2026 00:15:00"

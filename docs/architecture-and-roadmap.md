@@ -373,6 +373,14 @@ Sliced into **3A** (scenario composition on SGP4) then **3B** (physics depth).
 - PNG snapshots + MP4 sequence export from rendered canvases.
 - OpenAPI docs polish; user guide.
 
+### Measured-data ingestion *(feature track, off the phase line — Decision 26)*
+Real measured telemetry (WOD CSV: GNSS ECI pos/vel + ADCS quaternions) imported as a
+scenario whose chief is the measured craft (read-only truth), served via an Orekit
+tabulated ephemeris through the existing stream. Generalizes the deferred CCSDS OEM
+import (Decision 19) + AEM attitude (Decision 24). **Slice 1 done** (position);
+slices 2–3 (attitude; measured deputies / numerical handoff / OEM-AEM readers / upload)
+in [measured-data-plan.md](./measured-data-plan.md).
+
 ---
 
 ## 8. What carries over from the Phase-0 scaffold

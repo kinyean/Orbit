@@ -159,6 +159,8 @@ export interface State {
   saveScenario: (name: string) => Promise<void>;
   loadScenario: (id: string) => Promise<void>;
   deleteScenario: (id: string) => Promise<void>;
+  /** Import a measured ephemeris (server-side WOD CSV path) → new scenario, then load it. */
+  importMeasuredScenario: (path: string, noradId?: number) => Promise<void>;
   /** Stop streaming the loaded scenario and return to the live catalog regime. */
   closeScenario: () => void;
 
@@ -504,6 +506,19 @@ export const useStore = create<State>((set, get) => ({
       get().closeScenario();
     }
     await get().loadScenarios();
+  },
+
+  importMeasuredScenario: async (path, noradId) => {
+    const body: { path: string; noradId?: number } = { path };
+    if (typeof noradId === 'number' && Number.isFinite(noradId)) body.noradId = noradId;
+    const { data, error } = await api.POST('/scenarios/import/measured', { body });
+    if (error || !data) {
+      const msg = (error as { message?: string } | undefined)?.message ?? 'Measured-data import failed';
+      set({ scenarioStreamError: msg });
+      throw error ?? new Error('Import failed');
+    }
+    await get().loadScenarios();
+    if (data.id) await get().loadScenario(data.id); // lands in the composer + plays the real track
   },
 
   addManeuver: async (deputyNoradId, epoch, dv) => {

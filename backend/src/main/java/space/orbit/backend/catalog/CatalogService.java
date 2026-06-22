@@ -361,4 +361,22 @@ public class CatalogService {
     public Optional<TleSnapshot> findSnapshot(int noradId) {
         return Optional.ofNullable(snapshotsByNorad.get(noradId));
     }
+
+    /**
+     * Resolve a NORAD id from a satellite display name (case-insensitive exact
+     * match against the current catalog). Used by measured-data import to map a
+     * WOD file's {@code Satellite:} name (e.g. {@code TELEOS-2}) to its catalog id;
+     * empty if the name isn't in the in-memory catalog (the caller can fall back
+     * to a user-supplied id).
+     */
+    public Optional<Integer> findNoradByName(String name) {
+        if (name == null || name.isBlank()) {
+            return Optional.empty();
+        }
+        String target = name.trim();
+        return snapshotsByNorad.values().stream()
+                .filter(s -> s.name() != null && s.name().trim().equalsIgnoreCase(target))
+                .map(TleSnapshot::noradId)
+                .findFirst();
+    }
 }

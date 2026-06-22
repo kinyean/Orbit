@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
 import { useCollapsed } from '../lib/usePanelChrome';
 
@@ -25,6 +25,7 @@ export default function ScenarioPanel() {
   const loadScenario = useStore((s) => s.loadScenario);
   const deleteScenario = useStore((s) => s.deleteScenario);
   const saveScenario = useStore((s) => s.saveScenario);
+  const importMeasuredScenario = useStore((s) => s.importMeasuredScenario);
   const closeScenario = useStore((s) => s.closeScenario);
   const setComposerTimeRange = useStore((s) => s.setComposerTimeRange);
   const setComposerFidelity = useStore((s) => s.setComposerFidelity);
@@ -64,6 +65,32 @@ export default function ScenarioPanel() {
     const curStart = composer.start ?? new Date().toISOString();
     const curEnd = composer.end ?? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     setComposerTimeRange(which === 'start' ? iso : curStart, which === 'end' ? iso : curEnd);
+  }
+
+  // Measured-data import: a server-side WOD CSV path → a new scenario whose chief
+  // is the measured craft (read-only truth). The reader runs backend-side.
+  const [importOpen, setImportOpen] = useState(false);
+  const [importPath, setImportPath] = useState('');
+  const [importNorad, setImportNorad] = useState('');
+  const [importBusy, setImportBusy] = useState(false);
+  const [importErr, setImportErr] = useState<string | null>(null);
+
+  async function onImport() {
+    const path = importPath.trim();
+    if (!path) return;
+    const noradStr = importNorad.trim();
+    const noradNum = noradStr ? Number(noradStr) : undefined;
+    setImportBusy(true);
+    setImportErr(null);
+    try {
+      await importMeasuredScenario(path, Number.isFinite(noradNum) ? noradNum : undefined);
+      setImportPath('');
+      setImportNorad('');
+    } catch (e) {
+      setImportErr((e as { message?: string })?.message ?? 'Import failed');
+    } finally {
+      setImportBusy(false);
+    }
   }
 
   const canSave = composer.isDirty && composer.chiefId !== null;
@@ -120,6 +147,52 @@ export default function ScenarioPanel() {
       {loadedScenario && (
         <div className="scenario-playing">▶ Playing: {loadedScenario.name}</div>
       )}
+
+      <div className="scenario-import">
+        <button
+          className="scenario-import-toggle"
+          onClick={() => setImportOpen((o) => !o)}
+          title="Import a measured-telemetry CSV from the server"
+        >
+          <span className="scenario-import-caret">{importOpen ? '▾' : '▸'}</span>
+          Import measured data
+        </button>
+        {importOpen && (
+          <div className="scenario-import-body">
+            <input
+              type="text"
+              className="scenario-import-path"
+              placeholder="Server CSV path (e.g. /shared_folder/…)"
+              value={importPath}
+              onChange={(e) => setImportPath(e.target.value)}
+              disabled={importBusy}
+            />
+            <div className="scenario-import-row">
+              <input
+                type="number"
+                className="scenario-import-norad"
+                placeholder="NORAD (auto)"
+                title="Optional. Auto-detected from the file's satellite name; set it only to override or if the name isn't in the catalog."
+                value={importNorad}
+                onChange={(e) => setImportNorad(e.target.value)}
+                disabled={importBusy}
+              />
+              <button
+                className="scenario-import-btn"
+                onClick={() => void onImport()}
+                disabled={importBusy || !importPath.trim()}
+              >
+                {importBusy ? '…' : 'Import'}
+              </button>
+            </div>
+            <div className="scenario-import-hint">
+              Reads a measured-ephemeris CSV on the server into a new scenario (the
+              craft becomes a read-only chief). NORAD is auto-detected from the file.
+            </div>
+            {importErr && <div className="scenario-import-err">{importErr}</div>}
+          </div>
+        )}
+      </div>
 
       {scenarios.length === 0 ? (
         <div className="scenario-empty">No saved scenarios</div>

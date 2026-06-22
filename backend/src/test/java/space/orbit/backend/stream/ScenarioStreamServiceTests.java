@@ -21,6 +21,7 @@ import space.orbit.backend.prop.OrekitTestData;
 import space.orbit.backend.prop.PropagationService;
 import space.orbit.backend.prop.SatellitePropagator;
 import space.orbit.backend.prop.TleFactory;
+import space.orbit.backend.scenario.MeasuredDatasetRepository;
 import space.orbit.backend.scenario.ScenarioBody;
 import space.orbit.backend.scenario.ScenarioService;
 
@@ -50,7 +51,8 @@ class ScenarioStreamServiceTests {
         PropagationService prop = new PropagationService(
                 new SatellitePropagator(frames), new NumericalPropagation(frames), frames);
         ScenarioStreamService svc = new ScenarioStreamService(
-                scenarioService, prop, frames, new CzmlEncoder(), new RelativeStateEncoder(), props);
+                scenarioService, prop, frames, new CzmlEncoder(), new RelativeStateEncoder(), props,
+                mock(MeasuredDatasetRepository.class));
         svc.init();
         return svc;
     }

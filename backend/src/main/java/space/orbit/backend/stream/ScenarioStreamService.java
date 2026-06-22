@@ -11,11 +11,16 @@ import org.hipparchus.geometry.euclidean.threed.Vector3D;
 import org.orekit.errors.OrekitException;
 import org.orekit.frames.Frame;
 import org.orekit.frames.Transform;
+import org.orekit.orbits.CartesianOrbit;
+import org.orekit.orbits.KeplerianOrbit;
 import org.orekit.propagation.Propagator;
+import org.orekit.propagation.SpacecraftState;
+import org.orekit.propagation.analytical.Ephemeris;
 import org.orekit.propagation.analytical.tle.TLE;
 import org.orekit.time.AbsoluteDate;
 import org.orekit.time.TimeScale;
 import org.orekit.time.TimeScalesFactory;
+import org.orekit.utils.Constants;
 import org.orekit.utils.PVCoordinates;
 import org.orekit.utils.PVCoordinatesProvider;
 import org.springframework.context.annotation.DependsOn;
@@ -23,11 +28,15 @@ import org.springframework.stereotype.Service;
 import space.orbit.backend.analysis.SampledCraft;
 import space.orbit.backend.analysis.SensorEvent;
 import space.orbit.backend.analysis.SensorEventComputer;
+import space.orbit.backend.io.MeasuredEphemeris;
 import space.orbit.backend.prop.CwPropagation;
 import space.orbit.backend.prop.Fidelity;
 import space.orbit.backend.prop.FrameService;
 import space.orbit.backend.prop.Impulse;
 import space.orbit.backend.prop.PropagationService;
+import space.orbit.backend.scenario.MeasuredDataset;
+import space.orbit.backend.scenario.MeasuredDatasetCodec;
+import space.orbit.backend.scenario.MeasuredDatasetRepository;
 import space.orbit.backend.scenario.ScenarioBody;
 import space.orbit.backend.scenario.ScenarioService;
 
@@ -53,6 +62,7 @@ public class ScenarioStreamService {
     private final CzmlEncoder encoder;
     private final RelativeStateEncoder relativeEncoder;
     private final ScenarioStreamProperties props;
+    private final MeasuredDatasetRepository measuredDatasets;
 
     private TimeScale utc;
     private SensorEventComputer sensorEvents;
@@ -62,13 +72,15 @@ public class ScenarioStreamService {
                                  FrameService frames,
                                  CzmlEncoder encoder,
                                  RelativeStateEncoder relativeEncoder,
-                                 ScenarioStreamProperties props) {
+                                 ScenarioStreamProperties props,
+                                 MeasuredDatasetRepository measuredDatasets) {
         this.scenarioService = scenarioService;
         this.propagationService = propagationService;
         this.frames = frames;
         this.encoder = encoder;
         this.relativeEncoder = relativeEncoder;
         this.props = props;
+        this.measuredDatasets = measuredDatasets;
     }
 
     @PostConstruct
@@ -231,8 +243,12 @@ public class ScenarioStreamService {
                             maxSeparation = Math.max(maxSeparation, d);
                         }
                     } catch (OrekitException leftDomain) {
-                        // decayed / re-entered: HOLD the rest, stop re-propagating (costly).
-                        decayed = true;
+                        // Trailing decay/re-entry (we already have a valid sample): HOLD the
+                        // rest, stop re-propagating (costly). A leading gap (no valid sample
+                        // yet — e.g. margin before a measured ephemeris starts) keeps trying.
+                        if (firstValid >= 0) {
+                            decayed = true;
+                        }
                     }
                 }
                 s[base + 1] = hR;
@@ -333,7 +349,10 @@ public class ScenarioStreamService {
                         firstValid = k;
                     }
                 } catch (OrekitException leftDomain) {
-                    decayed = true;
+                    // Same leading-gap vs trailing-decay handling as the position sampler.
+                    if (firstValid >= 0) {
+                        decayed = true;
+                    }
                 }
             }
             a[k * ATT_STRIDE + 1] = hqx;
@@ -442,6 +461,10 @@ public class ScenarioStreamService {
                                 double periodSeconds, double eccentricity, double inclinationDeg) {}
 
     private PreparedRole prepareRole(ScenarioBody.Role role, Fidelity fidelity) {
+        ScenarioBody.InitialState state = role.initialState();
+        if (state != null && "ephemeris".equals(state.kind())) {
+            return prepareEphemerisRole(role, state.datasetId());
+        }
         TLE tle = rebuildTle(role);
         // A maneuvered role is propagated numerically with the impulses attached
         // (Phase 5B); the 3-arg overload no-ops to the plain dispatch when empty.
@@ -449,6 +472,58 @@ public class ScenarioStreamService {
         // Orbital period from the TLE mean motion (rad/s); ≥60 s guards odd elements.
         double periodSeconds = Math.max(60.0, 2.0 * Math.PI / tle.getMeanMotion());
         return new PreparedRole(role, propagator, periodSeconds, tle.getE(), Math.toDegrees(tle.getI()));
+    }
+
+    /**
+     * Interpolation points for the tabulated measured ephemeris. Each sample carries
+     * velocity, so TWO points give a cubic Hermite per segment — accurate for dense
+     * (~5 min) LEO ephemeris and, crucially, STABLE. More points raise the polynomial
+     * degree (4 pts ⇒ degree-7) which, over ~20° of arc per step, overshoots wildly
+     * between nodes (Runge oscillation → positions blowing up to ~1e11 km even though
+     * the nodes are exact). Keep this at 2.
+     */
+    private static final int EPHEMERIS_INTERP_POINTS = 2;
+
+    /**
+     * Prepare a role backed by a stored measured ephemeris (Decision: measured-data
+     * ingestion): decode the dataset's samples into Orekit {@link SpacecraftState}s
+     * (EME2000) and serve them through a tabulated {@link Ephemeris} — a
+     * {@link PVCoordinatesProvider}, so the sampling loop is unchanged. Outside the
+     * data window the ephemeris throws; the per-sample HOLD in {@link #sampleRole}
+     * (leading gap retries until data starts, trailing holds the last state) covers
+     * the margin. Period/inclination/eccentricity come from the first state.
+     */
+    private PreparedRole prepareEphemerisRole(ScenarioBody.Role role, String datasetId) {
+        if (datasetId == null || datasetId.isBlank()) {
+            throw new ScenarioStreamUnprocessableException(
+                    "ephemeris role " + role.noradId() + " has no datasetId");
+        }
+        MeasuredDataset ds;
+        try {
+            ds = measuredDatasets.findById(UUID.fromString(datasetId))
+                    .orElseThrow(() -> new ScenarioStreamUnprocessableException(
+                            "measured dataset " + datasetId + " not found"));
+        } catch (IllegalArgumentException badUuid) {
+            throw new ScenarioStreamUnprocessableException("invalid datasetId \"" + datasetId + "\"");
+        }
+        List<MeasuredEphemeris.Sample> samples = MeasuredDatasetCodec.decode(ds.getSamples());
+        if (samples.size() < 2) {
+            throw new ScenarioStreamUnprocessableException(
+                    "measured dataset " + datasetId + " has too few states");
+        }
+        Frame eci = frames.eci();
+        double mu = Constants.WGS84_EARTH_MU;
+        List<SpacecraftState> states = new ArrayList<>(samples.size());
+        for (MeasuredEphemeris.Sample s : samples) {
+            AbsoluteDate date = new AbsoluteDate(Instant.ofEpochMilli(s.epochMillis()), utc);
+            PVCoordinates pv = new PVCoordinates(
+                    new Vector3D(s.px(), s.py(), s.pz()), new Vector3D(s.vx(), s.vy(), s.vz()));
+            states.add(new SpacecraftState(new CartesianOrbit(pv, eci, date, mu)));
+        }
+        Ephemeris ephemeris = new Ephemeris(states, Math.min(EPHEMERIS_INTERP_POINTS, states.size()));
+        KeplerianOrbit k0 = new KeplerianOrbit(states.get(0).getOrbit());
+        double periodSeconds = Math.max(60.0, k0.getKeplerianPeriod());
+        return new PreparedRole(role, ephemeris, periodSeconds, k0.getE(), Math.toDegrees(k0.getI()));
     }
 
     /**
@@ -525,9 +600,13 @@ public class ScenarioStreamService {
                         firstValid = k;
                     }
                 } catch (OrekitException leftDomain) {
-                    // decayed / re-entered: HOLD the last valid point for the rest. Stop
-                    // calling the propagator — past decay every call re-fails (costly).
-                    decayed = true;
+                    // Trailing decay/re-entry (we already have a valid sample): HOLD the last
+                    // valid point and stop re-propagating — past decay every call re-fails
+                    // (costly). A leading gap (no valid sample yet — e.g. the margin before a
+                    // measured ephemeris's first sample) keeps trying until valid data starts.
+                    if (firstValid >= 0) {
+                        decayed = true;
+                    }
                 }
             }
             cartesian[base + 1] = hx;

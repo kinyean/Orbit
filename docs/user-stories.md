@@ -509,6 +509,27 @@ be expanded as we approach them.
 
 ---
 
+# Measured-data ingestion *(feature track — Decision 26, [measured-data-plan.md](./measured-data-plan.md))*
+
+### US-IO-03 — As Frank, I want to import a measured ephemeris (WOD CSV) as a scenario, so I can analyze/validate against the real flown trajectory. ✅ (slice 1)
+*Acceptance:* server-path `POST /scenarios/import/measured` reads a WOD CSV (constrained to
+`orbit.import.allowed-root`), creates a scenario whose chief is the measured craft
+(`kind:"ephemeris"`, read-only truth; window = data span); the global/proximity views play the
+real orbit. NORAD auto-resolved from the file name (override optional). Audited (`IMPORT_MEASURED`);
+editing preserves the ephemeris chief.
+*Maps to:* [UC-3](./use-cases.md), [UC-8](./use-cases.md); SRS §3.10.3, §4.1.2 (generalizes US-SCN-06).
+
+### US-IO-04 — As Gita, I want imported measured attitude (quaternions) to drive orientation/FOV, so coverage reflects how the craft actually pointed. *(slice 2)*
+*Acceptance:* `EST_ATTD_Q1..Q4` ingested; `AttitudeProfile.mode="measured"` SLERP-streamed; legend
+reads "measured"; quaternion frame pinned by a signed-axis test (R15/R20).
+
+### US-IO-05 — As Frank, I want a real measured chief+deputy pair and OEM/AEM import + browser upload. *(slice 3)*
+*Acceptance:* import a dataset as a deputy (two measured craft = a real RPO pair); numerical handoff
+beyond the data window; CCSDS OEM/AEM readers feed the same artifact; large files uploadable from the
+browser (progress).
+
+---
+
 ## Traceability
 
 Every story should map to at least one [use case](./use-cases.md) and at least
