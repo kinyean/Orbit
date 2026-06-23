@@ -43,4 +43,26 @@ class WodCsvReaderTest {
                 assertThat(Math.sqrt(x.px() * x.px() + x.py() * x.py() + x.pz() * x.pz()))
                         .isGreaterThan(6_000_000.0));
     }
+
+    @Test
+    void parsesMeasuredAttitudeAsAParallelSeries() throws Exception {
+        MeasuredEphemeris eph;
+        try (InputStream in = getClass().getResourceAsStream("/wod-sample.csv")) {
+            eph = new WodCsvReader().parse(in);
+        }
+
+        List<MeasuredEphemeris.AttitudeSample> q = eph.attitude();
+        // 4 EST_ATTD timestamps: 00:00 (identity) and 00:05 (0.5,0.5,0.5,0.5) are valid;
+        // 00:10 is all-zero (non-unit → dropped); 00:15 lacks Q4 (misaligned → dropped).
+        assertThat(q).hasSize(2);
+        assertThat(q).isSortedAccordingTo((a, b) -> Long.compare(a.epochMillis(), b.epochMillis()));
+
+        // Components are kept RAW, in Q1..Q4 order (interpretation is downstream).
+        assertThat(q.get(0).q1()).isCloseTo(0.0, within(1e-9));
+        assertThat(q.get(0).q4()).isCloseTo(1.0, within(1e-9));
+        assertThat(q.get(1).q1()).isCloseTo(0.5, within(1e-9));
+        assertThat(q.get(1).q2()).isCloseTo(0.5, within(1e-9));
+        assertThat(q.get(1).q3()).isCloseTo(0.5, within(1e-9));
+        assertThat(q.get(1).q4()).isCloseTo(0.5, within(1e-9));
+    }
 }

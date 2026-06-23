@@ -1233,6 +1233,35 @@ co-planar but phase-approximate orbit — fine as an example (LUMELITE-4 / POEM-
 PSLV-C55 plane; LUMELITE-4 makes a real ~76 km closest approach), but a genuine measured RPO
 pair needs two datasets (slice 3, R19).
 
+**Addendum (slice 2 — measured attitude, 2026-06-22).** The measured craft now flies its **real
+orientation**, not the modeled LVLH estimate (resolves R17 for measured craft; lighting stays
+Phase 8). `WodCsvReader` extracts `EST_ATTD_Q1..Q4` as a **parallel attitude series** (its own
+timestamps — the ADCS cadence differs from GNSS — kept raw, non-unit rows dropped);
+`MeasuredDatasetCodec` stores it behind a **backward-compatible version sentinel** (leading
+negative int = v2; legacy position-only blobs still decode), opaque `bytea`, no migration.
+`AttitudeProfile.mode = "measured"` (set on the chief at import; resolves to the role's dataset, no
+new id; shape unchanged so `schemaVersion` stays 4; `resolveRole` preserves it on edit). Streaming
+**reuses the existing `"fixed"` attitude path**: `prepareEphemerisRole` converts the raw quaternions
+to a body→ECI three.js series, and a shared `bodyAttitude` helper **SLERPs** it (via the extracted
+`prop/QuaternionSamples`, also used by `SensorEventComputer`) and feeds it as a per-step `fixedQuat`
+— so measured and modeled attitude share one code path; additive (`VERSION="1"`, R12) and
+deterministic (R11).
+
+*The convention (R15/R20) was resolved empirically*, not from a spec (none existed — only the CSV):
+the quaternion is **unit and ECI-referenced** (the recurring "home" value is held at many orbit
+positions = a fixed inertial attitude), `EST_ATTD` ≡ the star-tracker `STS_BF` (one convention), and
+**scalar-last (Q4 = scalar), body→ECI** is favored by both the pointing-geometry analysis and the
+only positive correlation in the `FOG_RATE_BF` angular-velocity cross-check. Because three.js
+`(x,y,z,w)` is also scalar-last, the converter (`prop/MeasuredAttitude`) is the identity reorder
+`(Q1,Q2,Q3,Q4)`, **pinned by a signed-axis test** and **flippable via two named constants** if the
+dev-stack visual shows a mirror/inverse. (The gyro *magnitude* test was inconclusive — attitude is
+5-min sampled while slews are fast; a data limitation, not the convention — so the final physical
+confirmation is visual.) Frontend: orientation already SLERP-consumes the streamed `att`; added a
+toggleable **body-axis triad** (the model is too symmetric and a far craft is just a marker dot, so
+attitude was effectively invisible without it) and a "measured" legend label. Verified on the dev
+stack (re-import → chief `attitude.mode=measured`; the relative frame carries the chief's varying
+measured `att`).
+
 ---
 
 # Superseded decisions (pre-SRS pivot)

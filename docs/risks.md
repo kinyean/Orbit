@@ -340,8 +340,14 @@ the acquisition-event detector (one source of truth) — the legend reads "model
 real spacecraft can point any way it likes regardless of its orbit. Articulation is still
 a parked pose, and **lighting is still flat** (the Sun vector / terminator is Phase 8).
 
-**Trigger.** Any analysis or decision that relies on *measured* pointing (vs the LVLH
-model) or on illumination before AEM attitude / the Phase 8 Sun vector land.
+**Status (measured-data slice 2, 2026-06-22).** Orientation is now **measured** for an imported
+measured craft — its real `EST_ATTD` telemetry quaternion drives the model/FOV (`AttitudeProfile.mode
+="measured"`, SLERP-streamed; see Decision 26 slice-2 addendum, R20). So for measured scenarios this
+risk is closed for orientation (a body-axis triad makes it legible); modeled scenarios remain
+LVLH-modeled, and **lighting is still flat** for all (Sun vector / terminator is Phase 8).
+
+**Trigger.** Reliance on *measured* pointing for a non-measured (modeled) craft, or on illumination
+before the Phase 8 Sun vector lands.
 
 ---
 
@@ -383,18 +389,28 @@ RPO geometry being trusted as truth when a deputy is a catalog TLE.
 
 ---
 
-## R20 — Measured-attitude quaternion frame convention (Medium impact, until slice 2)
+## R20 — Measured-attitude quaternion frame convention (Medium impact — largely RESOLVED, slice 2)
 
 **Description.** Slice 2 streams the satellite's measured `EST_ATTD` quaternion. Its frame convention
-(almost certainly ECI→body) must be converted to the project's three.js streaming convention
+must be converted to the project's three.js streaming convention
 (`FrameService.bodyQuaternionInLvlh`). A silent mismatch points the craft the wrong way — exactly the
 R15 frame-bug class, and consequential for an RPO/GN&C tool.
 
-**Mitigation.** Pin the conversion with a **signed-axis test** (as Phase 7 did for the modeled
-quaternion); cross-check against the star-tracker body-frame quaternion (`STS_BF_Q*`) as an independent
-source. Until slice 2 lands, measured craft keep the *modeled* LVLH attitude (R17).
+**Mitigation.** Pinned the conversion with a **signed-axis test** (`MeasuredAttitudeTest`, as Phase 7
+did for the modeled quaternion); the converter (`prop/MeasuredAttitude`) is a single function with the
+two convention choices as **named, one-line-flippable constants**.
 
-**Trigger.** A measured craft's body axes / FOV pointing disagreeing with its velocity/sensor geometry.
+**Status (slice 2 ✅, 2026-06-22).** Resolved empirically from the TELEOS-2 telemetry (no vendor spec):
+the quaternion is **unit, ECI-referenced** (the recurring "home" value is held inertially across orbit
+positions), `EST_ATTD` ≡ the star-tracker `STS_BF` (one convention), and **scalar-last (Q4 = scalar),
+body→ECI** is favored by the pointing geometry AND the only positive `FOG_RATE_BF` angular-velocity
+correlation ⇒ converter = identity reorder `(Q1,Q2,Q3,Q4)`. **Residual:** the gyro *magnitude* test was
+inconclusive (attitude is 5-min sampled but slews are fast — a data limitation, not the convention), so
+the **physical** direction (not mirrored/inverted) is confirmed **visually** on the dev stack; if wrong,
+flip `MeasuredAttitude.SCALAR_LAST`/`CONJUGATE` (one line). The body-axis triad makes this readable.
+
+**Trigger.** A measured craft's body axes / FOV pointing disagreeing with its velocity/sensor geometry
+in the proximity view (then flip a convention constant and re-check).
 
 ---
 

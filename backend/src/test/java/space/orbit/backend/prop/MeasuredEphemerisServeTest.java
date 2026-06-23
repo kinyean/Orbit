@@ -66,6 +66,49 @@ class MeasuredEphemerisServeTest {
     }
 
     /**
+     * The measured-attitude serving math (slice 2): the parsed raw quaternions are
+     * converted to body→ECI three.js order and SLERP-served. At a node, the served
+     * quaternion equals the converted raw one; between nodes it stays unit-length.
+     * Mirrors {@code ScenarioStreamService.buildMeasuredAttitude} + {@code bodyAttitude}.
+     */
+    @Test
+    void measuredAttitudeSlerpsTheConvertedQuaternion() throws Exception {
+        MeasuredEphemeris eph;
+        try (InputStream in = getClass().getResourceAsStream("/wod-sample.csv")) {
+            eph = new WodCsvReader().parse(in);
+        }
+        List<MeasuredEphemeris.AttitudeSample> att = eph.attitude();
+        assertThat(att).hasSize(2);
+
+        // Build the stride-5 [absEpochSec, qx,qy,qz,qw, ...] series (as the stream does).
+        double[] series = new double[att.size() * QuaternionSamples.STRIDE];
+        for (int i = 0; i < att.size(); i++) {
+            MeasuredEphemeris.AttitudeSample a = att.get(i);
+            double[] q = MeasuredAttitude.wodEstAttdToBodyEciXyzw(a.q1(), a.q2(), a.q3(), a.q4());
+            int b = i * QuaternionSamples.STRIDE;
+            series[b] = a.epochMillis() / 1000.0;
+            series[b + 1] = q[0];
+            series[b + 2] = q[1];
+            series[b + 3] = q[2];
+            series[b + 4] = q[3];
+        }
+
+        // At the second node, the served quaternion is exactly the converted raw one.
+        double[] out = new double[4];
+        QuaternionSamples.sampleAt(series, att.get(1).epochMillis() / 1000.0, out);
+        double[] expected = MeasuredAttitude.wodEstAttdToBodyEciXyzw(0.5, 0.5, 0.5, 0.5);
+        for (int i = 0; i < 4; i++) {
+            assertThat(out[i]).isCloseTo(expected[i], within(1e-9));
+        }
+
+        // Halfway between the two nodes the SLERP result stays unit-length.
+        double mid = (att.get(0).epochMillis() + att.get(1).epochMillis()) / 2000.0;
+        QuaternionSamples.sampleAt(series, mid, out);
+        assertThat(Math.sqrt(out[0] * out[0] + out[1] * out[1] + out[2] * out[2] + out[3] * out[3]))
+                .isCloseTo(1.0, within(1e-9));
+    }
+
+    /**
      * Regression guard for the Runge-overshoot bug: a tabulated ephemeris of a real
      * circular orbit must stay on the circle BETWEEN sample nodes, not just at them.
      * With too many interpolation points (e.g. 4 over ~5-min/~22° spacing) the

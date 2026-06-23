@@ -77,3 +77,50 @@ Data Value,Data Value Type,OBC Source,Virtual Channel,SID,Receive Timestamp (UTC
 "0.2","Double","2","1","2147483736","01/01/2026 01:00:00","16797","300000","01/01/2026 00:05:00"
 "0.4","Double","2","1","2147483736","01/01/2026 01:00:00","16797","600000","01/01/2026 00:10:00"
 "0.0","Double","2","1","2147483736","01/01/2026 01:00:00","16797","900000","01/01/2026 00:15:00"
+
+Parameter No:,0x80000007
+Telemetry Mnemonic:,SW_TM_ADCS_EST_ATTD_Q1_8
+Component:,AOCSSWTMPROC
+Category:,software
+
+Data Order:,1,Data Mnemonic:,ADCS_EST_ATTD_Q1_8
+Data Value,Data Value Type,OBC Source,Virtual Channel,SID,Receive Timestamp (UTC),Cds Day,Cds Ms,Onboard Timestamp (UTC)
+"0.0","Float","2","1","2147483737","01/01/2026 01:00:00","16797","0","01/01/2026 00:00:00"
+"0.5","Float","2","1","2147483737","01/01/2026 01:00:00","16797","300000","01/01/2026 00:05:00"
+"0.0","Float","2","1","2147483737","01/01/2026 01:00:00","16797","600000","01/01/2026 00:10:00"
+"0.123","Float","2","1","2147483737","01/01/2026 01:00:00","16797","900000","01/01/2026 00:15:00"
+
+Parameter No:,0x80000008
+Telemetry Mnemonic:,SW_TM_ADCS_EST_ATTD_Q2_8
+Component:,AOCSSWTMPROC
+Category:,software
+
+Data Order:,1,Data Mnemonic:,ADCS_EST_ATTD_Q2_8
+Data Value,Data Value Type,OBC Source,Virtual Channel,SID,Receive Timestamp (UTC),Cds Day,Cds Ms,Onboard Timestamp (UTC)
+"0.0","Float","2","1","2147483737","01/01/2026 01:00:00","16797","0","01/01/2026 00:00:00"
+"0.5","Float","2","1","2147483737","01/01/2026 01:00:00","16797","300000","01/01/2026 00:05:00"
+"0.0","Float","2","1","2147483737","01/01/2026 01:00:00","16797","600000","01/01/2026 00:10:00"
+"0.456","Float","2","1","2147483737","01/01/2026 01:00:00","16797","900000","01/01/2026 00:15:00"
+
+Parameter No:,0x80000009
+Telemetry Mnemonic:,SW_TM_ADCS_EST_ATTD_Q3_8
+Component:,AOCSSWTMPROC
+Category:,software
+
+Data Order:,1,Data Mnemonic:,ADCS_EST_ATTD_Q3_8
+Data Value,Data Value Type,OBC Source,Virtual Channel,SID,Receive Timestamp (UTC),Cds Day,Cds Ms,Onboard Timestamp (UTC)
+"0.0","Float","2","1","2147483737","01/01/2026 01:00:00","16797","0","01/01/2026 00:00:00"
+"0.5","Float","2","1","2147483737","01/01/2026 01:00:00","16797","300000","01/01/2026 00:05:00"
+"0.0","Float","2","1","2147483737","01/01/2026 01:00:00","16797","600000","01/01/2026 00:10:00"
+"0.789","Float","2","1","2147483737","01/01/2026 01:00:00","16797","900000","01/01/2026 00:15:00"
+
+Parameter No:,0x8000000a
+Telemetry Mnemonic:,SW_TM_ADCS_EST_ATTD_Q4_8
+Component:,AOCSSWTMPROC
+Category:,software
+
+Data Order:,1,Data Mnemonic:,ADCS_EST_ATTD_Q4_8
+Data Value,Data Value Type,OBC Source,Virtual Channel,SID,Receive Timestamp (UTC),Cds Day,Cds Ms,Onboard Timestamp (UTC)
+"1.0","Float","2","1","2147483737","01/01/2026 01:00:00","16797","0","01/01/2026 00:00:00"
+"0.5","Float","2","1","2147483737","01/01/2026 01:00:00","16797","300000","01/01/2026 00:05:00"
+"0.0","Float","2","1","2147483737","01/01/2026 01:00:00","16797","600000","01/01/2026 00:10:00"

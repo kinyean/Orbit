@@ -142,8 +142,11 @@ public record ScenarioBody(
      * when the field is null) is the modeled LVLH-aligned attitude built from the
      * orbital state — the backend-authoritative successor to the Phase-6 frontend
      * estimate (Decision 24); {@code mode = "fixed"} holds a constant ECI→body
-     * orientation given by {@code quaternion} (x,y,z,w). CCSDS AEM (measured) is a
-     * later {@code mode}.
+     * orientation given by {@code quaternion} (x,y,z,w). {@code mode = "measured"}
+     * (measured-data slice 2) flies the role's real telemetry attitude — the raw
+     * quaternions stored in the role's {@link MeasuredDataset} (resolved by the
+     * ephemeris {@code datasetId}; no quaternion is stored here), SLERP-interpolated
+     * at stream time. CCSDS AEM is a later measured source feeding the same mode.
      */
     public record AttitudeProfile(String mode, double[] quaternion) {}
 }

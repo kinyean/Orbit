@@ -33,7 +33,9 @@ import space.orbit.backend.prop.CwPropagation;
 import space.orbit.backend.prop.Fidelity;
 import space.orbit.backend.prop.FrameService;
 import space.orbit.backend.prop.Impulse;
+import space.orbit.backend.prop.MeasuredAttitude;
 import space.orbit.backend.prop.PropagationService;
+import space.orbit.backend.prop.QuaternionSamples;
 import space.orbit.backend.scenario.MeasuredDataset;
 import space.orbit.backend.scenario.MeasuredDatasetCodec;
 import space.orbit.backend.scenario.MeasuredDatasetRepository;
@@ -179,18 +181,21 @@ public class ScenarioStreamService {
         boolean withVel = props.includeRelativeVelocity();
         int stride = withVel ? 7 : 4;
         int degree = Math.max(1, Math.min(5, steps));
+        // Absolute epoch seconds of the CZML epoch — the SLERP key base for a measured
+        // attitude series (whose times are absolute), since loop-time t is seconds-since-epoch.
+        double epochSec = epoch.toEpochMilli() / 1000.0;
 
         // Chief body attitude in its own LVLH frame (Phase 7) so the chief's FOV
         // volumes render. The chief is the LVLH origin (no relative position).
-        double[] chiefAttitude = sampleAttitude(chief, eci, lvlh, startDate, firstT, step, steps);
+        double[] chiefAttitude = sampleAttitude(chief, eci, lvlh, startDate, firstT, step, steps, epochSec);
 
         double maxSeparation = 0.0; // over all deputies, within the scenario window (CW hint)
         List<RelativeSamples> deputies = new ArrayList<>();
         for (int i = 1; i < roles.size(); i++) { // skip chief (the LVLH origin)
-            PVCoordinatesProvider depProp = roles.get(i).provider();
-            ScenarioBody.Role role = roles.get(i).role();
-            String attMode = attitudeMode(role);
-            double[] attFixedQuat = attitudeQuat(role);
+            PreparedRole prepared = roles.get(i);
+            PVCoordinatesProvider depProp = prepared.provider();
+            ScenarioBody.Role role = prepared.role();
+            double[] tmpQ4 = new double[4]; // reused SLERP scratch for measured attitude
             double[] s = new double[(steps + 1) * stride];
             double[] a = new double[(steps + 1) * ATT_STRIDE]; // [t,qx,qy,qz,qw, ...]
             // Coarse closest-approach bracket comes free from the sampling loop:
@@ -225,8 +230,9 @@ public class ScenarioStreamService {
                             hvC = v.getZ();
                         }
                         // Body attitude in the chief-LVLH scene frame (Phase 7) — reuse the
-                        // same state + transform (no extra propagation).
-                        double[] q = frames.bodyQuaternionInLvlh(depEci, toLvlh, attMode, attFixedQuat);
+                        // same state + transform (no extra propagation). Measured roles
+                        // (slice 2) SLERP their dataset quaternions; else modeled lvlh/fixed.
+                        double[] q = bodyAttitude(prepared, depEci, toLvlh, epochSec + t, tmpQ4);
                         hqx = q[0];
                         hqy = q[1];
                         hqz = q[2];
@@ -327,10 +333,9 @@ public class ScenarioStreamService {
      * computes its own attitude inline to reuse the per-step transform).
      */
     private double[] sampleAttitude(PreparedRole role, Frame eci, Frame lvlh, AbsoluteDate startDate,
-                                    double firstT, int step, int steps) {
-        String mode = attitudeMode(role.role());
-        double[] fixedQuat = attitudeQuat(role.role());
+                                    double firstT, int step, int steps, double epochSec) {
         double[] a = new double[(steps + 1) * ATT_STRIDE];
+        double[] tmp4 = new double[4];
         int firstValid = -1;
         boolean decayed = false;
         double hqx = 0, hqy = 0, hqz = 0, hqw = 1;
@@ -339,8 +344,10 @@ public class ScenarioStreamService {
             a[k * ATT_STRIDE] = t;
             if (!decayed) {
                 try {
-                    double[] q = frames.bodyQuaternionInLvlh(
-                            role.provider(), lvlh, startDate.shiftedBy(t), mode, fixedQuat);
+                    AbsoluteDate date = startDate.shiftedBy(t);
+                    PVCoordinates pv = role.provider().getPVCoordinates(date, eci);
+                    Transform toLvlh = eci.getTransformTo(lvlh, date);
+                    double[] q = bodyAttitude(role, pv, toLvlh, epochSec + t, tmp4);
                     hqx = q[0];
                     hqy = q[1];
                     hqz = q[2];
@@ -364,6 +371,26 @@ public class ScenarioStreamService {
         // sampleRole; here we just backfill any leading held identity quaternions.
         backfillLeadingAttitude(a, Math.max(firstValid, 0));
         return a;
+    }
+
+    /**
+     * Body-attitude quaternion (three.js body→scene-LVLH) for a role at this step, given
+     * the craft's ECI state + ECI→LVLH transform already computed for the step. A
+     * <b>measured</b> role (slice 2) SLERP-interpolates its dataset quaternions
+     * (HOLD-clamped at the ends) at the step's absolute epoch seconds {@code qSec} and
+     * feeds the result through the same {@code "fixed"} path (body→ECI → scene basis), so
+     * measured and modeled attitude share one code path. Non-measured roles use the
+     * modeled {@code lvlh}/{@code fixed} attitude. {@code tmp4} is a reused scratch buffer.
+     */
+    private double[] bodyAttitude(PreparedRole role, PVCoordinates craftEci, Transform eciToLvlh,
+                                  double qSec, double[] tmp4) {
+        double[] measured = role.measuredAttXyzw();
+        if (measured != null) {
+            QuaternionSamples.sampleAt(measured, qSec, tmp4);
+            return frames.bodyQuaternionInLvlh(craftEci, eciToLvlh, "fixed", tmp4);
+        }
+        return frames.bodyQuaternionInLvlh(craftEci, eciToLvlh,
+                attitudeMode(role.role()), attitudeQuat(role.role()));
     }
 
     /** Copy the first valid quaternion back over any leading held-identity samples. */
@@ -458,7 +485,14 @@ public class ScenarioStreamService {
      * only needs the {@link PVCoordinatesProvider} interface, so both fit uniformly.
      */
     private record PreparedRole(ScenarioBody.Role role, PVCoordinatesProvider provider,
-                                double periodSeconds, double eccentricity, double inclinationDeg) {}
+                                double periodSeconds, double eccentricity, double inclinationDeg,
+                                double[] measuredAttXyzw) {
+        /** Non-measured roles (TLE/numerical/CW) carry no measured-attitude series. */
+        private PreparedRole(ScenarioBody.Role role, PVCoordinatesProvider provider,
+                             double periodSeconds, double eccentricity, double inclinationDeg) {
+            this(role, provider, periodSeconds, eccentricity, inclinationDeg, null);
+        }
+    }
 
     private PreparedRole prepareRole(ScenarioBody.Role role, Fidelity fidelity) {
         ScenarioBody.InitialState state = role.initialState();
@@ -506,7 +540,8 @@ public class ScenarioStreamService {
         } catch (IllegalArgumentException badUuid) {
             throw new ScenarioStreamUnprocessableException("invalid datasetId \"" + datasetId + "\"");
         }
-        List<MeasuredEphemeris.Sample> samples = MeasuredDatasetCodec.decode(ds.getSamples());
+        MeasuredDatasetCodec.Decoded decoded = MeasuredDatasetCodec.decode(ds.getSamples());
+        List<MeasuredEphemeris.Sample> samples = decoded.samples();
         if (samples.size() < 2) {
             throw new ScenarioStreamUnprocessableException(
                     "measured dataset " + datasetId + " has too few states");
@@ -523,7 +558,35 @@ public class ScenarioStreamService {
         Ephemeris ephemeris = new Ephemeris(states, Math.min(EPHEMERIS_INTERP_POINTS, states.size()));
         KeplerianOrbit k0 = new KeplerianOrbit(states.get(0).getOrbit());
         double periodSeconds = Math.max(60.0, k0.getKeplerianPeriod());
-        return new PreparedRole(role, ephemeris, periodSeconds, k0.getE(), Math.toDegrees(k0.getI()));
+        return new PreparedRole(role, ephemeris, periodSeconds, k0.getE(), Math.toDegrees(k0.getI()),
+                buildMeasuredAttitude(role, decoded.attitude()));
+    }
+
+    /**
+     * Build the role's measured body-attitude series (slice 2) as a stride-5
+     * {@code [absEpochSec, qx,qy,qz,qw, ...]} array (three.js body→ECI quaternion,
+     * via {@link MeasuredAttitude}) — or {@code null} when the role isn't in
+     * {@code "measured"} mode or the dataset carries no attitude (then the stream
+     * falls back to the modeled LVLH attitude). Times are absolute epoch seconds so
+     * the stream loop can SLERP at {@code epoch + t}. Samples are already ascending.
+     */
+    private static double[] buildMeasuredAttitude(ScenarioBody.Role role,
+                                                  List<MeasuredEphemeris.AttitudeSample> attitude) {
+        if (attitude == null || attitude.isEmpty() || !"measured".equals(attitudeMode(role))) {
+            return null;
+        }
+        double[] series = new double[attitude.size() * QuaternionSamples.STRIDE];
+        int j = 0;
+        for (MeasuredEphemeris.AttitudeSample a : attitude) {
+            double[] q = MeasuredAttitude.wodEstAttdToBodyEciXyzw(a.q1(), a.q2(), a.q3(), a.q4());
+            series[j] = a.epochMillis() / 1000.0; // absolute epoch seconds (the SLERP key)
+            series[j + 1] = q[0];
+            series[j + 2] = q[1];
+            series[j + 3] = q[2];
+            series[j + 4] = q[3];
+            j += QuaternionSamples.STRIDE;
+        }
+        return series;
     }
 
     /**

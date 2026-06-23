@@ -519,9 +519,12 @@ real orbit. NORAD auto-resolved from the file name (override optional). Audited 
 editing preserves the ephemeris chief.
 *Maps to:* [UC-3](./use-cases.md), [UC-8](./use-cases.md); SRS §3.10.3, §4.1.2 (generalizes US-SCN-06).
 
-### US-IO-04 — As Gita, I want imported measured attitude (quaternions) to drive orientation/FOV, so coverage reflects how the craft actually pointed. *(slice 2)*
-*Acceptance:* `EST_ATTD_Q1..Q4` ingested; `AttitudeProfile.mode="measured"` SLERP-streamed; legend
-reads "measured"; quaternion frame pinned by a signed-axis test (R15/R20).
+### US-IO-04 — As Gita, I want imported measured attitude (quaternions) to drive orientation/FOV, so coverage reflects how the craft actually pointed. ✅ (slice 2)
+*Acceptance:* `EST_ATTD_Q1..Q4_8` ingested as a parallel attitude series; `AttitudeProfile.mode="measured"`
+SLERP-streamed through the existing `"fixed"` path; legend reads "measured"; quaternion convention
+resolved empirically + pinned by a signed-axis test (`MeasuredAttitudeTest`, R15/R20). A toggleable
+body-axis triad makes orientation legible. Verified on the dev stack (re-import → chief
+`attitude.mode=measured`; the relative frame carries the chief's varying measured `att`).
 
 ### US-IO-05 — As Frank, I want a real measured chief+deputy pair and OEM/AEM import + browser upload. *(slice 3)*
 *Acceptance:* import a dataset as a deputy (two measured craft = a real RPO pair); numerical handoff

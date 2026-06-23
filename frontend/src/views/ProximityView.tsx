@@ -97,6 +97,7 @@ export default function ProximityView() {
   const [backdrop, setBackdrop] = useState<BackdropMode>('earth');
   const [showSensors, setShowSensors] = useState(true);
   const [fovOpacity, setFovOpacity] = useState(15); // percent
+  const [showAxes, setShowAxes] = useState(false); // body-axis triad (orientation read)
   const [camSensorKey, setCamSensorKey] = useState(''); // selected sensor option (US-SENSE-05)
   const camFocusRef = useRef(camFocus);
   const camDeputyRef = useRef(camDeputy);
@@ -112,6 +113,8 @@ export default function ProximityView() {
   showSensorsRef.current = showSensors;
   fovOpacityRef.current = fovOpacity;
   camSensorKeyRef.current = camSensorKey;
+  const showAxesRef = useRef(showAxes);
+  showAxesRef.current = showAxes;
 
   // Re-render (refresh the focus dropdown) when the deputy set changes; reset the
   // selectors on any scenario change so a stale deputy index can't linger.
@@ -121,6 +124,15 @@ export default function ProximityView() {
   // Phase 7: the legend reads "modeled" once the stream carries attitude, else
   // "estimated" (the derived fallback). Re-evaluated on relVersion change.
   const orientationModeled = !!(relData?.chief?.attitude || deputies.some((d) => d.attitude));
+  // Measured-data slice 2: when any role flies real telemetry attitude
+  // (AttitudeProfile.mode === "measured" in the loaded scenario body), the legend
+  // reads "measured" instead of "modeled" — read from the body, not the stream.
+  const orientationMeasured = useStore((s) => {
+    const body = s.loadedScenario?.body;
+    if (!body) return false;
+    return [body.chief, ...(body.deputies ?? [])].some((r) => r?.attitude?.mode === 'measured');
+  });
+  const orientationLabel = orientationMeasured ? 'measured' : orientationModeled ? 'modeled' : 'estimated';
   useEffect(() => {
     setCamFocus('external');
     setCamDeputy(0);
@@ -265,7 +277,15 @@ export default function ProximityView() {
       models.push(chief);
       if (data?.chief?.sensors?.length) buildSensors(chief, data.chief.sensors, CHIEF_COLOR);
 
-      let maxDist = 1000; // ≥1 km so the initial framing isn't degenerate
+      // Working scale for the auto-frame. Seed from a craft-scale floor (a lone
+      // measured chief with no deputy must not fall back to a 1 km default — at
+      // that distance the ~10 m model is a sub-pixel marker dot, forcing a manual
+      // zoom) and from the chief's own sensor cones (so a single craft + FOV still
+      // frames). Deputy positions expand it below.
+      let maxDist = chief.radius * 4; // ~40 m → the 10 m model renders as geometry on load
+      for (const s of data?.chief?.sensors ?? []) {
+        maxDist = Math.max(maxDist, s.maxRangeM > 0 ? s.maxRangeM : 1000);
+      }
       const out: [number, number, number] = [0, 0, 0];
       data?.deputies.forEach((dep, i) => {
         const color = DEPUTY_COLORS[i % DEPUTY_COLORS.length];
@@ -454,9 +474,16 @@ export default function ProximityView() {
           ribbons[i]?.setSplit(t);
           maxDistNow = Math.max(maxDistNow, Math.hypot(out6[0], out6[1], out6[2]));
         });
-        // LOD crossfade + near-clamp for every model (chief + deputies).
+        // LOD crossfade + near-clamp for every model (chief + deputies); the body-axis
+        // triad rides each craft's orientation and is shown only when toggled on. Its
+        // length tracks the camera distance so it stays a readable on-screen size even
+        // when the camera is zoomed out to fit a km-scale FOV cone (a fixed-length triad
+        // would vanish there). Floor at the craft size so it never shrinks below the bus.
         for (const m of models) {
-          applyLod(m, camera.position.distanceTo(m.root.position));
+          const camDist = camera.position.distanceTo(m.root.position);
+          applyLod(m, camDist);
+          m.setAxesVisible(showAxesRef.current);
+          if (showAxesRef.current) m.setAxesWorldLength(Math.max(camDist * 0.12, m.radius * 1.5));
         }
 
         // ΔV glyphs: read maneuvers from the loaded scenario (store), place each at
@@ -631,6 +658,19 @@ export default function ProximityView() {
             <button className={!showSensors ? 'active' : ''} onClick={() => setShowSensors(false)}>Off</button>
           </div>
         </div>
+        <div className="prox-ctrl">
+          <span>Body axes</span>
+          <div className="prox-seg">
+            <button
+              className={showAxes ? 'active' : ''}
+              onClick={() => setShowAxes(true)}
+              title="Show each craft's body-axis triad (X red / Y nose-green / Z top-blue) — the orientation read"
+            >
+              On
+            </button>
+            <button className={!showAxes ? 'active' : ''} onClick={() => setShowAxes(false)}>Off</button>
+          </div>
+        </div>
         {showSensors && (
           <label className="prox-ctrl">
             <span>FOV opacity</span>
@@ -648,7 +688,7 @@ export default function ProximityView() {
       <div className="proximity-legend">
         chief <span style={{ color: '#ffd166' }}>●</span> · R<span style={{ color: '#f87171' }}>x</span>{' '}
         I<span style={{ color: '#4ade80' }}>y</span> C<span style={{ color: '#60a5fa' }}>z</span>
-        <span className="proximity-caveat"> · orientation: {orientationModeled ? 'modeled' : 'estimated'}</span>
+        <span className="proximity-caveat"> · orientation: {orientationLabel}</span>
         <span ref={readoutRef} className="proximity-scale" />
       </div>
     </div>

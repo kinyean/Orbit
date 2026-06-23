@@ -6,8 +6,8 @@ phase) opened mid-Phase-8 when real flight data (TELEOS-2 WOD CSVs) arrived; it
 generalizes two long-deferred items — CCSDS OEM import (Decision 19 / US-SCN-06)
 and CCSDS AEM measured attitude (Decision 24 / R17).
 
-> **Status: Slice 1 complete & verified end-to-end (2026-06-22).** Slices 2–3
-> planned. Backend 119 tests green; frontend type-check + build green.
+> **Status: Slices 1 & 2 complete & verified end-to-end (2026-06-22).** Slice 3
+> planned. Backend 126 tests green; frontend type-check + build green.
 
 ## What it adds
 
@@ -102,34 +102,63 @@ real ~76 km closest approach.
 - **Catalog deputies on a measured chief are illustrative.** Their TLEs are current-epoch
   (months from the data window), so SGP4 in the window gives a *co-planar but phase-approximate*
   orbit — fine for a demo, not a real RPO pair. A genuine measured pair needs two datasets (slice 3).
-- **Attitude is still modeled (LVLH)**, not measured — slice 2.
+- **Attitude is measured (slice 2 ✅)** — the chief flies its real `EST_ATTD` quaternion.
 
 ---
 
-## Slice 2 — measured attitude (NEXT)
+## Slice 2 — measured attitude ✅ DONE (2026-06-22)
 
-Stream the satellite's real orientation instead of the modeled LVLH estimate.
+Streams the satellite's real orientation instead of the modeled LVLH estimate.
 
-1. **Reader:** extend `WodCsvReader` to also pick up `SW_TM_ADCS_EST_ATTD_Q1..Q4`
-   (the estimated-attitude quaternion, one channel each, aligned to the same timestamps).
-   Extend `MeasuredEphemeris.Sample` (or a parallel attitude series) + the codec blob format
-   (bump an internal codec version; the DB column is opaque `bytea`, no migration).
-2. **Schema:** `AttitudeProfile.mode = "measured"` (resolves to the role's dataset; no new id).
-3. **Stream:** in `ScenarioStreamService.sampleAttitude` (and the per-deputy inline attitude in
-   `encodeRelative`), when mode is `measured`, **SLERP-interpolate the dataset's quaternions**
-   at the sample times instead of computing the LVLH-from-orbit quaternion. Reuse the existing
-   `att` stride-5 stream field — frontend `orientation.ts bodyOrientationAt` already consumes it
-   and the legend flips "modeled"→"measured".
-4. **THE RISK (R15 / R20):** the WOD quaternion's frame convention (almost certainly ECI→body)
-   must be confirmed and converted to the **three.js streaming convention** used by
-   `FrameService.bodyQuaternionInLvlh` (which builds an LVLH-scene quaternion). Pin it with a
-   **signed-axis test** exactly like the Phase-7 quaternion — get this wrong and the craft points
-   the wrong way silently. Cross-check against `STS_BF_Q*` (star-tracker, body-frame) as an
-   independent source if needed.
-5. **Frontend:** none beyond the legend (attitude already streams + SLERPs). Optionally surface
-   the gyro body-rates (`EST_RATE_*`) later for GN&C (Gita).
+1. **Reader:** `WodCsvReader` also extracts `SW_TM_ADCS_EST_ATTD_Q1..Q4_8` into a **parallel
+   attitude series** (`MeasuredEphemeris.AttitudeSample` — its own timestamps; the ADCS cadence
+   differs from GNSS, so it's NOT intersected with position). Components kept **raw** (the
+   convention conversion lives in code); non-unit rows (ADCS dropouts / all-zero) dropped.
+2. **Codec:** `MeasuredDatasetCodec` gains the attitude series with a **backward-compatible
+   version sentinel** — a leading negative `int = -2` (a v1 count is always ≥ 0) marks the v2
+   layout; legacy position-only blobs still decode (empty attitude). Deterministic (R11); opaque
+   `bytea`, no DB migration.
+3. **Schema:** `AttitudeProfile.mode = "measured"` — set on the chief at import when the file
+   carries attitude (no quaternion stored here; it resolves to the role's dataset). No shape
+   change → `CURRENT_SCHEMA_VERSION` stays 4. `update()`'s `resolveRole` preserves it on edit.
+4. **Stream:** `prepareEphemerisRole` converts the raw quaternions to a body→ECI three.js series
+   (stride-5, absolute epoch seconds) and hangs it on `PreparedRole`. `bodyAttitude` (used by both
+   the chief `sampleAttitude` and the deputy loop) **SLERPs** it at `epoch + t` and feeds the
+   result through the existing `"fixed"` path (`FrameService.bodyQuaternionInLvlh`) — measured and
+   modeled share one code path. SLERP extracted to `prop/QuaternionSamples` (also used by
+   `SensorEventComputer`). Reuses the `att` stride-5 stream field — additive, `VERSION="1"` (R12),
+   deterministic (R11).
+5. **Convention (R15 / R20) — RESOLVED empirically + pinned.** No vendor spec; resolved from the
+   TELEOS-2 telemetry (spike in scratch): the quaternion is **unit, ECI-referenced** (the recurring
+   "home" value is held at many orbit positions = a fixed *inertial* attitude), `EST_ATTD` ≡
+   `STS_BF` (same convention), and **scalar-last (Q4 = w), body→ECI** is favored by both the
+   pointing geometry and the only positive `FOG_RATE_BF` angular-velocity correlation. Since
+   three.js `(x,y,z,w)` is also scalar-last, the converter (`prop/MeasuredAttitude`) is the identity
+   reorder `(Q1,Q2,Q3,Q4)`. Pinned by a **signed-axis test** (`MeasuredAttitudeTest`); the physical
+   convention is **flippable in one place** (two named constants) and confirmed visually on the dev
+   stack. (The gyro *magnitude* test was inconclusive — attitude is 5-min sampled but slews are
+   fast; a data limitation, not the convention.)
+6. **Frontend:** `orientation.ts` already SLERP-consumes `att` (no change). Added a toggleable
+   **body-axis triad** per craft (`spacecraftModel.ts` `setAxesVisible`/`setAxesWorldLength`, a
+   "Body axes" control in `ProximityView`) — the orientation read, since the model is too symmetric
+   and a far craft is just a marker dot. The triad is **camera-distance-scaled** so it stays a
+   readable on-screen size even when the view is zoomed out to fit a km-scale FOV cone (a fixed-length
+   triad vanished there). Legend reads **"measured"** (from the loaded body's `attitude.mode`), else
+   modeled/estimated, shown for all craft. Also fixed the proximity **auto-frame** so a lone measured
+   chief (no deputy) seeds the working scale from a craft-scale floor + the chief's own sensor ranges
+   instead of a 1 km default — at the old default the ~10 m model framed as a sub-pixel marker dot,
+   forcing a manual zoom.
 
-Resolves R17 fully for measured craft (orientation modeled→measured; lighting stays Phase 8).
+**Verified on the dev stack:** re-import TELEOS-2 → 201, schema v4, chief `attitude.mode=measured`;
+the `scenario-relative` frame carries the chief's measured `att` (4983 samples, varying, not
+identity). **Resolves R17 fully for measured craft** (orientation modeled→measured; lighting stays
+Phase 8). **Tests:** `WodCsvReaderTest` (attitude parse/align/unit-drop), `MeasuredDatasetCodecTest`
+(v2 round-trip + legacy-v1 decode + deterministic), `MeasuredAttitudeTest` (signed-axis pin),
+`MeasuredEphemerisServeTest.measuredAttitudeSlerpsTheConvertedQuaternion`.
+
+**The one thing to eyeball:** the *physical* convention (is the craft pointing the right way, not
+mirrored/inverted) — if wrong in the proximity view, flip `MeasuredAttitude.SCALAR_LAST` or
+`CONJUGATE` (one line each).
 
 ## Slice 3 — measured deputies, numerical handoff, more readers
 
@@ -154,12 +183,13 @@ Resolves R17 fully for measured craft (orientation modeled→measured; lighting 
 
 | Concern | Path |
 |---|---|
-| Reader + normalized artifact | `backend/.../io/WodCsvReader.java`, `io/MeasuredEphemeris.java` |
-| Storage | `backend/.../scenario/MeasuredDataset.java`, `MeasuredDatasetRepository.java`, `MeasuredDatasetCodec.java`, `db/migration/V5__measured_dataset.sql` |
+| Reader + normalized artifact | `backend/.../io/WodCsvReader.java`, `io/MeasuredEphemeris.java` (pos `Sample` + `AttitudeSample`) |
+| Storage | `backend/.../scenario/MeasuredDataset.java`, `MeasuredDatasetRepository.java`, `MeasuredDatasetCodec.java` (v1/v2), `db/migration/V5__measured_dataset.sql` |
 | Import (audited) | `backend/.../scenario/ScenarioService.java` (`importMeasured`, `resolveRole`/`buildBody` merge), `api/ScenarioController.java` |
-| Serve (the Ephemeris branch + interp lesson) | `backend/.../stream/ScenarioStreamService.java` (`prepareEphemerisRole`, `EPHEMERIS_INTERP_POINTS`) |
-| Schema | `backend/.../scenario/ScenarioBody.java` (`InitialState`, v4) |
-| Frontend | `frontend/src/store/useStore.ts` (`importMeasuredScenario`), `scenario/ScenarioPanel.tsx`, `App.css` |
+| Serve (Ephemeris + interp lesson) | `backend/.../stream/ScenarioStreamService.java` (`prepareEphemerisRole`, `buildMeasuredAttitude`, `bodyAttitude`, `EPHEMERIS_INTERP_POINTS`) |
+| Measured attitude (slice 2) | `backend/.../prop/MeasuredAttitude.java` (convention), `prop/QuaternionSamples.java` (shared SLERP) |
+| Schema | `backend/.../scenario/ScenarioBody.java` (`InitialState` v4, `AttitudeProfile.mode="measured"`) |
+| Frontend | `frontend/src/store/useStore.ts` (`importMeasuredScenario`), `scenario/ScenarioPanel.tsx`, `proximity/spacecraftModel.ts` (body-axis triad), `views/ProximityView.tsx` (Body-axes toggle + measured legend) |
 | Config | `application.yml` (`orbit.import.allowed-root`), `docker-compose.yml` (shared-folder mount) |
 
 A scratch validation spike (SGP4/numerical drift vs the measured TELEOS-2 track) lived in

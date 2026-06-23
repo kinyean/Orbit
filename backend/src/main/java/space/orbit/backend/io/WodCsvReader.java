@@ -39,9 +39,11 @@ import org.springframework.stereotype.Component;
  * {@code (0,0,0)}, i.e. |r| &lt; 6000 km) are dropped. Output is metres / m/s in
  * EME2000, time-ordered.
  *
- * <p>Attitude quaternions and the many engineering/diagnostic channels are
- * ignored for now (slice 1 = position playback); a later slice extends this
- * reader to pick up {@code EST_ATTD_Q1..Q4}.
+ * <p>Slice 2 also picks up the estimated-attitude quaternion
+ * ({@code SW_TM_ADCS_EST_ATTD_Q1..Q4_8}) as a <em>parallel</em> series (its own
+ * timestamps — the ADCS cadence can differ from GNSS, so it is not intersected
+ * with position). Components are kept raw; the convention conversion lives
+ * downstream. The remaining engineering/diagnostic channels are ignored.
  */
 @Component
 public class WodCsvReader {
@@ -50,11 +52,17 @@ public class WodCsvReader {
             DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss");
     private static final double MIN_VALID_RADIUS_M = 6_000_000.0; // drop (0,0,0) GNSS dropouts
     private static final double KM = 1000.0;
+    /** Reject attitude rows whose quaternion norm strays from unit (ADCS dropouts / all-zero). */
+    private static final double QUAT_NORM_TOL = 0.1;
 
-    // The six ECI channels we extract, in a fixed slot order.
+    // The six ECI position/velocity channels (slots 0..5) followed by the four
+    // estimated-attitude quaternion channels (slots 6..9), in a fixed slot order.
+    private static final int POS_CHANNELS = 6;
     private static final String[] CHANNELS = {
             "SW_TM_ODCS_GNSS_ECI_POS_X", "SW_TM_ODCS_GNSS_ECI_POS_Y", "SW_TM_ODCS_GNSS_ECI_POS_Z",
-            "SW_TM_ODCS_GNSS_ECI_VEL_X", "SW_TM_ODCS_GNSS_ECI_VEL_Y", "SW_TM_ODCS_GNSS_ECI_VEL_Z"
+            "SW_TM_ODCS_GNSS_ECI_VEL_X", "SW_TM_ODCS_GNSS_ECI_VEL_Y", "SW_TM_ODCS_GNSS_ECI_VEL_Z",
+            "SW_TM_ADCS_EST_ATTD_Q1_8", "SW_TM_ADCS_EST_ATTD_Q2_8",
+            "SW_TM_ADCS_EST_ATTD_Q3_8", "SW_TM_ADCS_EST_ATTD_Q4_8"
     };
 
     public MeasuredEphemeris parse(InputStream csv) throws IOException {
@@ -94,8 +102,9 @@ public class WodCsvReader {
             }
         }
 
-        List<MeasuredEphemeris.Sample> samples = align(byTs);
-        return new MeasuredEphemeris(satelliteName, "EME2000", samples);
+        List<MeasuredEphemeris.Sample> samples = alignPosition(byTs);
+        List<MeasuredEphemeris.AttitudeSample> attitude = alignAttitude(byTs);
+        return new MeasuredEphemeris(satelliteName, "EME2000", samples, attitude);
     }
 
     private static int channelSlot(String mnemonic) {
@@ -124,10 +133,9 @@ public class WodCsvReader {
         }
     }
 
-    /** Intersect the six channels by timestamp, drop invalid fixes, sort by time. */
-    private static List<MeasuredEphemeris.Sample> align(Map<Long, Double>[] byTs) {
-        Map<Long, Double> pxMap = byTs[0];
-        List<Long> times = new ArrayList<>(pxMap.keySet());
+    /** Intersect the six position/velocity channels by timestamp, drop invalid fixes, sort by time. */
+    private static List<MeasuredEphemeris.Sample> alignPosition(Map<Long, Double>[] byTs) {
+        List<Long> times = new ArrayList<>(byTs[0].keySet());
         times.sort(Long::compare);
 
         List<MeasuredEphemeris.Sample> out = new ArrayList<>(times.size());
@@ -142,6 +150,31 @@ public class WodCsvReader {
                 continue; // zero-filled (0,0,0) invalid GNSS fix
             }
             out.add(new MeasuredEphemeris.Sample(t, xm, ym, zm, vx * KM, vy * KM, vz * KM));
+        }
+        return out;
+    }
+
+    /**
+     * Intersect the four attitude-quaternion channels (slots 6..9) by timestamp,
+     * drop non-unit rows (ADCS dropouts / all-zero), sort by time. Components are
+     * kept raw — interpretation is downstream (slice 2). Empty when the file
+     * carries no attitude (e.g. a position-only fixture).
+     */
+    private static List<MeasuredEphemeris.AttitudeSample> alignAttitude(Map<Long, Double>[] byTs) {
+        List<Long> times = new ArrayList<>(byTs[POS_CHANNELS].keySet());
+        times.sort(Long::compare);
+
+        List<MeasuredEphemeris.AttitudeSample> out = new ArrayList<>(times.size());
+        for (long t : times) {
+            Double q1 = byTs[6].get(t), q2 = byTs[7].get(t), q3 = byTs[8].get(t), q4 = byTs[9].get(t);
+            if (q1 == null || q2 == null || q3 == null || q4 == null) {
+                continue; // not present in all four channels at this instant
+            }
+            double norm = Math.sqrt(q1 * q1 + q2 * q2 + q3 * q3 + q4 * q4);
+            if (Math.abs(norm - 1.0) > QUAT_NORM_TOL) {
+                continue; // not a unit quaternion (ADCS not in a valid estimate)
+            }
+            out.add(new MeasuredEphemeris.AttitudeSample(t, q1, q2, q3, q4));
         }
         return out;
     }

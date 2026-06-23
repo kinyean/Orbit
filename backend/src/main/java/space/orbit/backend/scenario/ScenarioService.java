@@ -129,8 +129,8 @@ public class ScenarioService {
         String satName = (eph.satelliteName() == null || eph.satelliteName().isBlank())
                 ? ("NORAD " + noradId) : eph.satelliteName();
 
-        // Freeze the samples as an immutable, content-hashed dataset (R11).
-        byte[] blob = MeasuredDatasetCodec.encode(samples);
+        // Freeze the samples + raw attitude as an immutable, content-hashed dataset (R11).
+        byte[] blob = MeasuredDatasetCodec.encode(samples, eph.attitude());
         String hash = MeasuredDatasetCodec.sha256(blob);
         OffsetDateTime startUtc = millisToOffset(samples.get(0).epochMillis());
         OffsetDateTime endUtc = millisToOffset(samples.get(samples.size() - 1).epochMillis());
@@ -140,9 +140,15 @@ public class ScenarioService {
 
         // Chief = the measured craft (read-only truth); window = data span; numerical
         // fidelity applies to any hypothetical deputies added later (the chief is served
-        // from the ephemeris regardless of this field).
+        // from the ephemeris regardless of this field). When the file carries measured
+        // attitude (slice 2), the chief flies it ("measured" mode → the role's dataset
+        // quaternions); otherwise it falls back to the modeled LVLH attitude (null).
+        boolean hasAttitude = eph.attitude() != null && !eph.attitude().isEmpty();
+        ScenarioBody.AttitudeProfile attitude =
+                hasAttitude ? new ScenarioBody.AttitudeProfile("measured", null) : null;
         ScenarioBody.Role chief = new ScenarioBody.Role("chief", noradId, satName,
-                new ScenarioBody.InitialState("ephemeris", null, datasetId.toString()));
+                new ScenarioBody.InitialState("ephemeris", null, datasetId.toString()),
+                List.of(), List.of(), attitude);
         ScenarioBody body = new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION, "numerical",
                 new ScenarioBody.TimeRange(startUtc.toString(), endUtc.toString()), chief, List.of());
 

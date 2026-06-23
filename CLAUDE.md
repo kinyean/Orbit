@@ -48,7 +48,7 @@ frustum/polygonal FOV, and Sun occlusion / sun-keep-out (Phase 8). **Phase 8 nex
 environment & events (roadmap §8): Sun/Moon, eclipse, lighting, conjunctions. See
 Decision 24.
 
-**Measured-data ingestion — slice 1 complete (2026-06-22; feature track, not a roadmap
+**Measured-data ingestion — slices 1 & 2 complete (2026-06-22; feature track, not a roadmap
 phase).** Real flight telemetry (TELEOS-2 "Whole-Orbit Data" CSVs: measured GNSS ECI
 pos/vel + ADCS quaternions) imports as a scenario whose chief is the measured craft
 (read-only truth). `io/WodCsvReader` (streaming parse) → immutable content-hashed
@@ -58,11 +58,19 @@ Orekit tabulated `Ephemeris` in `ScenarioStreamService.prepareEphemerisRole` (th
 sampling/stream pipeline is unchanged — "measured" is a per-ROLE source, not a `Fidelity`).
 Server-path import (`POST /scenarios/import/measured {path,noradId?}`, path constrained to
 `orbit.import.allowed-root`); `update()` merges so editing preserves the ephemeris chief.
-Backend **119 tests green**, frontend green; verified end-to-end (570 MB → ~3.2 s; orbit
-radius holds ~6953 km). **Gotcha:** keep `EPHEMERIS_INTERP_POINTS = 2` — higher overshoots
-between nodes (Runge → 1e11 km orbit). **Slices 2–3 next:** measured attitude (R15 quaternion
-frame-pinning), measured deputies / numerical handoff / OEM-AEM readers / browser upload. See
-[measured-data-plan.md](docs/measured-data-plan.md), Decision 26.
+**Slice 2 — measured attitude:** the reader also picks up `EST_ATTD_Q1..Q4_8` as a parallel
+attitude series (codec v2 behind a backward-compatible sentinel); `AttitudeProfile.mode="measured"`
+(set on the chief at import) is **SLERP-streamed through the existing `"fixed"` path** (`bodyAttitude`
++ shared `prop/QuaternionSamples`), so the craft flies its real orientation. The WOD quaternion
+convention was **resolved empirically + pinned** (scalar-last Q4=w, body→ECI ⇒ identity reorder;
+`prop/MeasuredAttitude` w/ `MeasuredAttitudeTest`; flippable in one place, physical direction confirmed
+visually — R20). Frontend: a toggleable **body-axis triad** (`spacecraftModel.setAxesVisible` + a
+"Body axes" control) makes orientation legible, legend reads "measured". Backend **126 tests green**,
+frontend green; verified end-to-end (570 MB → ~3.2 s; orbit radius holds ~6953 km; chief
+`attitude.mode=measured`, the WS frame carries the chief's varying measured `att`). **Gotcha:** keep
+`EPHEMERIS_INTERP_POINTS = 2` — higher overshoots between nodes (Runge → 1e11 km orbit). **Slice 3 next:**
+measured deputies (real RPO pair — needs a 2nd dataset, R19) / numerical handoff / OEM-AEM readers /
+browser upload. See [measured-data-plan.md](docs/measured-data-plan.md), Decision 26.
 
 Per-phase detail lives in `docs/phase-*-plan.md` and the rationale in
 [decisions.md](docs/decisions.md); this is just the map of what exists:

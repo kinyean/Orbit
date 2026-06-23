@@ -27,6 +27,19 @@ export interface SpacecraftModel {
   setMarkerOpacity(a: number): void;
   setModelVisible(v: boolean): void;
   setMarkerVisible(v: boolean): void;
+  /**
+   * Show/hide the body-axis triad (red +X / green +Y / blue +Z). Rides the body
+   * orientation (child of {@code root}), so it's the zoom-independent read of which
+   * way the craft points — the model itself is too symmetric to read at a glance,
+   * and a far craft is just the marker dot (Phase 7 / measured-attitude slice 2).
+   */
+  setAxesVisible(v: boolean): void;
+  /**
+   * Set the triad's world length (metres). The view drives this from the camera
+   * distance so the triad keeps a roughly constant on-screen size — otherwise a
+   * fixed-length triad vanishes when the camera zooms out to fit a km-scale FOV cone.
+   */
+  setAxesWorldLength(len: number): void;
   /** Uniform scale on the geometry only (the marker stays fixed-pixel). */
   setModelScale(s: number): void;
   dispose(): void;
@@ -102,6 +115,18 @@ export function createSpacecraftModel(color: THREE.Color): SpacecraftModel {
   dish.add(dishMesh);
   modelGroup.add(dish);
 
+  // --- Body-axis triad (orientation read; off by default) ------------------
+  // A child of `root` (NOT modelGroup) so it rides the body orientation but is
+  // independent of the model's near-plane scale clamp — a stable gnomon. Red +X,
+  // green +Y (nose/ram), blue +Z (top/anti-nadir). ~2.5× the model radius so it
+  // pokes clearly out of the bus.
+  const AXES_BASE_LEN = MODEL_RADIUS * 2.5;
+  const axes = new THREE.AxesHelper(AXES_BASE_LEN);
+  axes.visible = false;
+  (axes.material as THREE.Material).depthTest = false; // always legible over the bus
+  axes.renderOrder = 2;
+  root.add(axes);
+
   // --- Far-LOD marker: a single fixed-pixel point (the pre-Phase-6 dot) -----
   const markerGeom = track(new THREE.BufferGeometry());
   markerGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, 0, 0]), 3));
@@ -139,11 +164,18 @@ export function createSpacecraftModel(color: THREE.Color): SpacecraftModel {
     setMarkerVisible(v: boolean) {
       marker.visible = v;
     },
+    setAxesVisible(v: boolean) {
+      axes.visible = v;
+    },
+    setAxesWorldLength(len: number) {
+      axes.scale.setScalar(len / AXES_BASE_LEN);
+    },
     setModelScale(s: number) {
       modelGroup.scale.setScalar(s);
     },
     dispose() {
       disposed = true;
+      axes.dispose();
       if (swapped) {
         swapped.traverse((o) => {
           const mesh = o as THREE.Mesh;

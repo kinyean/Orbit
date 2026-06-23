@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import org.orekit.utils.Constants;
+import space.orbit.backend.prop.QuaternionSamples;
 import space.orbit.backend.scenario.ScenarioBody;
 
 /**
@@ -32,7 +33,6 @@ import space.orbit.backend.scenario.ScenarioBody;
 public class SensorEventComputer {
 
     private static final int BISECT_ITERS = 24;
-    private static final int ATT_STRIDE = 5;
     private static final double EARTH_RADIUS_M = Constants.WGS84_EARTH_EQUATORIAL_RADIUS;
 
     /**
@@ -120,7 +120,7 @@ public class SensorEventComputer {
         }
         // Boresight in the LVLH scene = host body-attitude (sampled) applied to the body axis.
         double[] q = new double[4];
-        attAt(host.att(), t, q);
+        QuaternionSamples.sampleAt(host.att(), t, q);
         double[] b = rotateByQuat(q, boresightBody);
         double bn = Math.sqrt(b[0] * b[0] + b[1] * b[1] + b[2] * b[2]);
         double cos = bn > 0 ? (lx * b[0] + ly * b[1] + lz * b[2]) / (range * bn) : -1;
@@ -203,92 +203,6 @@ public class SensorEventComputer {
         out3[0] = s[ba + 1] + (s[bb + 1] - s[ba + 1]) * f;
         out3[1] = s[ba + 2] + (s[bb + 2] - s[ba + 2]) * f;
         out3[2] = s[ba + 3] + (s[bb + 3] - s[ba + 3]) * f;
-    }
-
-    /** SLERP of the stride-5 quaternion samples at {@code t} into {@code out4} (x,y,z,w); HOLD-clamp. */
-    private static void attAt(double[] a, double t, double[] out4) {
-        if (a == null || a.length < ATT_STRIDE) {
-            out4[0] = out4[1] = out4[2] = 0.0;
-            out4[3] = 1.0;
-            return;
-        }
-        int n = a.length / ATT_STRIDE;
-        double tFirst = a[0];
-        double tLast = a[(n - 1) * ATT_STRIDE];
-        if (t <= tFirst || n == 1) {
-            copyQuat(a, 0, out4);
-            return;
-        }
-        if (t >= tLast) {
-            copyQuat(a, (n - 1) * ATT_STRIDE, out4);
-            return;
-        }
-        int lo = 0;
-        int hi = n - 1;
-        while (lo + 1 < hi) {
-            int mid = (lo + hi) >>> 1;
-            if (a[mid * ATT_STRIDE] <= t) {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        int ba = lo * ATT_STRIDE;
-        int bb = hi * ATT_STRIDE;
-        double ta = a[ba];
-        double tb = a[bb];
-        double f = tb > ta ? (t - ta) / (tb - ta) : 0.0;
-        slerp(a, ba, a, bb, f, out4);
-    }
-
-    private static void copyQuat(double[] a, int base, double[] out4) {
-        out4[0] = a[base + 1];
-        out4[1] = a[base + 2];
-        out4[2] = a[base + 3];
-        out4[3] = a[base + 4];
-    }
-
-    /** Spherical-linear interpolation between two stride-5 quaternion samples (matches the client). */
-    private static void slerp(double[] a, int ba, double[] b, int bb, double t, double[] out4) {
-        double ax = a[ba + 1];
-        double ay = a[ba + 2];
-        double az = a[ba + 3];
-        double aw = a[ba + 4];
-        double bx = b[bb + 1];
-        double by = b[bb + 2];
-        double bz = b[bb + 3];
-        double bw = b[bb + 4];
-        double cos = ax * bx + ay * by + az * bz + aw * bw;
-        if (cos < 0) { // shorter arc (quaternion double-cover)
-            bx = -bx;
-            by = -by;
-            bz = -bz;
-            bw = -bw;
-            cos = -cos;
-        }
-        double s0;
-        double s1;
-        if (cos > 0.9995) {
-            s0 = 1 - t;
-            s1 = t;
-        } else {
-            double theta = Math.acos(cos);
-            double sin = Math.sin(theta);
-            s0 = Math.sin((1 - t) * theta) / sin;
-            s1 = Math.sin(t * theta) / sin;
-        }
-        double x = s0 * ax + s1 * bx;
-        double y = s0 * ay + s1 * by;
-        double z = s0 * az + s1 * bz;
-        double w = s0 * aw + s1 * bw;
-        double norm = Math.sqrt(x * x + y * y + z * z + w * w);
-        if (norm <= 0) {
-            norm = 1;
-        }
-        out4[0] = x / norm;
-        out4[1] = y / norm;
-        out4[2] = z / norm;
-        out4[3] = w / norm;
     }
 
     /** Rotate {@code v} by a {@code (x,y,z,w)} quaternion (Hamilton / three.js convention). */
