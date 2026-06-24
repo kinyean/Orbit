@@ -138,18 +138,22 @@ public class ScenarioService {
         measuredDatasets.saveAndFlush(new MeasuredDataset(datasetId, owner.getId(), satName, noradId,
                 eph.frame(), startUtc, endUtc, samples.size(), fileName(path), hash, blob));
 
-        // Chief = the measured craft (read-only truth); window = data span; numerical
-        // fidelity applies to any hypothetical deputies added later (the chief is served
-        // from the ephemeris regardless of this field). When the file carries measured
-        // attitude (slice 2), the chief flies it ("measured" mode → the role's dataset
-        // quaternions); otherwise it falls back to the modeled LVLH attitude (null).
+        // Chief = the measured craft (read-only truth); window = data span. Fidelity
+        // applies ONLY to non-measured deputies added later — the chief is always served
+        // from the tabulated ephemeris regardless of this field. Default to SGP4, not
+        // numerical: measured windows span days, and a catalog-TLE deputy propagated
+        // numerically over days is very slow (R18 — a 7-day window can take ~90 s to
+        // encode, so nothing renders meanwhile) AND no more accurate than SGP4 for a
+        // stale catalog TLE. Switch a specific scenario to numerical when warranted.
+        // When the file carries measured attitude (slice 2), the chief flies it
+        // ("measured" mode → the role's dataset quaternions); else modeled LVLH (null).
         boolean hasAttitude = eph.attitude() != null && !eph.attitude().isEmpty();
         ScenarioBody.AttitudeProfile attitude =
                 hasAttitude ? new ScenarioBody.AttitudeProfile("measured", null) : null;
         ScenarioBody.Role chief = new ScenarioBody.Role("chief", noradId, satName,
                 new ScenarioBody.InitialState("ephemeris", null, datasetId.toString()),
                 List.of(), List.of(), attitude);
-        ScenarioBody body = new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION, "numerical",
+        ScenarioBody body = new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION, "sgp4",
                 new ScenarioBody.TimeRange(startUtc.toString(), endUtc.toString()), chief, List.of());
 
         String scenarioName = satName + " (measured " + startUtc.toLocalDate() + ")";
