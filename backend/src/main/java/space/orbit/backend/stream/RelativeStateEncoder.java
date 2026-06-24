@@ -8,6 +8,9 @@ import java.io.UncheckedIOException;
 import java.time.Instant;
 import java.util.List;
 import org.springframework.stereotype.Component;
+import space.orbit.backend.analysis.ConjunctionEvent;
+import space.orbit.backend.analysis.ConstraintViolationEvent;
+import space.orbit.backend.analysis.EclipseEvent;
 import space.orbit.backend.analysis.SensorEvent;
 import space.orbit.backend.scenario.ScenarioBody;
 
@@ -49,12 +52,25 @@ public class RelativeStateEncoder {
      * @param chiefSensors      the chief's body-fixed sensors (Phase 7); null/empty if none
      * @param events            sensor acquisition/loss events over the window (Phase 7,
      *                          US-EVT-01); null/empty if no sensors. Top-level array.
+     * @param sunVector         Sun unit-direction samples in the chief-LVLH scene
+     *                          (Phase 8, US-ENV-01), {@code [t,sx,sy,sz, ...]} (stride
+     *                          4); drives the proximity DirectionalLight. Null/empty
+     *                          when absent (older clients ignore it). Additive.
+     * @param moonVector        Moon unit-direction samples, same layout as {@code sunVector}
+     * @param eclipses          per-spacecraft eclipse ingress/egress events (Phase 8,
+     *                          US-ENV-02); top-level array, omitted when empty
+     * @param conjunctions      intra-scenario closest-approach events below the threshold
+     *                          (Phase 8, US-EVT-02); top-level array, omitted when empty
+     * @param violations        sun-keep-out / approach-corridor violation events (Phase 8,
+     *                          US-EVT-03); top-level array, omitted when empty
      */
     public String encodeRelative(Instant epoch, int stepSeconds, int chiefId,
                                  double[] chiefAttitude, List<ScenarioBody.Sensor> chiefSensors,
                                  List<RelativeSamples> deputies, boolean includeVelocity,
                                  String fidelity, double maxSeparationM, double chiefEccentricity,
-                                 double chiefRadiusM, List<SensorEvent> events) {
+                                 double chiefRadiusM, List<SensorEvent> events,
+                                 double[] sunVector, double[] moonVector, List<EclipseEvent> eclipses,
+                                 List<ConjunctionEvent> conjunctions, List<ConstraintViolationEvent> violations) {
         int stride = includeVelocity ? 7 : 4;
         StringWriter writer = new StringWriter(1 << 14);
         try (JsonGenerator g = JSON.createGenerator(writer)) {
@@ -94,6 +110,15 @@ public class RelativeStateEncoder {
             g.writeEndArray();
 
             writeEvents(g, events);
+
+            // Environment (Phase 8) — Sun/Moon LVLH directions + eclipse events. All
+            // additive (omitted when empty); VERSION stays "1" (R12).
+            writeDirection(g, "sunVector", sunVector);
+            writeDirection(g, "moonVector", moonVector);
+            writeEclipses(g, eclipses);
+            // Conjunctions + constraint violations (Phase 8, US-EVT-02/03) — additive.
+            writeConjunctions(g, conjunctions);
+            writeViolations(g, violations);
 
             g.writeEndObject();
         } catch (IOException e) {
@@ -214,6 +239,82 @@ public class RelativeStateEncoder {
             g.writeNumberField("targetId", e.targetId());
             g.writeStringField("epoch", e.epoch().toString());
             g.writeNumberField("rangeM", Math.round(e.rangeM()));
+            g.writeEndObject();
+        }
+        g.writeEndArray();
+    }
+
+    /**
+     * A Sun/Moon unit-direction series as a flat {@code [t,x,y,z, ...]} array (stride 4)
+     * in the chief-LVLH scene (Phase 8). Times whole seconds; components to 1e-6.
+     * Omitted when null/empty so older clients ignore it.
+     */
+    private void writeDirection(JsonGenerator g, String field, double[] dir) throws IOException {
+        if (dir == null || dir.length < 4) {
+            return;
+        }
+        g.writeArrayFieldStart(field);
+        for (int base = 0; base + 4 <= dir.length; base += 4) {
+            g.writeNumber(Math.round(dir[base]));        // t (whole seconds)
+            g.writeNumber(roundMicros(dir[base + 1]));   // x
+            g.writeNumber(roundMicros(dir[base + 2]));   // y
+            g.writeNumber(roundMicros(dir[base + 3]));   // z
+        }
+        g.writeEndArray();
+    }
+
+    /** Eclipse ingress/egress events (Phase 8, US-ENV-02). Top-level; omitted when empty. */
+    private void writeEclipses(JsonGenerator g, List<EclipseEvent> eclipses) throws IOException {
+        if (eclipses == null || eclipses.isEmpty()) {
+            return;
+        }
+        g.writeArrayFieldStart("eclipses");
+        for (EclipseEvent e : eclipses) {
+            g.writeStartObject();
+            g.writeStringField("type", e.type());
+            g.writeNumberField("noradId", e.noradId());
+            g.writeStringField("epoch", e.epoch().toString());
+            g.writeEndObject();
+        }
+        g.writeEndArray();
+    }
+
+    /** Intra-scenario conjunctions (Phase 8, US-EVT-02). Top-level; omitted when empty. */
+    private void writeConjunctions(JsonGenerator g, List<ConjunctionEvent> conjunctions) throws IOException {
+        if (conjunctions == null || conjunctions.isEmpty()) {
+            return;
+        }
+        g.writeArrayFieldStart("conjunctions");
+        for (ConjunctionEvent c : conjunctions) {
+            g.writeStartObject();
+            g.writeNumberField("aNoradId", c.aNoradId());
+            g.writeNumberField("bNoradId", c.bNoradId());
+            g.writeStringField("tcaEpoch", c.tcaEpoch().toString());
+            g.writeNumberField("missDistanceM", Math.round(c.missDistanceM()));
+            g.writeEndObject();
+        }
+        g.writeEndArray();
+    }
+
+    /** Constraint-violation events (Phase 8, US-EVT-03). Top-level; omitted when empty. */
+    private void writeViolations(JsonGenerator g, List<ConstraintViolationEvent> violations) throws IOException {
+        if (violations == null || violations.isEmpty()) {
+            return;
+        }
+        g.writeArrayFieldStart("violations");
+        for (ConstraintViolationEvent v : violations) {
+            g.writeStartObject();
+            g.writeStringField("type", v.type());
+            g.writeStringField("constraintId", v.constraintId());
+            g.writeStringField("kind", v.kind());
+            g.writeNumberField("hostId", v.hostId());
+            if (v.sensorId() != null) {
+                g.writeStringField("sensorId", v.sensorId());
+            }
+            g.writeNumberField("targetId", v.targetId());
+            g.writeStringField("epoch", v.epoch().toString());
+            g.writeNumberField("valueDeg", Math.round(v.valueDeg() * 100.0) / 100.0);
+            g.writeNumberField("limitDeg", Math.round(v.limitDeg() * 100.0) / 100.0);
             g.writeEndObject();
         }
         g.writeEndArray();

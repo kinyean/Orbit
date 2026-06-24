@@ -9,18 +9,27 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.orekit.propagation.analytical.tle.TLE;
 import space.orbit.backend.io.GpRecord;
+import space.orbit.backend.io.MeasuredEphemeris;
 import space.orbit.backend.prop.FrameService;
 import space.orbit.backend.prop.NumericalPropagation;
 import space.orbit.backend.prop.OrekitTestData;
 import space.orbit.backend.prop.PropagationService;
 import space.orbit.backend.prop.SatellitePropagator;
 import space.orbit.backend.prop.TleFactory;
+import space.orbit.backend.scenario.MeasuredDataset;
+import space.orbit.backend.scenario.MeasuredDatasetCodec;
+import space.orbit.backend.scenario.MeasuredDatasetRepository;
 import space.orbit.backend.scenario.ScenarioBody;
 import space.orbit.backend.scenario.ScenarioService;
 
@@ -45,12 +54,18 @@ class ScenarioStreamServiceTests {
     // --- fixtures -------------------------------------------------------------
 
     private static ScenarioStreamService service(ScenarioStreamProperties props, ScenarioService scenarioService) {
+        return service(props, scenarioService, mock(MeasuredDatasetRepository.class));
+    }
+
+    private static ScenarioStreamService service(ScenarioStreamProperties props, ScenarioService scenarioService,
+                                                 MeasuredDatasetRepository measuredDatasets) {
         FrameService frames = new FrameService();
         frames.init();
         PropagationService prop = new PropagationService(
                 new SatellitePropagator(frames), new NumericalPropagation(frames), frames);
         ScenarioStreamService svc = new ScenarioStreamService(
-                scenarioService, prop, frames, new CzmlEncoder(), new RelativeStateEncoder(), props);
+                scenarioService, prop, frames, new CzmlEncoder(), new RelativeStateEncoder(), props,
+                measuredDatasets);
         svc.init();
         return svc;
     }
@@ -321,6 +336,100 @@ class ScenarioStreamServiceTests {
         double qz = d0.get("att").get(3).asDouble(), qw = d0.get("att").get(4).asDouble();
         assertThat(Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw))
                 .as("modeled attitude is a unit quaternion").isCloseTo(1.0, within(0.01));
+    }
+
+    @Test
+    void relativeEnvelopeCarriesUnitSunAndMoonVectors() throws Exception {
+        // Phase 8 (US-ENV-01): the envelope carries Sun/Moon LVLH unit-direction
+        // samples on the position grid. Additive (VERSION "1"); each sample unit-norm.
+        ScenarioBody body = body("sgp4", "2024-06-01T12:00:00Z", "2024-06-01T13:30:00Z");
+        ScenarioStreamService svc = service(new ScenarioStreamProperties(30, 5000, true, true), mockBody(body));
+        JsonNode rel = MAPPER.readTree(svc.loadAndEncode(ID, EMAIL).relative());
+
+        assertThat(rel.get("contractVersion").asText()).isEqualTo(StreamContract.VERSION);
+        for (String field : new String[] {"sunVector", "moonVector"}) {
+            JsonNode v = rel.get(field);
+            assertThat(v).as(field + " present").isNotNull();
+            assertThat(v.size() % 4).isZero();
+            assertThat(v.size()).isGreaterThan(0);
+            for (int base = 0; base + 4 <= v.size(); base += 4) {
+                double x = v.get(base + 1).asDouble();
+                double y = v.get(base + 2).asDouble();
+                double z = v.get(base + 3).asDouble();
+                assertThat(Math.sqrt(x * x + y * y + z * z))
+                        .as(field + " sample is a unit vector").isCloseTo(1.0, within(0.01));
+            }
+        }
+        // Eclipses are geometry-dependent (may be empty here); when present they're well-formed.
+        JsonNode eclipses = rel.get("eclipses");
+        if (eclipses != null) {
+            for (JsonNode e : eclipses) {
+                assertThat(e.get("type").asText()).isIn("penumbra-ingress", "umbra-ingress",
+                        "umbra-egress", "penumbra-egress");
+                assertThat(e.has("noradId")).isTrue();
+                assertThat(e.has("epoch")).isTrue();
+            }
+        }
+    }
+
+    @Test
+    void measuredEphemerisChiefStreamsWithSunVectorOverTheMargin() throws Exception {
+        // Regression (Phase 8): a measured (tabulated-ephemeris) chief has NO data over the
+        // pre/post-window margin, so the env pass's `eci.getTransformTo(lvlh, date)` throws
+        // there. Before the per-step HOLD guard that 4422'd the whole stream ("a spacecraft
+        // leaves the propagation model's valid domain"). It must now stream cleanly, and the
+        // Sun vector must be present + unit-norm (held across the margin).
+        UUID datasetId = UUID.randomUUID();
+        long startMs = Instant.parse("2026-01-01T00:00:00Z").toEpochMilli();
+        long stepMs = 300_000L; // 5-min nodes, like the WOD data
+        int nodes = 13;
+        List<MeasuredEphemeris.Sample> samples = circularLeoSamples(startMs, stepMs, nodes);
+        byte[] blob = MeasuredDatasetCodec.encode(samples);
+        OffsetDateTime startUtc = OffsetDateTime.ofInstant(Instant.ofEpochMilli(startMs), ZoneOffset.UTC);
+        OffsetDateTime endUtc = OffsetDateTime.ofInstant(
+                Instant.ofEpochMilli(startMs + (long) (nodes - 1) * stepMs), ZoneOffset.UTC);
+        MeasuredDataset ds = new MeasuredDataset(datasetId, UUID.randomUUID(), "TELEOS-2-LIKE", 56310,
+                "EME2000", startUtc, endUtc, samples.size(), "test.csv", "hash", blob);
+        MeasuredDatasetRepository repo = mock(MeasuredDatasetRepository.class);
+        when(repo.findById(datasetId)).thenReturn(Optional.of(ds));
+
+        ScenarioBody.Role chief = new ScenarioBody.Role("chief", 56310, "TELEOS-2-LIKE",
+                new ScenarioBody.InitialState("ephemeris", null, datasetId.toString()));
+        ScenarioBody body = new ScenarioBody(5, "numerical",
+                new ScenarioBody.TimeRange(startUtc.toString(), endUtc.toString()), chief, List.of());
+
+        ScenarioStreamService svc = service(new ScenarioStreamProperties(30, 5000, true, true), mockBody(body), repo);
+        EncodedScenario encoded = svc.loadAndEncode(ID, EMAIL); // must NOT throw 4422
+        JsonNode rel = MAPPER.readTree(encoded.relative());
+
+        assertThat(rel.get("chiefId").asInt()).isEqualTo(56310);
+        JsonNode sun = rel.get("sunVector");
+        assertThat(sun).as("sunVector present for a measured chief").isNotNull();
+        assertThat(sun.size() % 4).isZero();
+        for (int base = 0; base + 4 <= sun.size(); base += 4) {
+            double x = sun.get(base + 1).asDouble();
+            double y = sun.get(base + 2).asDouble();
+            double z = sun.get(base + 3).asDouble();
+            assertThat(Math.sqrt(x * x + y * y + z * z))
+                    .as("sun direction unit-norm (held across the margin)").isCloseTo(1.0, within(0.01));
+        }
+    }
+
+    /** A short circular-LEO arc of measured samples (the chief-as-truth fixture). */
+    private static List<MeasuredEphemeris.Sample> circularLeoSamples(long startMs, long stepMs, int nodes) {
+        double mu = 3.986004418e14;
+        double r = 6_953_000.0;       // ~575 km
+        double v = Math.sqrt(mu / r); // circular speed
+        double n = v / r;             // mean motion (rad/s)
+        List<MeasuredEphemeris.Sample> out = new ArrayList<>(nodes);
+        for (int k = 0; k < nodes; k++) {
+            double t = k * (stepMs / 1000.0);
+            double th = n * t;
+            out.add(new MeasuredEphemeris.Sample(startMs + k * stepMs,
+                    r * Math.cos(th), r * Math.sin(th), 0.0,
+                    -v * Math.sin(th), v * Math.cos(th), 0.0));
+        }
+        return out;
     }
 
     /** {@link #bodyWithManeuver} plus a wide cone on the chief aimed back at the trailing deputy. */

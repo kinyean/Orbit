@@ -497,11 +497,123 @@ cone); Sun occlusion / sun-keep-out (Phase 8); GPU-depth occlusion of the drawn 
 
 ---
 
-## Phase 8 onwards
+## Measured-data ingestion *(feature track — Decision 26, [measured-data-plan.md](./measured-data-plan.md))*
 
-Acceptance criteria for Phases 8–11 will be drafted when the respective
+> Slices 1 & 2 complete & verified end-to-end (2026-06-22). Backend 126 tests green; frontend
+> type-check + build green.
+
+**Slice 1 — reader → dataset → playable measured position** ✅
+- [x] `WodCsvReader` streams a WOD CSV → `MeasuredEphemeris` (6 ECI pos/vel channels, km→m,
+      invalid-(0,0,0) drop, timestamp-aligned, ascending, EME2000). Verified vs the file's own
+      ECEF channels (~1 m). (`WodCsvReaderTest`.)
+- [x] Samples frozen into an immutable, content-hashed `MeasuredDataset` (V5 `measured_dataset`
+      table; gzipped `bytea`, deterministic — `MeasuredDatasetCodecTest`); referenced by
+      `InitialState{kind:"ephemeris", datasetId}` (`ScenarioBody` schema v4, forward-additive).
+- [x] `POST /scenarios/import/measured {path, noradId?}` on the audited path (`IMPORT_MEASURED`);
+      path constrained to `orbit.import.allowed-root` (traversal → 422); NORAD auto-resolved from
+      the file name (override optional). `update()` preserves the ephemeris chief on edit.
+- [x] Served via Orekit tabulated `Ephemeris` in `prepareEphemerisRole` (per-role source, not a
+      `Fidelity`); stream/encoders unchanged. **Stable interpolation** (2-point cubic Hermite;
+      guarded by `interpolatesStablyBetweenNodes` against the Runge overshoot).
+- [x] Frontend: `importMeasuredScenario` + collapsible import UI in `ScenarioPanel`.
+- [x] Dev-stack: TELEOS-2 (570 MB) → 201 in ~3.2 s, 55,744 samples; orbit radius holds
+      ~6953 km; co-launch deputies (LUMELITE-4/POEM-2) show a real ~76 km closest approach;
+      bad/outside-root/blank path → 422.
+
+**Slice 2 — measured attitude** ✅
+- [x] `WodCsvReader` extracts `EST_ATTD_Q1..Q4_8` as a **parallel attitude series**
+      (`MeasuredEphemeris.AttitudeSample` — own timestamps, raw components, non-unit rows dropped;
+      `WodCsvReaderTest`).
+- [x] `MeasuredDatasetCodec` stores attitude behind a **backward-compatible version sentinel** (v2;
+      legacy position-only v1 blobs still decode; deterministic — `MeasuredDatasetCodecTest`).
+- [x] `AttitudeProfile.mode="measured"` set on the chief at import (shape unchanged, `schemaVersion`
+      stays 4; `resolveRole` preserves it on edit).
+- [x] Stream **SLERPs** the dataset quaternions through the existing `"fixed"` path (`bodyAttitude`
+      in `ScenarioStreamService`; shared `prop/QuaternionSamples`, also used by `SensorEventComputer`);
+      additive `att` field, `VERSION="1"` (R12), deterministic (R11).
+- [x] Quaternion convention resolved empirically (scalar-last Q4=w, body→ECI ⇒ identity reorder;
+      `prop/MeasuredAttitude`) and **pinned by a signed-axis test** (`MeasuredAttitudeTest`, R15/R20);
+      flippable in one place; physical direction confirmed visually.
+- [x] Frontend: toggleable **body-axis triad** (`spacecraftModel.setAxesVisible` + a "Body axes"
+      control) so orientation is legible; legend reads **"measured"** from the loaded body.
+- [x] Dev-stack: re-import TELEOS-2 → 201, schema v4, chief `attitude.mode=measured`; the
+      `scenario-relative` frame carries the chief's measured `att` (4983 samples, varying, not identity).
+
+**Slice 3 — measured deputies / numerical handoff / OEM-AEM readers / browser upload** *(planned)*.
+
+---
+
+## Phase 8 — Environment & events
+
+> Sliced **8A / 8B / 8C** (see [phase-8-plan.md](./phase-8-plan.md), Decision 25).
+>
+> **Phase 8 complete — backend 152 tests green + frontend type-check/build green**
+> (2026-06-23). New `analysis/` computers (`EclipseEventComputer`, `ConjunctionEventComputer`,
+> `ConstraintChecker`, `ScreeningService`) on the Phase-7 sampled-trajectory pattern;
+> `FrameService` Sun/Moon + `directionInLvlh`; `ScenarioBody` schema **v5** (per-role
+> `Constraint` + top-level `missDistanceThresholdM`); additive `scenario-relative` fields
+> (`sunVector`/`moonVector`/`eclipses`/`conjunctions`/`violations`, `VERSION="1"`); new
+> constraint + miss-distance + screening REST. Frontend: `EnvironmentPanel.tsx` + the
+> Sun-driven proximity light rig + eclipse dimming + timeline bands/marks. Verified
+> end-to-end on the dev stack.
+
+**8A — Sun/Moon + lighting + eclipse (US-ENV-01/02/03, UC-5)** ✅
+- [x] Sun/Moon positions at sim time (reuse Orekit `CelestialBodyFactory`); their LVLH
+      unit directions sampled on the render grid (`FrameService.directionInLvlh`, rotation
+      only — R15) and streamed (`sunVector`/`moonVector`, stride-4, additive; unit-norm
+      asserted in `ScenarioStreamServiceTests`).
+- [x] Spacecraft illumination consistent with the Sun vector: the proximity view drives a
+      real `DirectionalLight` from `sunVector` (Earth day/night terminator; ambient/hemisphere
+      dropped low) — resolves the R17 flat-lighting hole.
+- [x] Eclipse umbra/penumbra per spacecraft (`analysis/EclipseEventComputer`, conical dual-cone
+      in geocentric ECI from `SampledGeocentricCraft` captured for free in the per-step loop —
+      no re-propagation; deterministic, R11). Streamed `eclipses`; drawn as timeline bands +
+      per-craft material dimming (`spacecraftModel.setEclipse`). `EclipseEventComputerTests`
+      (sunlit→penumbra→umbra→out; always-sunlit → none; determinism).
+
+**8B — conjunctions + constraints + timeline events (US-EVT-02/03/04, UC-4)** ✅
+- [x] Intra-scenario conjunction detection with a configurable miss-distance threshold
+      (`ScenarioBody.missDistanceThresholdM`, schema v5; default ~5 km): `ConjunctionEventComputer`
+      (pairwise LVLH range + golden-section refine **on the samples**, canonical `a<b`,
+      deterministic). Streamed `conjunctions`; timeline ticks. `ConjunctionEventComputerTests`.
+- [x] Constraint checks — **sun-keep-out** (Sun↔sensor-boresight angle; completes UC-4 step 7;
+      on a measured chief uses its real attitude) + **approach-corridor** (target outside a
+      cone about the host ram axis within range): `analysis/ConstraintChecker` →
+      violation-start/end events (`violations`). Audited via `addConstraint`/`removeConstraint`/
+      `setMissDistanceThreshold` (new free-VARCHAR audit actions; v5 body; no migration). 422
+      for unknown host/sensor + bad angle. `ConstraintCheckerTests` + `ScenarioServiceTests`.
+      *(Plume impingement deferred — needs per-burn plume geometry; `kind` record leaves room.)*
+- [x] Timeline event annotations populated: eclipse umbra/penumbra bands, conjunction TCA ticks,
+      constraint-violation marks (`Timeline.tsx`); `EnvironmentPanel.tsx` authors constraints +
+      threshold on the audited store path.
+
+**8C — catalog conjunction screening (US-EVT-02, UC-7)** ✅
+- [x] `POST /scenarios/{id}/screening?thresholdKm=…` → `analysis/ScreeningService`: propagate the
+      scenario craft over the window, screen vs the full live SGP4 catalog (`CatalogService.tracked()`)
+      with a **two-stage prune** (radial-shell band test, then fine sampled closest-approach +
+      golden-section on survivors, parallelised). Returns a sorted `ScreeningResult` (closest first)
+      tagged with the run instant (snapshot — catalog refreshes ~6 h, R11 caveat).
+      `ScreeningServiceTests` (planted co-orbital twin found; far GEO shell pruned; sorted).
+- [x] Frontend: a "Screen against catalog" action in `EnvironmentPanel` → threshold input + async
+      call → sortable results table (scenario craft / third-party / miss / TCA), click-row to scrub
+      to the TCA + highlight the third-party in the global view, and CSV export. Typed via the
+      regenerated OpenAPI client.
+
+**Invariants** ✅
+- [x] `scenario-relative` additions are all optional trailing fields; `StreamContract.VERSION`
+      stays `"1"` (R12). New REST regenerates the client (`gen:api`); stream fields stay
+      WebSocket-only. Determinism (R11) holds (fixed iteration counts, ordered grid scans, no
+      RNG/wall-clock) except 8C catalog screening (documented snapshot). Frame discipline (R15):
+      Sun/Moon directions + conjunction range + constraint angles in the LVLH scene; eclipse in
+      geocentric ECI (`SampledGeocentricCraft` vs `SampledCraft` at the type level).
+
+---
+
+## Phase 9 onwards
+
+Acceptance criteria for Phases 9–11 will be drafted when the respective
 phase begins, informed by what we learned in earlier phases. The
-[user-stories outline](./user-stories.md#phase-8--environment--events-outline)
+[user-stories outline](./user-stories.md#phase-9--advanced-maneuvers--analysis-outline)
 seeds each phase; the SRS clauses they map to are the verification source.
 
 ---

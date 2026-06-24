@@ -20,6 +20,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/scenarios/{id}/miss-distance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["setMissDistance"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/scenarios/{id}/attitude": {
         parameters: {
             query?: never;
@@ -68,6 +84,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/scenarios/{id}/screening": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["screen"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/scenarios/{id}/maneuvers": {
         parameters: {
             query?: never;
@@ -110,6 +142,38 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["hohmann"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scenarios/{id}/constraints": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["addConstraint"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scenarios/import/measured": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["importMeasured"];
         delete?: never;
         options?: never;
         head?: never;
@@ -180,6 +244,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/scenarios/{id}/constraints/{constraintId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["removeConstraint"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -203,6 +283,19 @@ export interface components {
             mode?: string;
             quaternion?: number[];
         };
+        Constraint: {
+            id?: string;
+            kind?: string;
+            /** Format: int32 */
+            hostNoradId?: number;
+            sensorId?: string;
+            /** Format: int32 */
+            targetNoradId?: number;
+            /** Format: double */
+            limitDeg?: number;
+            /** Format: double */
+            rangeM?: number;
+        };
         DeltaV: {
             /** Format: double */
             r?: number;
@@ -223,6 +316,7 @@ export interface components {
         InitialState: {
             kind?: string;
             tle?: components["schemas"]["Tle"];
+            datasetId?: string;
         };
         Maneuver: {
             id?: string;
@@ -245,6 +339,7 @@ export interface components {
             maneuvers?: components["schemas"]["Maneuver"][];
             sensors?: components["schemas"]["Sensor"][];
             attitude?: components["schemas"]["AttitudeProfile"];
+            constraints?: components["schemas"]["Constraint"][];
         };
         ScenarioBody: {
             /** Format: int32 */
@@ -253,6 +348,8 @@ export interface components {
             timeRange?: components["schemas"]["TimeRange"];
             chief?: components["schemas"]["Role"];
             deputies?: components["schemas"]["Role"][];
+            /** Format: double */
+            missDistanceThresholdM?: number;
         };
         ScenarioResponse: {
             id?: string;
@@ -285,6 +382,10 @@ export interface components {
             line2?: string;
             epoch?: string;
         };
+        MissDistanceRequest: {
+            /** Format: double */
+            missDistanceThresholdM?: number;
+        };
         AttitudeRequest: {
             /** Format: int32 */
             noradId?: number;
@@ -316,6 +417,27 @@ export interface components {
             /** Format: double */
             clockDeg?: number;
         };
+        ConjunctionResult: {
+            /** Format: int32 */
+            scenarioNoradId?: number;
+            scenarioName?: string;
+            /** Format: int32 */
+            catalogNoradId?: number;
+            catalogName?: string;
+            tcaEpoch?: string;
+            /** Format: double */
+            missDistanceM?: number;
+        };
+        ScreeningResult: {
+            /** Format: double */
+            thresholdM?: number;
+            ranAt?: string;
+            /** Format: int32 */
+            catalogSize?: number;
+            /** Format: int32 */
+            candidateCount?: number;
+            conjunctions?: components["schemas"]["ConjunctionResult"][];
+        };
         ManeuverRequest: {
             /** Format: int32 */
             deputyNoradId?: number;
@@ -338,6 +460,23 @@ export interface components {
             deputyNoradId?: number;
             /** Format: double */
             targetAltitudeKm?: number;
+        };
+        ConstraintRequest: {
+            /** Format: int32 */
+            hostNoradId?: number;
+            kind: string;
+            sensorId?: string;
+            /** Format: int32 */
+            targetNoradId?: number;
+            /** Format: double */
+            limitDeg?: number;
+            /** Format: double */
+            rangeM?: number;
+        };
+        MeasuredImportRequest: {
+            path: string;
+            /** Format: int32 */
+            noradId?: number;
         };
         ScenarioSummary: {
             id?: string;
@@ -443,6 +582,32 @@ export interface operations {
             };
         };
     };
+    setMissDistance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MissDistanceRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScenarioResponse"];
+                };
+            };
+        };
+    };
     setAttitude: {
         parameters: {
             query?: never;
@@ -539,6 +704,30 @@ export interface operations {
             };
         };
     };
+    screen: {
+        parameters: {
+            query?: {
+                thresholdKm?: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScreeningResult"];
+                };
+            };
+        };
+    };
     addManeuver: {
         parameters: {
             query?: never;
@@ -608,6 +797,56 @@ export interface operations {
         responses: {
             /** @description OK */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScenarioResponse"];
+                };
+            };
+        };
+    };
+    addConstraint: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConstraintRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScenarioResponse"];
+                };
+            };
+        };
+    };
+    importMeasured: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MeasuredImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -690,6 +929,29 @@ export interface operations {
             path: {
                 id: string;
                 maneuverId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScenarioResponse"];
+                };
+            };
+        };
+    };
+    removeConstraint: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                constraintId: string;
             };
             cookie?: never;
         };

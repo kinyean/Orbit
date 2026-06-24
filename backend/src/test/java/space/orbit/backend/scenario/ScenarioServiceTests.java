@@ -22,6 +22,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import space.orbit.backend.catalog.CatalogService;
 import space.orbit.backend.catalog.TleSnapshot;
+import space.orbit.backend.io.WodCsvReader;
 
 /**
  * Service-layer behavior with mocked repos + catalog (no DB, no Orekit). Pins
@@ -38,14 +39,17 @@ class ScenarioServiceTests {
     @Mock private ScenarioRepository scenarios;
     @Mock private ScenarioVersionRepository versions;
     @Mock private AuditLogRepository auditLog;
+    @Mock private MeasuredDatasetRepository measuredDatasets;
     @Mock private UserService userService;
     @Mock private CatalogService catalog;
+    @Mock private WodCsvReader wodReader;
 
     private ScenarioService service;
 
     @BeforeEach
     void setUp() {
-        service = new ScenarioService(scenarios, versions, auditLog, userService, catalog, new ObjectMapper());
+        service = new ScenarioService(scenarios, versions, auditLog, measuredDatasets, userService, catalog,
+                wodReader, new ObjectMapper(), "/shared_folder");
         when(userService.currentUser()).thenReturn(new User(OWNER, "dev@orbit.local", List.of("admin")));
         when(scenarios.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
         when(scenarios.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -84,10 +88,20 @@ class ScenarioServiceTests {
     void updateCreatesMonotonicNextVersionAndTracksLatest() {
         UUID id = UUID.randomUUID();
         Scenario existing = new Scenario(id, OWNER, "Rendezvous");
-        existing.setLatestVersionId(UUID.randomUUID());
+        UUID priorVersionId = UUID.randomUUID();
+        existing.setLatestVersionId(priorVersionId);
         when(scenarios.findById(id)).thenReturn(Optional.of(existing));
         when(versions.findMaxVersionNo(id)).thenReturn(Optional.of(1));
         when(versions.countByScenarioId(id)).thenReturn(2L);
+        // update() now merges against the current body (to preserve measured roles),
+        // so it reads the latest version. Provide a plain TLE-chief prior body.
+        when(versions.findById(priorVersionId)).thenReturn(Optional.of(new ScenarioVersion(
+                priorVersionId, id, 1, OWNER,
+                "{\"schemaVersion\":4,\"fidelity\":\"sgp4\","
+                        + "\"timeRange\":{\"start\":\"2024-06-01T00:00:00Z\",\"end\":\"2024-06-02T00:00:00Z\"},"
+                        + "\"chief\":{\"role\":\"chief\",\"noradId\":25544,\"name\":\"ISS (ZARYA)\","
+                        + "\"initialState\":{\"kind\":\"tle\",\"tle\":{\"line1\":\"1 25544U L1\","
+                        + "\"line2\":\"2 25544 L2\",\"epoch\":\"2024-06-01T12:00:00.000\"}}},\"deputies\":[]}")));
 
         ScenarioResponse resp = service.update(id, draft("Rendezvous v2", 25544, List.of()));
 
@@ -170,7 +184,7 @@ class ScenarioServiceTests {
         ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
         verify(versions).saveAndFlush(vCap.capture());
         assertThat(vCap.getValue().getVersionNo()).isEqualTo(2);
-        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":3").contains("delta_v");
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":5").contains("delta_v");
         assertThat(s.getLatestVersionId()).isEqualTo(vCap.getValue().getId());
         verify(auditLog, times(1)).save(any());
 
@@ -189,9 +203,9 @@ class ScenarioServiceTests {
 
         ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
         verify(versions).saveAndFlush(vCap.capture());
-        // The v1 body deserialized (null maneuvers/sensors → empty), then re-stamped to v3.
-        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":3").contains("delta_v");
-        assertThat(resp.body().schemaVersion()).isEqualTo(3);
+        // The v1 body deserialized (null maneuvers/sensors → empty), then re-stamped to v5.
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":5").contains("delta_v");
+        assertThat(resp.body().schemaVersion()).isEqualTo(5);
         assertThat(resp.body().chief().noradId()).isEqualTo(25544);
         assertThat(resp.body().deputies().get(0).maneuvers()).hasSize(1);
     }
@@ -273,7 +287,7 @@ class ScenarioServiceTests {
         ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
         verify(versions).saveAndFlush(vCap.capture());
         assertThat(vCap.getValue().getVersionNo()).isEqualTo(2);
-        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":3").contains("Imager");
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":5").contains("Imager");
         assertThat(s.getLatestVersionId()).isEqualTo(vCap.getValue().getId());
         verify(auditLog, times(1)).save(any());
         assertThat(resp.body().chief().sensors()).hasSize(1);
@@ -378,6 +392,80 @@ class ScenarioServiceTests {
         ScenarioResponse resp = service.addManeuver(id,
                 new ManeuverDraft(33591, "2024-06-01T06:00:00Z", "ric", 0.0, 1.0, 0.0));
         assertThat(resp.body().deputies().get(0).sensors()).as("sensors survive a maneuver edit").hasSize(1);
+        assertThat(resp.body().deputies().get(0).maneuvers()).hasSize(1);
+    }
+
+    // --- constraints & conjunctions (Phase 8, US-EVT-02 / US-EVT-03) ---------
+
+    @Test
+    void addApproachCorridorWritesV5VersionWithOneAudit() {
+        UUID id = UUID.randomUUID();
+        Scenario s = existingWithBody(id, DEPUTY_TLE_BODY_V2);
+
+        ScenarioResponse resp = service.addConstraint(id,
+                new ConstraintDraft(25544, "approach-corridor", null, 33591, 15.0, 5000.0));
+
+        ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
+        verify(versions).saveAndFlush(vCap.capture());
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":5").contains("approach-corridor");
+        assertThat(s.getLatestVersionId()).isEqualTo(vCap.getValue().getId());
+        verify(auditLog, times(1)).save(any());
+        assertThat(resp.body().chief().constraints()).hasSize(1);
+        assertThat(resp.body().chief().constraints().get(0).targetNoradId()).isEqualTo(33591);
+    }
+
+    @Test
+    void addSunKeepOutRequiresASensorOnTheHost() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        // No sensor on the host yet → 422.
+        assertThatThrownBy(() -> service.addConstraint(id,
+                new ConstraintDraft(25544, "sun-keep-out", "nope", 0, 20.0, 0.0)))
+                .isInstanceOf(ScenarioValidationException.class);
+        verify(auditLog, never()).save(any());
+    }
+
+    @Test
+    void rejectsConstraintWithBadAngleAndUnknownHost() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        assertThatThrownBy(() -> service.addConstraint(id,
+                new ConstraintDraft(25544, "approach-corridor", null, 33591, 200.0, 5000.0)))
+                .isInstanceOf(ScenarioValidationException.class); // limitDeg out of (0,180)
+        assertThatThrownBy(() -> service.addConstraint(id,
+                new ConstraintDraft(99999, "approach-corridor", null, 33591, 15.0, 5000.0)))
+                .isInstanceOf(ScenarioValidationException.class); // unknown host
+        verify(versions, never()).saveAndFlush(any());
+        verify(auditLog, never()).save(any());
+    }
+
+    @Test
+    void setMissDistanceThresholdWritesNewVersion() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        ScenarioResponse resp = service.setMissDistanceThreshold(id, 1500.0);
+
+        ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
+        verify(versions).saveAndFlush(vCap.capture());
+        assertThat(vCap.getValue().getBody()).contains("missDistanceThresholdM");
+        verify(auditLog, times(1)).save(any());
+        assertThat(resp.body().missDistanceThresholdM()).isEqualTo(1500.0);
+    }
+
+    @Test
+    void editingManeuverPreservesConstraintsAndThreshold() {
+        // Regression: a maneuver edit must not wipe a host's constraints or the threshold (Phase 8).
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        service.addConstraint(id, new ConstraintDraft(25544, "approach-corridor", null, 33591, 15.0, 5000.0));
+        ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
+        verify(versions).saveAndFlush(vCap.capture());
+        ScenarioVersion saved = vCap.getValue();
+        when(versions.findById(saved.getId())).thenReturn(Optional.of(saved));
+
+        ScenarioResponse resp = service.addManeuver(id,
+                new ManeuverDraft(33591, "2024-06-01T06:00:00Z", "ric", 0.0, 1.0, 0.0));
+        assertThat(resp.body().chief().constraints()).as("constraints survive a maneuver edit").hasSize(1);
         assertThat(resp.body().deputies().get(0).maneuvers()).hasSize(1);
     }
 

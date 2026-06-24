@@ -339,12 +339,24 @@ Sliced into **3A** (scenario composition on SGP4) then **3B** (physics depth).
 - See [phase-7-plan.md](./phase-7-plan.md), Decision 24. *(Deferred: CCSDS AEM measured
   attitude, gimbaled pointing, frustum/polygonal FOV, sun-keep-out.)*
 
-### Phase 8 — Environment & events
-- Sun/Moon positions; eclipse umbra/penumbra per spacecraft.
-- Spacecraft illumination consistent with sun vector.
-- Conjunction detection (configurable miss-distance threshold).
-- Constraint checks: approach corridor, sun keep-out, plume impingement.
-- Timeline event annotations populated.
+### Phase 8 — Environment & events ✅ (done)
+Sliced 8A/8B/8C (see [phase-8-plan.md](./phase-8-plan.md), Decision 25). Rides the Phase-7
+architecture (sampled-trajectory `analysis/` computers, additive `scenario-relative` fields —
+`VERSION` stays `"1"`, forward-additive `ScenarioBody` schema **v5**, single audited
+`ScenarioService`). Backend 152 tests green; frontend type-check + build green; verified
+end-to-end on the dev stack.
+- **8A** — Sun/Moon positions (reuse Orekit `CelestialBodyFactory`) streamed as LVLH unit
+  directions → real `DirectionalLight` + Earth day/night terminator (resolves R17 flat
+  lighting); conical umbra/penumbra eclipse per spacecraft (`EclipseEventComputer`, geocentric
+  ECI) → timeline bands + Sun-consistent craft dimming.
+- **8B** — intra-scenario conjunction detection (`ConjunctionEventComputer`, configurable
+  `missDistanceThresholdM`); constraint checks — sun-keep-out + approach corridor
+  (`ConstraintChecker`); timeline event annotations (eclipse bands, conjunction ticks,
+  violation marks) + `EnvironmentPanel`. *(Plume impingement deferred — needs per-burn
+  plume geometry.)*
+- **8C** — catalog conjunction screening (`ScreeningService`, `POST /scenarios/{id}/screening`,
+  two-stage shell-prune + fine refine) → sorted results table + CSV (UC-7); a snapshot vs the
+  live catalog (R11 caveat).
 
 ### Phase 9 — Advanced maneuvers & analysis
 - **Flight-ready rendezvous** — move the two-impulse Lambert template (Phase 5C) from an
@@ -372,6 +384,14 @@ Sliced into **3A** (scenario composition on SGP4) then **3B** (physics depth).
 - Sample scenarios; tooltips / help; performance pass to SRS §5.1 metrics.
 - PNG snapshots + MP4 sequence export from rendered canvases.
 - OpenAPI docs polish; user guide.
+
+### Measured-data ingestion *(feature track, off the phase line — Decision 26)*
+Real measured telemetry (WOD CSV: GNSS ECI pos/vel + ADCS quaternions) imported as a
+scenario whose chief is the measured craft (read-only truth), served via an Orekit
+tabulated ephemeris through the existing stream. Generalizes the deferred CCSDS OEM
+import (Decision 19) + AEM attitude (Decision 24). **Slice 1 done** (position);
+slices 2–3 (attitude; measured deputies / numerical handoff / OEM-AEM readers / upload)
+in [measured-data-plan.md](./measured-data-plan.md).
 
 ---
 

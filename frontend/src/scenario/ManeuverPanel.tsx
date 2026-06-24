@@ -1,7 +1,7 @@
 import { useState, useSyncExternalStore, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { useStore } from '../store/useStore';
 import { getRelativeData, getRelativeVersion, subscribeRelative } from '../stream/relativeBuffer';
-import { useCollapsed } from '../lib/usePanelChrome';
+import { useCollapsed, usePanelSize, usePanelPosition } from '../lib/usePanelChrome';
 
 const CW_MAX_SEPARATION_M = 10_000; // CW linearization validity (~10 km)
 const CW_MAX_ECCENTRICITY = 0.01; // CW assumes a near-circular chief
@@ -56,9 +56,11 @@ export default function ManeuverPanel() {
   const [targetAlt, setTargetAlt] = useState('');
   const [arrival, setArrival] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
-  // Draggable position (defaults beside the scenario panel so it doesn't cover it).
-  const [pos, setPos] = useState({ x: 248, y: 320 });
+  // Draggable position (defaults beside the scenario panel so it doesn't cover it),
+  // persisted + viewport-clamped so a refresh keeps it on-screen.
+  const { pos, setPos, commitPos } = usePanelPosition('maneuvers', { x: 248, y: 320 });
   const { collapsed, toggle } = useCollapsed('maneuvers');
+  const panelRef = usePanelSize<HTMLElement>('maneuvers', collapsed);
 
   function onDragStart(e: ReactPointerEvent) {
     if ((e.target as HTMLElement).closest('button')) return; // let header buttons click, not drag
@@ -66,12 +68,15 @@ export default function ManeuverPanel() {
     const startX = e.clientX;
     const startY = e.clientY;
     const origin = { ...pos };
+    let last = origin;
     const move = (ev: PointerEvent) => {
       const x = Math.min(window.innerWidth - 80, Math.max(0, origin.x + (ev.clientX - startX)));
       const y = Math.min(window.innerHeight - 60, Math.max(0, origin.y + (ev.clientY - startY)));
-      setPos({ x, y });
+      last = { x, y };
+      setPos(last);
     };
     const up = () => {
+      commitPos(last); // persist the final spot so a refresh keeps it
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
     };
@@ -139,7 +144,7 @@ export default function ManeuverPanel() {
   }
 
   return (
-    <aside className="maneuver-panel" style={{ left: pos.x, top: pos.y }}>
+    <aside ref={panelRef} className={`maneuver-panel${collapsed ? ' is-collapsed' : ''}`} style={{ left: pos.x, top: pos.y }}>
       <div className="mvr-drag" onPointerDown={onDragStart} title="Drag to move">
         <span className="mvr-drag-title"><span className="mvr-grip" aria-hidden>⠿</span> Maneuvers · ΔV</span>
         <button

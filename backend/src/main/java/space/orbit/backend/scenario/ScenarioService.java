@@ -2,19 +2,27 @@ package space.orbit.backend.scenario;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import space.orbit.backend.catalog.CatalogService;
 import space.orbit.backend.catalog.TleSnapshot;
+import space.orbit.backend.io.MeasuredEphemeris;
+import space.orbit.backend.io.WodCsvReader;
 
 /**
  * The single mutation path for scenarios (Decision 16). Every create/update/
@@ -32,22 +40,33 @@ public class ScenarioService {
     private final ScenarioRepository scenarios;
     private final ScenarioVersionRepository versions;
     private final AuditLogRepository auditLog;
+    private final MeasuredDatasetRepository measuredDatasets;
     private final UserService userService;
     private final CatalogService catalog;
+    private final WodCsvReader wodReader;
     private final ObjectMapper objectMapper;
+
+    /** Filesystem root that measured-data imports must stay within (path-traversal guard). */
+    private final String importAllowedRoot;
 
     public ScenarioService(ScenarioRepository scenarios,
                            ScenarioVersionRepository versions,
                            AuditLogRepository auditLog,
+                           MeasuredDatasetRepository measuredDatasets,
                            UserService userService,
                            CatalogService catalog,
-                           ObjectMapper objectMapper) {
+                           WodCsvReader wodReader,
+                           ObjectMapper objectMapper,
+                           @Value("${orbit.import.allowed-root:}") String importAllowedRoot) {
         this.scenarios = scenarios;
         this.versions = versions;
         this.auditLog = auditLog;
+        this.measuredDatasets = measuredDatasets;
         this.userService = userService;
         this.catalog = catalog;
+        this.wodReader = wodReader;
         this.objectMapper = objectMapper;
+        this.importAllowedRoot = importAllowedRoot;
     }
 
     // --- commands -------------------------------------------------------------
@@ -80,6 +99,126 @@ public class ScenarioService {
     }
 
     /**
+     * Import a measured ephemeris (WOD CSV on the server) as a new scenario whose
+     * chief IS the measured craft — a read-only "truth" reference you compose
+     * hypothetical deputies around. The samples are frozen into an immutable
+     * {@link MeasuredDataset} (out of the jsonb body), referenced by the chief's
+     * {@code InitialState{kind:"ephemeris"}}; the time range spans the data. Goes
+     * through the same audited create path (Decision 16) — one version + one audit
+     * row ({@code IMPORT_MEASURED}).
+     *
+     * @param serverPath    path to the WOD CSV, constrained to {@code orbit.import.allowed-root}
+     * @param noradOverride optional NORAD id (used when the name isn't in the catalog)
+     */
+    @Transactional
+    public ScenarioResponse importMeasured(String serverPath, Integer noradOverride) {
+        User owner = userService.currentUser();
+        Path path = resolveImportPath(serverPath);
+
+        MeasuredEphemeris eph;
+        try (InputStream in = Files.newInputStream(path)) {
+            eph = wodReader.parse(in);
+        } catch (IOException e) {
+            throw new ScenarioValidationException("Could not read measured-data file: " + e.getMessage());
+        }
+        List<MeasuredEphemeris.Sample> samples = eph.samples();
+        if (samples == null || samples.size() < 2) {
+            throw new ScenarioValidationException("Measured-data file has too few valid states (need ≥ 2)");
+        }
+        int noradId = resolveNorad(eph.satelliteName(), noradOverride);
+        String satName = (eph.satelliteName() == null || eph.satelliteName().isBlank())
+                ? ("NORAD " + noradId) : eph.satelliteName();
+
+        // Freeze the samples + raw attitude as an immutable, content-hashed dataset (R11).
+        byte[] blob = MeasuredDatasetCodec.encode(samples, eph.attitude());
+        String hash = MeasuredDatasetCodec.sha256(blob);
+        OffsetDateTime startUtc = millisToOffset(samples.get(0).epochMillis());
+        OffsetDateTime endUtc = millisToOffset(samples.get(samples.size() - 1).epochMillis());
+        UUID datasetId = UUID.randomUUID();
+        measuredDatasets.saveAndFlush(new MeasuredDataset(datasetId, owner.getId(), satName, noradId,
+                eph.frame(), startUtc, endUtc, samples.size(), fileName(path), hash, blob));
+
+        // Chief = the measured craft (read-only truth); window = data span. Fidelity
+        // applies ONLY to non-measured deputies added later — the chief is always served
+        // from the tabulated ephemeris regardless of this field. Default to SGP4, not
+        // numerical: measured windows span days, and a catalog-TLE deputy propagated
+        // numerically over days is very slow (R18 — a 7-day window can take ~90 s to
+        // encode, so nothing renders meanwhile) AND no more accurate than SGP4 for a
+        // stale catalog TLE. Switch a specific scenario to numerical when warranted.
+        // When the file carries measured attitude (slice 2), the chief flies it
+        // ("measured" mode → the role's dataset quaternions); else modeled LVLH (null).
+        boolean hasAttitude = eph.attitude() != null && !eph.attitude().isEmpty();
+        ScenarioBody.AttitudeProfile attitude =
+                hasAttitude ? new ScenarioBody.AttitudeProfile("measured", null) : null;
+        ScenarioBody.Role chief = new ScenarioBody.Role("chief", noradId, satName,
+                new ScenarioBody.InitialState("ephemeris", null, datasetId.toString()),
+                List.of(), List.of(), attitude);
+        ScenarioBody body = new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION, "sgp4",
+                new ScenarioBody.TimeRange(startUtc.toString(), endUtc.toString()), chief, List.of());
+
+        String scenarioName = satName + " (measured " + startUtc.toLocalDate() + ")";
+        String json = serialize(body);
+        UUID scenarioId = UUID.randomUUID();
+        UUID versionId = UUID.randomUUID();
+        Scenario scenario = new Scenario(scenarioId, owner.getId(), scenarioName);
+        try {
+            scenarios.saveAndFlush(scenario);
+        } catch (DataIntegrityViolationException e) {
+            throw new DuplicateScenarioNameException(scenarioName);
+        }
+        versions.saveAndFlush(new ScenarioVersion(versionId, scenarioId, 1, owner.getId(), json));
+        scenario.setLatestVersionId(versionId);
+        scenarios.saveAndFlush(scenario);
+        audit(scenarioId, versionId, owner.getId(), "IMPORT_MEASURED",
+                "Imported measured ephemeris for " + satName + " (" + samples.size() + " states)");
+        return toResponse(scenario, body, 1, 1);
+    }
+
+    /** Validate the import path is a readable file within the configured allowed root. */
+    private Path resolveImportPath(String serverPath) {
+        if (serverPath == null || serverPath.isBlank()) {
+            throw new ScenarioValidationException("import path is required");
+        }
+        if (importAllowedRoot == null || importAllowedRoot.isBlank()) {
+            throw new ScenarioValidationException(
+                    "measured-data import is disabled (orbit.import.allowed-root not configured)");
+        }
+        Path root = Path.of(importAllowedRoot).toAbsolutePath().normalize();
+        Path path;
+        try {
+            path = Path.of(serverPath).toAbsolutePath().normalize();
+        } catch (RuntimeException e) {
+            throw new ScenarioValidationException("invalid import path");
+        }
+        if (!path.startsWith(root)) {
+            throw new ScenarioValidationException("import path must be within " + root);
+        }
+        if (Files.isDirectory(path) || !Files.isReadable(path)) {
+            throw new ScenarioValidationException("import path is not a readable file: " + path);
+        }
+        return path;
+    }
+
+    private int resolveNorad(String satelliteName, Integer override) {
+        if (override != null && override > 0) {
+            return override;
+        }
+        return catalog.findNoradByName(satelliteName)
+                .orElseThrow(() -> new ScenarioValidationException(
+                        "Could not resolve a NORAD id for satellite \"" + satelliteName
+                                + "\"; supply noradId explicitly"));
+    }
+
+    private static OffsetDateTime millisToOffset(long millis) {
+        return OffsetDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneOffset.UTC);
+    }
+
+    private static String fileName(Path p) {
+        Path f = p.getFileName();
+        return f == null ? null : f.toString();
+    }
+
+    /**
      * Seed a pre-built scenario body for {@code ownerId} if no live scenario of
      * that name exists (idempotent). Used to ship demo/sample scenarios whose
      * roles aren't catalog satellites (e.g. a synthetic close-formation), so the
@@ -106,7 +245,11 @@ public class ScenarioService {
     public ScenarioResponse update(UUID id, ScenarioDraft draft) {
         User author = userService.currentUser();
         Scenario scenario = activeScenario(id, author);
-        ScenarioBody body = buildBody(draft);
+        // Merge against the current body so a measured (ephemeris) role survives the
+        // edit — its state lives in a dataset, not the catalog, so rebuilding it from
+        // a NORAD id would clobber the imported chief.
+        ScenarioBody existing = parse(latestVersion(scenario).getBody());
+        ScenarioBody body = buildBody(draft, existing);
         String json = serialize(body);
 
         int nextNo = versions.findMaxVersionNo(id).orElse(0) + 1;
@@ -208,7 +351,7 @@ public class ScenarioService {
             throw new ScenarioValidationException("No maneuver " + maneuverId + " in this scenario");
         }
         ScenarioBody updated = new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
-                body.fidelity(), body.timeRange(), body.chief(), deputies);
+                body.fidelity(), body.timeRange(), body.chief(), deputies, body.missDistanceThresholdM());
 
         int nextNo = saveVersion(scenario, updated, author, "MANEUVER_REMOVE", "Removed maneuver " + maneuverId);
         return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
@@ -279,6 +422,114 @@ public class ScenarioService {
         int nextNo = saveVersion(scenario, updated, author,
                 "ATTITUDE_SET", "Set " + mode + " attitude on " + draft.noradId());
         return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    // --- constraints & conjunctions (Phase 8, US-EVT-02 / US-EVT-03) ----------
+
+    /**
+     * Add a safety/observability constraint to a host (chief or deputy). New immutable
+     * version + one audit row (Decision 16); violation events recompute when the client
+     * reopens the scenario stream.
+     */
+    @Transactional
+    public ScenarioResponse addConstraint(UUID id, ConstraintDraft draft) {
+        User author = userService.currentUser();
+        Scenario scenario = activeScenario(id, author);
+        ScenarioBody body = parse(latestVersion(scenario).getBody());
+
+        validateConstraint(body, draft);
+        String kind = draft.kind().toLowerCase();
+        ScenarioBody.Constraint constraint = new ScenarioBody.Constraint(
+                UUID.randomUUID().toString(), kind, draft.hostNoradId(),
+                draft.sensorId(), draft.targetNoradId(), draft.limitDeg(), draft.rangeM());
+        ScenarioBody updated = mapRole(body, draft.hostNoradId(), r -> {
+            List<ScenarioBody.Constraint> next = new ArrayList<>(r.constraints());
+            next.add(constraint);
+            return r.withConstraints(next);
+        });
+
+        int nextNo = saveVersion(scenario, updated, author,
+                "CONSTRAINT_ADD", "Added " + kind + " constraint to " + draft.hostNoradId());
+        return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    /** Remove a constraint by its id (from whichever role carries it). New version + audit. */
+    @Transactional
+    public ScenarioResponse removeConstraint(UUID id, String constraintId) {
+        User author = userService.currentUser();
+        Scenario scenario = activeScenario(id, author);
+        ScenarioBody body = parse(latestVersion(scenario).getBody());
+
+        boolean[] removed = {false};
+        ScenarioBody updated = mapAllRoles(body, r -> {
+            if (r.constraints().stream().noneMatch(c -> c.id().equals(constraintId))) {
+                return r;
+            }
+            removed[0] = true;
+            return r.withConstraints(
+                    r.constraints().stream().filter(c -> !c.id().equals(constraintId)).toList());
+        });
+        if (!removed[0]) {
+            throw new ScenarioValidationException("No constraint " + constraintId + " in this scenario");
+        }
+
+        int nextNo = saveVersion(scenario, updated, author, "CONSTRAINT_REMOVE", "Removed constraint " + constraintId);
+        return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    /** Set (or clear, with null) the intra-scenario conjunction miss-distance threshold (metres). */
+    @Transactional
+    public ScenarioResponse setMissDistanceThreshold(UUID id, Double thresholdM) {
+        User author = userService.currentUser();
+        Scenario scenario = activeScenario(id, author);
+        ScenarioBody body = parse(latestVersion(scenario).getBody());
+
+        if (thresholdM != null && (!Double.isFinite(thresholdM) || thresholdM <= 0)) {
+            throw new ScenarioValidationException(
+                    "missDistanceThresholdM must be a positive number of metres (or null to clear)");
+        }
+        ScenarioBody updated = new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION, body.fidelity(),
+                body.timeRange(), body.chief(), body.deputies(), thresholdM);
+
+        int nextNo = saveVersion(scenario, updated, author, "MISS_DISTANCE_SET",
+                thresholdM == null ? "Cleared conjunction threshold"
+                        : "Set conjunction threshold to " + Math.round(thresholdM) + " m");
+        return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    private void validateConstraint(ScenarioBody body, ConstraintDraft draft) {
+        if (!roleExists(body, draft.hostNoradId())) {
+            throw new ScenarioValidationException("Host NORAD id " + draft.hostNoradId() + " is not in this scenario");
+        }
+        if (!(draft.limitDeg() > 0 && draft.limitDeg() < 180)) {
+            throw new ScenarioValidationException("constraint limitDeg must be in (0,180) degrees");
+        }
+        String kind = draft.kind() == null ? "" : draft.kind().toLowerCase();
+        switch (kind) {
+            case "sun-keep-out" -> {
+                if (draft.sensorId() == null || draft.sensorId().isBlank()
+                        || !hostHasSensor(body, draft.hostNoradId(), draft.sensorId())) {
+                    throw new ScenarioValidationException(
+                            "sun-keep-out requires a sensorId belonging to host " + draft.hostNoradId());
+                }
+            }
+            case "approach-corridor" -> {
+                if (draft.targetNoradId() == draft.hostNoradId() || !roleExists(body, draft.targetNoradId())) {
+                    throw new ScenarioValidationException(
+                            "approach-corridor requires a targetNoradId in the scenario, different from the host");
+                }
+                if (!(draft.rangeM() > 0)) {
+                    throw new ScenarioValidationException("approach-corridor requires rangeM > 0");
+                }
+            }
+            default -> throw new ScenarioValidationException(
+                    "Unsupported constraint kind \"" + draft.kind() + "\" (sun-keep-out|approach-corridor)");
+        }
+    }
+
+    private boolean hostHasSensor(ScenarioBody body, int noradId, String sensorId) {
+        ScenarioBody.Role r = findRole(body, noradId);
+        return r != null && r.sensors().stream().anyMatch(s -> sensorId.equals(s.id()));
     }
 
     @Transactional
@@ -383,7 +634,7 @@ public class ScenarioService {
                         : d)
                 .toList();
         return new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
-                body.fidelity(), body.timeRange(), body.chief(), deputies);
+                body.fidelity(), body.timeRange(), body.chief(), deputies, body.missDistanceThresholdM());
     }
 
     /** Apply {@code edit} to the role (chief or deputy) matching {@code noradId}; others unchanged. */
@@ -408,7 +659,7 @@ public class ScenarioService {
             throw new ScenarioValidationException("NORAD id " + noradId + " is not in this scenario");
         }
         return new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
-                body.fidelity(), body.timeRange(), chief, deputies);
+                body.fidelity(), body.timeRange(), chief, deputies, body.missDistanceThresholdM());
     }
 
     /** Apply {@code edit} to every role (chief + deputies) — used by id-keyed sensor removal. */
@@ -417,7 +668,7 @@ public class ScenarioService {
         ScenarioBody.Role chief = body.chief() == null ? null : edit.apply(body.chief());
         List<ScenarioBody.Role> deputies = body.deputies().stream().map(edit).toList();
         return new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
-                body.fidelity(), body.timeRange(), chief, deputies);
+                body.fidelity(), body.timeRange(), chief, deputies, body.missDistanceThresholdM());
     }
 
     /** Replace one role's sensor list (by NORAD id; chief or deputy), preserving other fields. */
@@ -518,14 +769,47 @@ public class ScenarioService {
     }
 
     private ScenarioBody buildBody(ScenarioDraft d) {
+        return buildBody(d, null);
+    }
+
+    /**
+     * Build a body from the draft's NORAD ids, optionally merging against an
+     * {@code existing} body so measured (ephemeris) roles are preserved rather
+     * than rebuilt from the catalog ({@code existing} is null on create).
+     */
+    private ScenarioBody buildBody(ScenarioDraft d, ScenarioBody existing) {
         validateSemantics(d);
         String fidelity = (d.fidelity() == null || d.fidelity().isBlank()) ? "sgp4" : d.fidelity();
-        ScenarioBody.Role chief = role("chief", d.chiefNoradId());
+        ScenarioBody.Role chief = resolveRole("chief", d.chiefNoradId(), existing);
         List<ScenarioBody.Role> deputies = d.deputyNoradIds().stream()
-                .map(n -> role("deputy", n))
+                .map(n -> resolveRole("deputy", n, existing))
                 .toList();
         return new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION, fidelity,
-                new ScenarioBody.TimeRange(d.start(), d.end()), chief, deputies);
+                new ScenarioBody.TimeRange(d.start(), d.end()), chief, deputies,
+                existing == null ? null : existing.missDistanceThresholdM());
+    }
+
+    /**
+     * Resolve a role for {@code noradId}: if {@code existing} already has it as a
+     * measured (ephemeris) role, preserve that role (dataset, name, maneuvers,
+     * sensors, attitude) — its state isn't in the catalog. Otherwise build a fresh
+     * catalog TLE role. Only the role label (chief/deputy) is (re)applied.
+     */
+    private ScenarioBody.Role resolveRole(String roleLabel, int noradId, ScenarioBody existing) {
+        ScenarioBody.Role prior = existing == null ? null : findRole(existing, noradId);
+        if (prior != null && prior.initialState() != null
+                && "ephemeris".equals(prior.initialState().kind())) {
+            return new ScenarioBody.Role(roleLabel, noradId, prior.name(), prior.initialState(),
+                    prior.maneuvers(), prior.sensors(), prior.attitude());
+        }
+        return role(roleLabel, noradId);
+    }
+
+    private static ScenarioBody.Role findRole(ScenarioBody body, int noradId) {
+        if (body.chief() != null && body.chief().noradId() == noradId) {
+            return body.chief();
+        }
+        return body.deputies().stream().filter(x -> x.noradId() == noradId).findFirst().orElse(null);
     }
 
     private ScenarioBody.Role role(String role, int noradId) {
@@ -600,7 +884,8 @@ public class ScenarioService {
             // a consistent v3 (the stored JSON is rewritten on the next save).
             if (body.schemaVersion() != ScenarioBody.CURRENT_SCHEMA_VERSION) {
                 body = new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
-                        body.fidelity(), body.timeRange(), body.chief(), body.deputies());
+                        body.fidelity(), body.timeRange(), body.chief(), body.deputies(),
+                        body.missDistanceThresholdM());
             }
             return body;
         } catch (JsonProcessingException e) {

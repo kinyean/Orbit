@@ -340,8 +340,22 @@ the acquisition-event detector (one source of truth) — the legend reads "model
 real spacecraft can point any way it likes regardless of its orbit. Articulation is still
 a parked pose, and **lighting is still flat** (the Sun vector / terminator is Phase 8).
 
-**Trigger.** Any analysis or decision that relies on *measured* pointing (vs the LVLH
-model) or on illumination before AEM attitude / the Phase 8 Sun vector land.
+**Status (measured-data slice 2, 2026-06-22).** Orientation is now **measured** for an imported
+measured craft — its real `EST_ATTD` telemetry quaternion drives the model/FOV (`AttitudeProfile.mode
+="measured"`, SLERP-streamed; see Decision 26 slice-2 addendum, R20). So for measured scenarios this
+risk is closed for orientation (a body-axis triad makes it legible); modeled scenarios remain
+LVLH-modeled.
+
+**Status (Phase 8, Decision 25) — lighting RESOLVED.** The proximity view now drives a real
+`DirectionalLight` from the streamed Sun direction (`FrameService.directionInLvlh`), so the Earth
+shows a correct day/night terminator and spacecraft are Sun-consistently lit (and dimmed in
+eclipse — `EclipseEventComputer` + `spacecraftModel.setEclipse`). The flat non-physical lighting is
+gone. Articulation remains a parked deployed pose (no sun-tracking drivers — a later nicety, not a
+correctness risk). So R17 is now down to: **modeled** (not measured) orientation on non-measured
+craft, and parked articulation.
+
+**Trigger.** Reliance on *measured* pointing for a non-measured (modeled) craft (orientation is
+modeled, not measured, there).
 
 ---
 
@@ -360,6 +374,51 @@ failed-step cost on top.
 
 **Trigger.** Scenario load beyond a few seconds; "it hangs" reports on long /
 numerical scenarios.
+
+---
+
+## R19 — Measured-data ingestion: interpolation & illustrative deputies (Medium impact, Medium likelihood)
+
+**Description.** Serving a measured ephemeris (Decision 26) has two foot-guns. (1) **Interpolation
+degree:** Orekit's `Ephemeris(states, N)` Hermite-fits degree (2N−1) through N nodes; over the WOD's
+~5-min/~22° spacing, N≥4 overshoots wildly *between* nodes (Runge) — nodes look exact while
+interpolated points fly to ~1e11 km. (2) **Illustrative deputies:** catalog deputies added onto a
+measured chief use current-epoch TLEs (months from the data window), so their in-window positions are
+co-planar but phase-approximate — not a real RPO pair.
+
+**Mitigation.**
+- Pin `EPHEMERIS_INTERP_POINTS = 2` (cubic Hermite w/ velocity — stable + accurate); regression test
+  `interpolatesStablyBetweenNodes` samples a circular orbit between nodes and fails on overshoot.
+- Document deputies-on-a-measured-chief as illustrative; a genuine measured pair needs two datasets
+  (slice 3).
+
+**Trigger.** An orbit rendering as huge crossing lines / radius far from ~Earth+altitude; a "measured"
+RPO geometry being trusted as truth when a deputy is a catalog TLE.
+
+---
+
+## R20 — Measured-attitude quaternion frame convention (Medium impact — largely RESOLVED, slice 2)
+
+**Description.** Slice 2 streams the satellite's measured `EST_ATTD` quaternion. Its frame convention
+must be converted to the project's three.js streaming convention
+(`FrameService.bodyQuaternionInLvlh`). A silent mismatch points the craft the wrong way — exactly the
+R15 frame-bug class, and consequential for an RPO/GN&C tool.
+
+**Mitigation.** Pinned the conversion with a **signed-axis test** (`MeasuredAttitudeTest`, as Phase 7
+did for the modeled quaternion); the converter (`prop/MeasuredAttitude`) is a single function with the
+two convention choices as **named, one-line-flippable constants**.
+
+**Status (slice 2 ✅, 2026-06-22).** Resolved empirically from the TELEOS-2 telemetry (no vendor spec):
+the quaternion is **unit, ECI-referenced** (the recurring "home" value is held inertially across orbit
+positions), `EST_ATTD` ≡ the star-tracker `STS_BF` (one convention), and **scalar-last (Q4 = scalar),
+body→ECI** is favored by the pointing geometry AND the only positive `FOG_RATE_BF` angular-velocity
+correlation ⇒ converter = identity reorder `(Q1,Q2,Q3,Q4)`. **Residual:** the gyro *magnitude* test was
+inconclusive (attitude is 5-min sampled but slews are fast — a data limitation, not the convention), so
+the **physical** direction (not mirrored/inverted) is confirmed **visually** on the dev stack; if wrong,
+flip `MeasuredAttitude.SCALAR_LAST`/`CONJUGATE` (one line). The body-axis triad makes this readable.
+
+**Trigger.** A measured craft's body axes / FOV pointing disagreeing with its velocity/sensor geometry
+in the proximity view (then flip a convention constant and re-check).
 
 ---
 

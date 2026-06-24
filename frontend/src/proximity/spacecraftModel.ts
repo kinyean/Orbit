@@ -27,8 +27,28 @@ export interface SpacecraftModel {
   setMarkerOpacity(a: number): void;
   setModelVisible(v: boolean): void;
   setMarkerVisible(v: boolean): void;
+  /**
+   * Show/hide the body-axis triad (red +X / green +Y / blue +Z). Rides the body
+   * orientation (child of {@code root}), so it's the zoom-independent read of which
+   * way the craft points — the model itself is too symmetric to read at a glance,
+   * and a far craft is just the marker dot (Phase 7 / measured-attitude slice 2).
+   */
+  setAxesVisible(v: boolean): void;
+  /**
+   * Set the triad's world length (metres). The view drives this from the camera
+   * distance so the triad keeps a roughly constant on-screen size — otherwise a
+   * fixed-length triad vanishes when the camera zooms out to fit a km-scale FOV cone.
+   */
+  setAxesWorldLength(len: number): void;
   /** Uniform scale on the geometry only (the marker stays fixed-pixel). */
   setModelScale(s: number): void;
+  /**
+   * Sun-consistent illumination (Phase 8 / US-ENV-03): `litFactor` ∈ [0,1] dims the
+   * body when it is in Earth's shadow — 1 = full sunlight, ~0.5 = penumbra, ~0.12 =
+   * umbra. Scales each material's base colour + emissive so a craft visibly darkens
+   * as it enters eclipse (UC-5 step 4). Materials are per-model, so this is per-craft.
+   */
+  setEclipse(litFactor: number): void;
   dispose(): void;
 }
 
@@ -61,15 +81,24 @@ export function createSpacecraftModel(color: THREE.Color): SpacecraftModel {
     return x;
   };
 
+  // Standard materials whose colour/emissive are scaled by eclipse lighting (Phase 8).
+  // Each keeps its base values so `setEclipse` is idempotent and reversible.
+  const lit: { mat: THREE.MeshStandardMaterial; baseColor: THREE.Color; baseEmissive: number }[] = [];
+  const trackLit = (m: THREE.MeshStandardMaterial): THREE.MeshStandardMaterial => {
+    lit.push({ mat: m, baseColor: m.color.clone(), baseEmissive: m.emissiveIntensity });
+    return m;
+  };
+  let lastLitFactor = 1;
+
   // --- Bus -----------------------------------------------------------------
-  const busMat = track(
+  const busMat = trackLit(track(
     new THREE.MeshStandardMaterial({ color: color.clone().multiplyScalar(0.75), metalness: 0.3, roughness: 0.6 }),
-  );
+  ));
   const bus = new THREE.Mesh(track(new THREE.BoxGeometry(2.6, 3.6, 2.2)), busMat);
   modelGroup.add(bus);
 
   // --- Solar arrays on hinge joints (deployed along ±X) --------------------
-  const panelMat = track(
+  const panelMat = trackLit(track(
     new THREE.MeshStandardMaterial({
       color: 0x1b2a55,
       emissive: 0x16306b,
@@ -78,7 +107,7 @@ export function createSpacecraftModel(color: THREE.Color): SpacecraftModel {
       roughness: 0.5,
       side: THREE.DoubleSide,
     }),
-  );
+  ));
   const panelGeom = track(new THREE.BoxGeometry(7.5, 0.06, 2.4));
   const makeArray = (sign: 1 | -1): THREE.Group => {
     const hinge = new THREE.Group();
@@ -95,12 +124,24 @@ export function createSpacecraftModel(color: THREE.Color): SpacecraftModel {
   // --- Dish on a gimbal joint (parked pointing +Z, anti-nadir) -------------
   const dish = new THREE.Group();
   dish.position.set(0, 0, 1.3);
-  const dishMat = track(new THREE.MeshStandardMaterial({ color: 0xb8c0cc, metalness: 0.4, roughness: 0.5, side: THREE.DoubleSide }));
+  const dishMat = trackLit(track(new THREE.MeshStandardMaterial({ color: 0xb8c0cc, metalness: 0.4, roughness: 0.5, side: THREE.DoubleSide })));
   const dishMesh = new THREE.Mesh(track(new THREE.ConeGeometry(0.9, 0.5, 20, 1, true)), dishMat);
   dishMesh.rotation.x = -Math.PI / 2; // open face toward +Z
   dishMesh.position.z = 0.25;
   dish.add(dishMesh);
   modelGroup.add(dish);
+
+  // --- Body-axis triad (orientation read; off by default) ------------------
+  // A child of `root` (NOT modelGroup) so it rides the body orientation but is
+  // independent of the model's near-plane scale clamp — a stable gnomon. Red +X,
+  // green +Y (nose/ram), blue +Z (top/anti-nadir). ~2.5× the model radius so it
+  // pokes clearly out of the bus.
+  const AXES_BASE_LEN = MODEL_RADIUS * 2.5;
+  const axes = new THREE.AxesHelper(AXES_BASE_LEN);
+  axes.visible = false;
+  (axes.material as THREE.Material).depthTest = false; // always legible over the bus
+  axes.renderOrder = 2;
+  root.add(axes);
 
   // --- Far-LOD marker: a single fixed-pixel point (the pre-Phase-6 dot) -----
   const markerGeom = track(new THREE.BufferGeometry());
@@ -139,11 +180,29 @@ export function createSpacecraftModel(color: THREE.Color): SpacecraftModel {
     setMarkerVisible(v: boolean) {
       marker.visible = v;
     },
+    setAxesVisible(v: boolean) {
+      axes.visible = v;
+    },
+    setAxesWorldLength(len: number) {
+      axes.scale.setScalar(len / AXES_BASE_LEN);
+    },
     setModelScale(s: number) {
       modelGroup.scale.setScalar(s);
     },
+    setEclipse(litFactor: number) {
+      const f = Math.max(0, Math.min(1, litFactor));
+      if (f === lastLitFactor) return; // changes only at shadow boundaries
+      lastLitFactor = f;
+      // Floor the colour at 12% so an umbra craft is dark but still a readable silhouette.
+      const colorScale = 0.12 + 0.88 * f;
+      for (const { mat, baseColor, baseEmissive } of lit) {
+        mat.color.copy(baseColor).multiplyScalar(colorScale);
+        mat.emissiveIntensity = baseEmissive * f;
+      }
+    },
     dispose() {
       disposed = true;
+      axes.dispose();
       if (swapped) {
         swapped.traverse((o) => {
           const mesh = o as THREE.Mesh;

@@ -45,6 +45,10 @@ considered**, **Consequences**.
 14. [Scenario data model: chief + deputies](#14-scenario-data-model-chief--deputies)
 15. [Data formats: TLE, CCSDS, Keplerian, CZML](#15-data-formats-tle-ccsds-keplerian-czml)
 19. [Scenario body schema v1 + persistence design (Phase 3A)](#19-scenario-body-schema-v1--persistence-design-phase-3a)
+26. [Measured-data ingestion: WOD CSV as an ephemeris-role scenario](#26-measured-data-ingestion-wod-csv-as-an-ephemeris-role-scenario)
+
+**Environment & events**
+25. [Sun/Moon + lighting, eclipse, conjunctions, constraints (Phase 8)](#25-sunmoon--lighting-eclipse-conjunctions-constraints-phase-8)
 
 **Cross-cutting / enterprise**
 16. [Enterprise posture: professional-grade from the start](#16-enterprise-posture-professional-grade-from-the-start)
@@ -1144,6 +1148,223 @@ per-frame cost for an RPO tool whose working surface is the relative frame (Fran
 for that precision). Additive WebSocket-payload fields only — `VERSION` stays `"1"` (R12),
 determinism intact (R11), no REST/OpenAPI change (`gen:api` is a no-op), exactly like
 `chiefRadiusM` (Decision 23).
+
+---
+
+## 25. Sun/Moon + lighting, eclipse, conjunctions, constraints (Phase 8)
+
+**Context.** Phase 8 (roadmap §7; SRS §3.7 / §3.11.3 / §3.12.1 / §3.12.3; US-ENV-01/02/03,
+US-EVT-02/03/04; UC-5, UC-7) makes the scene *environmental*. Phase 7 left two explicit
+holes (Decision 24, [R17](./risks.md)): the proximity view's lighting was **flat /
+non-physical** (no Sun vector), and sensor **sun-keep-out** + Sun occlusion were deferred
+"to Phase 8 with the Sun vector." Phase 8 closes those and adds the rest of §7: Sun/Moon
+positions, per-spacecraft eclipse, Sun-consistent illumination, conjunction detection,
+constraint checks, and the timeline annotations (eclipse bands, conjunction ticks,
+violation marks) — Frank's UC-5 (eclipse/lighting) and UC-7 (conjunction screening), and
+the rest of Gita's UC-4 (sun-keep-out).
+
+**Decision.** Ride the Phase-7 architecture exactly — new sampled-trajectory computers in
+`analysis/` (no re-propagation), additive `scenario-relative` envelope fields
+(`VERSION` stays `"1"`), a forward-additive `ScenarioBody` schema bump (no DB migration),
+all scenario edits through the single audited `ScenarioService`. Sliced 8A / 8B / 8C.
+- **Sun/Moon (8A):** reuse the Orekit `CelestialBodyFactory` Sun/Moon already driving the
+  numerical force model (no new dependency); sample each body's **direction in the
+  chief-LVLH scene** on the render grid (`FrameService.directionInLvlh` →
+  `Transform.transformVector`, rotation only — R15) and stream it (stride-4 unit vectors,
+  additive). The frontend drives a real `DirectionalLight` from it, so the
+  `MeshStandardMaterial` Earth shows a correct day/night terminator and the ambient/
+  hemisphere fill drops low. Resolves the R17 lighting hole.
+- **Eclipse (8A):** conical umbra + penumbra in **geocentric ECI**, computed by
+  `EclipseEventComputer` from per-craft geocentric ECI position arrays **captured for free
+  inside the existing per-step loop** (`depEci.getPosition()` for deputies; the chief's own
+  state threaded out of `sampleAttitude`) — no extra propagation. A distinct
+  `SampledGeocentricCraft` (field `posEci`) vs the LVLH `SampledCraft` (field `pos`)
+  enforces the frame split at the type level (R15). Earth-shadow only (a satellite's lunar
+  eclipse is negligible). Streamed as a top-level `eclipses` array; the frontend pairs
+  ingress/egress into umbra/penumbra bands (proximity dimming via per-craft material
+  `setEclipse`; timeline bands).
+- **Conjunctions: both (8B + 8C).** **Intra-scenario** pairwise closest-approach in the live
+  stream (`ConjunctionEventComputer`, cheap, formation safety) — every unordered pair's
+  LVLH range (frame-invariant) on the grid + a golden-section refine **on the sampled
+  arrays** (NOT the live propagators — consistent with a maneuvered deputy, Decision 24).
+  **Catalog screening** (UC-7) as a separate request→response REST endpoint
+  (`ScreeningService`, `POST /scenarios/{id}/screening?thresholdKm=…`): propagate the
+  scenario craft over the window, screen vs the full live SGP4 catalog with a **two-stage
+  prune** (coarse radial-shell band test — `|p1−p2| ≥ ||p1|−|p2||` — then fine sampled
+  closest-approach + golden-section on survivors, parallelised), returning a sorted list +
+  CSV. A **snapshot**, not a reproducible artifact (the catalog refreshes ~6 h — tagged
+  with the run instant; R11 caveat).
+- **Constraints: sun-keep-out + approach-corridor (8B).** `ScenarioBody` schema **v5** (v4
+  was taken by measured ephemeris) adds a per-role `List<Constraint>` + an optional
+  top-level `missDistanceThresholdM`, forward-additive (v1–v4 bodies coalesce to empty +
+  null, re-stamped on save; no migration). `ConstraintChecker` runs on the sampled
+  trajectory + attitude + Sun vector: **sun-keep-out** = angle(sensor boresight, Sun) <
+  limit (completes UC-4 step 7; on a measured chief it evaluates the craft's real attitude —
+  a free win from measured-data slice 2); **approach-corridor** = the target outside a
+  limit-half-angle cone about the host's body +Y (ram) axis while within range (the
+  `SensorEventComputer` bearing test, inverted). Emits violation-start/end events. Plume
+  impingement is deferred (needs per-burn plume geometry — the `kind` record leaves room).
+- **Determinism (R11):** every new pass runs in increasing-time order over the existing
+  grid with fixed iteration counts (bisection 24, golden-section 60); the Sun/Moon
+  ephemeris is deterministic. Catalog screening is the one documented exception (live
+  catalog).
+
+**Why.** The Phase-7 sampled-trajectory pattern already gives consistency-by-construction
+with the drawn scene + cheapness; eclipse/conjunction/constraints are the same shape.
+Reusing the Orekit Sun/Moon avoids a new dependency. Backend-authoritative Sun direction
+means the lit FOV/keep-out the client draws and the events the backend computes share one
+source of truth (Decision 9). A radial-shell prune is the cheap necessary condition that
+keeps ~14,500-satellite screening tractable. Schema v5 forward-additivity matches every
+prior bump (v2→v3→v4) — no migration.
+
+**Alternatives considered.** Orekit `EclipseDetector`/`EventDetector` on the live
+propagators (rejected — event detectors don't share the rendered samples, reintroducing
+the maneuvered-deputy inconsistency; the sampled predicate is consistent + cheaper).
+A scenario-wide single conjunction model (rejected — intra-scenario formation safety and
+catalog screening are different load profiles, Decision 13; both are wanted). Reconstructing
+geocentric positions from the LVLH samples for eclipse (rejected — strictly more work
+re-deriving raw data already held; capture it for free). A configurable corridor axis
+(deferred — v1 fixes it to body +Y / V-bar, the canonical corridor; the record can grow).
+Streaming the Sun position un-normalised for the client to light from (rejected — the
+direction is what lighting needs; |S| is only needed server-side for the eclipse cone).
+
+**Consequences.** New `analysis/` classes: `EclipseEvent(Computer)`, `SampledGeocentricCraft`,
+`ConjunctionEvent(Computer)`, `ConstraintViolationEvent`, `ConstraintChecker`,
+`ConjunctionResult`/`ScreeningResult`/`ScreeningService`. `FrameService` grows
+`sunPosition`/`moonPosition`/`directionInLvlh`; `QuaternionSamples.rotate` is promoted to a
+shared util (`SensorEventComputer` + `ConstraintChecker` share it). `ScenarioBody` schema
+v5 (`Constraint` + `missDistanceThresholdM`); `ScenarioService` gains
+`addConstraint`/`removeConstraint`/`setMissDistanceThreshold` (audit actions
+`CONSTRAINT_ADD`/`CONSTRAINT_REMOVE`/`MISS_DISTANCE_SET`). New REST: constraints +
+miss-distance + screening (`gen:api` regenerated; stream fields stay WebSocket-only). The
+`encodeRelative` signature grows by five additive trailing params (sun/moon/eclipses +
+conjunctions/violations). Frontend: `relativeBuffer` parses the new fields + builds eclipse
+intervals; `ProximityView` Sun-driven light rig + per-craft eclipse dimming;
+`spacecraftModel.setEclipse` + `earthBackdrop.setEmissiveIntensity`; `Timeline` eclipse
+bands + conjunction/violation marks; new `EnvironmentPanel` (constraints + threshold +
+catalog-screening table/CSV). Backend **152 tests green** (was 126); frontend type-check +
+build green; verified end-to-end on the dev stack (WS frame carries unit `sunVector`/
+`moonVector` + eclipses + a conjunction + violations on `VERSION "1"`; constraint add → 200,
+bad angle / missing sensor → 422; screening 64919 → 61 conjunctions below 50 km, sorted).
+This resolves the Deferred "flat lighting" and "Sun occlusion + sun-keep-out (Phase 8)"
+items (R17 lighting closed; sun-keep-out shipped). **Deferred:** plume impingement;
+gimbaled sensors / frustum FOV (from Phase 7); GPU-depth occlusion; eclipse/conjunction
+annotations on the **global-view** CZML (Phase 8 emits them in the relative envelope).
+
+---
+
+## 26. Measured-data ingestion: WOD CSV as an ephemeris-role scenario
+
+> (Decision 25 — Phase 8, Environment & Events — is now written above; this
+> measured-data feature track stays numbered 26.)
+
+**Context.** Real flight telemetry arrived mid-Phase-8: "Whole-Orbit Data" (WOD) CSV
+dumps from TELEOS-2 (1–7 Jan 2026, ~570 MB) carrying measured GNSS ECI position/
+velocity and ADCS attitude quaternions. Until now every scenario role was a *modeled*
+source (a frozen TLE propagated by SGP4/numerical/CW). We want to ingest measured data
+as a scenario so the real craft becomes a reference to compose RPO around — and to
+validate the propagators against truth (Frank, §5.2). This generalizes two deferred
+items: CCSDS OEM import (Decision 19 / US-SCN-06) and CCSDS AEM measured attitude
+(Decision 24 / R17).
+
+**Decision.** Sliced (see [measured-data-plan.md](./measured-data-plan.md)); slice 1
+landed the spine + measured position.
+- **One internal artifact, many readers.** A reader normalizes a measured file into a
+  frame-tagged `MeasuredEphemeris` (EME2000 pos/vel samples). `WodCsvReader` is the
+  first reader (streaming single-pass over the stacked-block WOD format; extracts the 6
+  ECI pos/vel channels, km→m, drops invalid `(0,0,0)` GNSS fixes, aligns by onboard
+  timestamp); CCSDS OEM/AEM readers can later feed the same artifact. Nothing downstream
+  sees the WOD format.
+- **Stored outside the jsonb body.** Samples are frozen into an immutable, content-hashed
+  `MeasuredDataset` (a gzipped `bytea` blob in a new `measured_dataset` table, V5); the
+  scenario role references it by id via `InitialState{kind:"ephemeris", datasetId}`
+  (schema **v4**, forward-additive). Deterministic blob → reproducible (R11), the
+  larger-artifact analogue of the frozen-TLE snapshot (Decision 19).
+- **Per-role source, not a new fidelity.** "Measured" is a property of a *role*
+  (`initialState.kind`), so a measured chief coexists with TLE/numerical deputies; the
+  `Fidelity` enum is untouched. `ScenarioStreamService.prepareRole` branches on `kind`
+  and serves the dataset through an Orekit tabulated **`Ephemeris`** (a
+  `PVCoordinatesProvider`) — the sampling/encoding/streaming pipeline is unchanged.
+- **Server-path import first.** Files already land on the server; a `POST /scenarios/
+  import/measured {path, noradId?}` reads server-side (path constrained to
+  `orbit.import.allowed-root`). Plain JSON → the generated client works, no multipart.
+  Browser upload is deferred (slice 3). NORAD is auto-resolved from the file's satellite
+  name via the catalog, with an optional override.
+- **Audited + edit-safe.** Import goes through the single `ScenarioService` path
+  (`IMPORT_MEASURED`). `update()` now MERGES against the current body so editing a
+  measured scenario preserves the ephemeris chief instead of rebuilding it from the
+  catalog (which would clobber it).
+
+**Why.** The internal artifact decouples format from use (WOD now, OEM/AEM later). A
+tabulated `Ephemeris` is the cheapest correct way to serve measured states through the
+existing decoupled stream (Decision 9 — the frontend still never propagates). Per-role
+`kind` (vs a scenario-wide fidelity) is what lets a real chief carry hypothetical or
+measured deputies. Freezing the samples (content-hashed) keeps a referencing scenario
+reproducible (R11). Server-path keeps slice 1 small and avoids 570 MB multipart plumbing.
+
+**Alternatives considered.** A scenario-wide `MEASURED` fidelity (rejected — a measured
+chief must coexist with non-measured deputies). Samples in the jsonb body (rejected —
+~55k samples; the body is small reproducible metadata). Convert WOD→OEM first and import
+via OEM (viable and still planned as a *second reader*, but the bespoke WOD format is the
+data we have now; the internal artifact means OEM is additive). Browser upload now
+(deferred — multipart limits + progress + async for a 570 MB file; the reader takes an
+`InputStream`, so it drops in later). Re-propagating instead of interpolating (rejected —
+the measured track IS the truth; within the window we interpolate, not propagate).
+
+**Consequences.** New `io/{WodCsvReader,MeasuredEphemeris}`, `scenario/{MeasuredDataset,
+MeasuredDatasetRepository,MeasuredDatasetCodec}`, `V5__measured_dataset.sql`, a REST
+endpoint (`gen:api` regenerated). `ScenarioBody` schema v4; `VERSION` stays `"1"` (R12,
+WebSocket payload unchanged). Partially resolves the Deferred "CCSDS OEM import" item
+(measured ephemeris generalizes it; standard OEM/AEM readers are slice 3) and sets up R17's
+final resolution (measured attitude is slice 2). The dev `docker-compose` bind-mounts the
+shared data folder read-only.
+
+**Addendum (the interpolation-degree bug — a 977-billion-km orbit).** Orekit's
+`Ephemeris(states, N)` fits a degree-(2N−1) Hermite (each state carries velocity) through N
+nodes. At the WOD's ~5-min / ~22°-of-arc spacing, N=4 (degree-7) **overshoots violently
+between nodes** (Runge phenomenon) — the nodes are exact (so `chiefRadiusM` and node-sampled
+checks looked right) but interpolated points flew to ~1e11 km, drawing the orbit as huge
+crossing lines with a tiny Earth. Fixed by **`EPHEMERIS_INTERP_POINTS = 2`** (cubic Hermite
+per segment: position + velocity at the two bracketing samples — stable and accurate for
+dense ephemeris). Pinned by a regression test (`interpolatesStablyBetweenNodes`) that samples
+a circular orbit BETWEEN nodes and fails on the overshoot. Also fixed the per-sample HOLD so a
+*leading* gap (the path margin before the first measured sample) retries until data starts,
+while a *trailing* decay still holds (the `firstValid >= 0` guard).
+
+**Addendum (illustrative catalog deputies).** Deputies added from the catalog onto a measured
+chief use current-epoch TLEs (months from the data window), so SGP4 in the window gives a
+co-planar but phase-approximate orbit — fine as an example (LUMELITE-4 / POEM-2 share TELEOS-2's
+PSLV-C55 plane; LUMELITE-4 makes a real ~76 km closest approach), but a genuine measured RPO
+pair needs two datasets (slice 3, R19).
+
+**Addendum (slice 2 — measured attitude, 2026-06-22).** The measured craft now flies its **real
+orientation**, not the modeled LVLH estimate (resolves R17 for measured craft; lighting stays
+Phase 8). `WodCsvReader` extracts `EST_ATTD_Q1..Q4` as a **parallel attitude series** (its own
+timestamps — the ADCS cadence differs from GNSS — kept raw, non-unit rows dropped);
+`MeasuredDatasetCodec` stores it behind a **backward-compatible version sentinel** (leading
+negative int = v2; legacy position-only blobs still decode), opaque `bytea`, no migration.
+`AttitudeProfile.mode = "measured"` (set on the chief at import; resolves to the role's dataset, no
+new id; shape unchanged so `schemaVersion` stays 4; `resolveRole` preserves it on edit). Streaming
+**reuses the existing `"fixed"` attitude path**: `prepareEphemerisRole` converts the raw quaternions
+to a body→ECI three.js series, and a shared `bodyAttitude` helper **SLERPs** it (via the extracted
+`prop/QuaternionSamples`, also used by `SensorEventComputer`) and feeds it as a per-step `fixedQuat`
+— so measured and modeled attitude share one code path; additive (`VERSION="1"`, R12) and
+deterministic (R11).
+
+*The convention (R15/R20) was resolved empirically*, not from a spec (none existed — only the CSV):
+the quaternion is **unit and ECI-referenced** (the recurring "home" value is held at many orbit
+positions = a fixed inertial attitude), `EST_ATTD` ≡ the star-tracker `STS_BF` (one convention), and
+**scalar-last (Q4 = scalar), body→ECI** is favored by both the pointing-geometry analysis and the
+only positive correlation in the `FOG_RATE_BF` angular-velocity cross-check. Because three.js
+`(x,y,z,w)` is also scalar-last, the converter (`prop/MeasuredAttitude`) is the identity reorder
+`(Q1,Q2,Q3,Q4)`, **pinned by a signed-axis test** and **flippable via two named constants** if the
+dev-stack visual shows a mirror/inverse. (The gyro *magnitude* test was inconclusive — attitude is
+5-min sampled while slews are fast; a data limitation, not the convention — so the final physical
+confirmation is visual.) Frontend: orientation already SLERP-consumes the streamed `att`; added a
+toggleable **body-axis triad** (the model is too symmetric and a far craft is just a marker dot, so
+attitude was effectively invisible without it) and a "measured" legend label. Verified on the dev
+stack (re-import → chief `attitude.mode=measured`; the relative frame carries the chief's varying
+measured `att`).
 
 ---
 

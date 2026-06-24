@@ -8,9 +8,12 @@ import {
   simTimeToT,
   deputyPositionAt,
   deputyStateAt,
+  directionAt,
+  buildEclipseIntervals,
   subscribeRelative,
   type SensorDef,
   type SensorEvent,
+  type EclipseInterval,
 } from '../stream/relativeBuffer';
 import { createSpacecraftModel, type SpacecraftModel } from '../proximity/spacecraftModel';
 import { bodyOrientationAt } from '../proximity/orientation';
@@ -71,6 +74,18 @@ function inWindow(wins: [number, number][] | undefined, t: number): boolean {
   return false;
 }
 
+/** Sun-lit factor for a craft at sim time `tMs` (Phase 8): 1 = lit, 0.5 = penumbra, 0.12 = umbra. */
+function eclipseLitFactor(intervals: EclipseInterval[], noradId: number, tMs: number): number {
+  let umbra = false;
+  let penumbra = false;
+  for (const iv of intervals) {
+    if (iv.noradId !== noradId || tMs < iv.startMs || tMs > iv.endMs) continue;
+    if (iv.kind === 'umbra') umbra = true;
+    else penumbra = true;
+  }
+  return umbra ? 0.12 : penumbra ? 0.5 : 1;
+}
+
 /**
  * Proximity view (Phase 4B → Phase 6). A three.js scene in the chief's LVLH frame:
  * chief at the origin, deputies at their relative positions, animating in lockstep
@@ -97,6 +112,7 @@ export default function ProximityView() {
   const [backdrop, setBackdrop] = useState<BackdropMode>('earth');
   const [showSensors, setShowSensors] = useState(true);
   const [fovOpacity, setFovOpacity] = useState(15); // percent
+  const [showAxes, setShowAxes] = useState(false); // body-axis triad (orientation read)
   const [camSensorKey, setCamSensorKey] = useState(''); // selected sensor option (US-SENSE-05)
   const camFocusRef = useRef(camFocus);
   const camDeputyRef = useRef(camDeputy);
@@ -112,6 +128,8 @@ export default function ProximityView() {
   showSensorsRef.current = showSensors;
   fovOpacityRef.current = fovOpacity;
   camSensorKeyRef.current = camSensorKey;
+  const showAxesRef = useRef(showAxes);
+  showAxesRef.current = showAxes;
 
   // Re-render (refresh the focus dropdown) when the deputy set changes; reset the
   // selectors on any scenario change so a stale deputy index can't linger.
@@ -121,6 +139,15 @@ export default function ProximityView() {
   // Phase 7: the legend reads "modeled" once the stream carries attitude, else
   // "estimated" (the derived fallback). Re-evaluated on relVersion change.
   const orientationModeled = !!(relData?.chief?.attitude || deputies.some((d) => d.attitude));
+  // Measured-data slice 2: when any role flies real telemetry attitude
+  // (AttitudeProfile.mode === "measured" in the loaded scenario body), the legend
+  // reads "measured" instead of "modeled" — read from the body, not the stream.
+  const orientationMeasured = useStore((s) => {
+    const body = s.loadedScenario?.body;
+    if (!body) return false;
+    return [body.chief, ...(body.deputies ?? [])].some((r) => r?.attitude?.mode === 'measured');
+  });
+  const orientationLabel = orientationMeasured ? 'measured' : orientationModeled ? 'modeled' : 'estimated';
   useEffect(() => {
     setCamFocus('external');
     setCamDeputy(0);
@@ -161,13 +188,25 @@ export default function ProximityView() {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0a0e1a);
 
-    // Non-physical flat light rig (Phase 6) — makes the MeshStandard models + Earth
-    // visible. The real Sun vector / terminator arrives in Phase 8.
-    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-    scene.add(new THREE.HemisphereLight(0x9bb8ff, 0x202838, 0.7));
+    // Light rig. Phase 8 (US-ENV-03): when the stream carries a Sun vector the key
+    // light tracks the real Sun direction (so the Earth + models show a correct
+    // terminator) and the ambient/hemisphere fill drops low. With no Sun vector
+    // (older backend) it falls back to the Phase-6 flat non-physical rig.
+    const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+    scene.add(ambient);
+    const hemi = new THREE.HemisphereLight(0x9bb8ff, 0x202838, 0.7);
+    scene.add(hemi);
     const keyLight = new THREE.DirectionalLight(0xffffff, 0.6);
-    keyLight.position.set(1, 1, 1);
+    keyLight.position.set(1, 1, 1); // overwritten per frame from the Sun direction when present
     scene.add(keyLight);
+    // Apply the flat vs Sun-driven lighting mode (idempotent; called from rebuild()).
+    const setSunLighting = (hasSun: boolean) => {
+      ambient.intensity = hasSun ? 0.12 : 0.55;
+      hemi.intensity = hasSun ? 0.18 : 0.7;
+      keyLight.intensity = hasSun ? 1.7 : 0.6;
+      earth.setEmissiveIntensity(hasSun ? 0.12 : 0.35);
+    };
+    const sunDir = new Float64Array(3);
 
     const camera = new THREE.PerspectiveCamera(
       50,
@@ -202,6 +241,8 @@ export default function ProximityView() {
     let ribbons: Ribbon[] = [];
     let sensorFovs: { fov: SensorFov; sensorId: string }[] = []; // flattened across all craft (Phase 7)
     let sensorWindows = new Map<string, [number, number][]>(); // per-sensor in-view windows (ms)
+    let eclipseIntervals: EclipseInterval[] = []; // per-craft umbra/penumbra spans (Phase 8)
+    let modelNoradIds: number[] = []; // models[i] → NORAD id (0 = chief), for eclipse lookup
     let builtVersion = -1;
 
     // LOD projection scale: apparent_px(radius) = radius / camDist * projScale.
@@ -265,7 +306,15 @@ export default function ProximityView() {
       models.push(chief);
       if (data?.chief?.sensors?.length) buildSensors(chief, data.chief.sensors, CHIEF_COLOR);
 
-      let maxDist = 1000; // ≥1 km so the initial framing isn't degenerate
+      // Working scale for the auto-frame. Seed from a craft-scale floor (a lone
+      // measured chief with no deputy must not fall back to a 1 km default — at
+      // that distance the ~10 m model is a sub-pixel marker dot, forcing a manual
+      // zoom) and from the chief's own sensor cones (so a single craft + FOV still
+      // frames). Deputy positions expand it below.
+      let maxDist = chief.radius * 4; // ~40 m → the 10 m model renders as geometry on load
+      for (const s of data?.chief?.sensors ?? []) {
+        maxDist = Math.max(maxDist, s.maxRangeM > 0 ? s.maxRangeM : 1000);
+      }
       const out: [number, number, number] = [0, 0, 0];
       data?.deputies.forEach((dep, i) => {
         const color = DEPUTY_COLORS[i % DEPUTY_COLORS.length];
@@ -287,17 +336,21 @@ export default function ProximityView() {
       // Earth backdrop distance from the chief's geocentric radius (US-PROX-05).
       earth.setChiefRadius(data?.chiefRadiusM ?? 0);
 
-      // Per-sensor in-view windows (ms) for the acquisition highlight (US-EVT-01).
-      if (data?.events && data.events.length > 0) {
-        const loMs = data.epochMs;
-        let maxT = 0;
-        for (const d of data.deputies) {
-          if (d.samples.length >= d.stride) maxT = Math.max(maxT, d.samples[d.samples.length - d.stride]);
-        }
-        sensorWindows = buildSensorWindows(data.events, loMs, loMs + maxT * 1000);
-      } else {
-        sensorWindows = new Map();
+      // Per-sensor in-view windows (ms) for the acquisition highlight (US-EVT-01) and
+      // per-craft eclipse intervals for Sun-consistent dimming (US-ENV-03 / UC-5).
+      const loMs = data?.epochMs ?? 0;
+      let maxT = 0;
+      for (const d of data?.deputies ?? []) {
+        if (d.samples.length >= d.stride) maxT = Math.max(maxT, d.samples[d.samples.length - d.stride]);
       }
+      const hiMs = loMs + maxT * 1000;
+      sensorWindows = data?.events?.length ? buildSensorWindows(data.events, loMs, hiMs) : new Map();
+      eclipseIntervals = data?.eclipses?.length ? buildEclipseIntervals(data.eclipses, loMs, hiMs) : [];
+      modelNoradIds = [
+        data?.chief?.noradId ?? data?.chiefId ?? -1,
+        ...(data?.deputies ?? []).map((d) => d.noradId),
+      ];
+      setSunLighting(!!data?.sunVector);
 
       // Auto-frame: resize axes/grid + place the camera so the deputies fit.
       scene.remove(axes);
@@ -436,7 +489,14 @@ export default function ProximityView() {
 
       let maxDistNow = 1000;
       if (data && models.length) {
+        const tMsNow = useStore.getState().currentTime.getTime();
         const t = simTimeToT(data.epochMs, useStore.getState().currentTime);
+        // Sun-driven key light (Phase 8 / US-ENV-03): track the real Sun direction in
+        // the LVLH scene so the Earth + models show a correct terminator.
+        if (data.sunVector) {
+          directionAt(data.sunVector, t, sunDir);
+          if (sunDir[0] || sunDir[1] || sunDir[2]) keyLight.position.set(sunDir[0], sunDir[1], sunDir[2]);
+        }
         // Chief: keep its modeled body orientation live (varies for eccentric orbits).
         if (data.chief?.attitude && models[0]) {
           bodyOrientationAt(data.chief.attitude, t, out6, false, quat);
@@ -454,9 +514,19 @@ export default function ProximityView() {
           ribbons[i]?.setSplit(t);
           maxDistNow = Math.max(maxDistNow, Math.hypot(out6[0], out6[1], out6[2]));
         });
-        // LOD crossfade + near-clamp for every model (chief + deputies).
-        for (const m of models) {
-          applyLod(m, camera.position.distanceTo(m.root.position));
+        // LOD crossfade + near-clamp for every model (chief + deputies); the body-axis
+        // triad rides each craft's orientation and is shown only when toggled on. Its
+        // length tracks the camera distance so it stays a readable on-screen size even
+        // when the camera is zoomed out to fit a km-scale FOV cone (a fixed-length triad
+        // would vanish there). Floor at the craft size so it never shrinks below the bus.
+        for (let mi = 0; mi < models.length; mi++) {
+          const m = models[mi];
+          const camDist = camera.position.distanceTo(m.root.position);
+          applyLod(m, camDist);
+          // Sun-consistent dimming (Phase 8 / US-ENV-03): darken a craft inside Earth's shadow.
+          m.setEclipse(eclipseIntervals.length ? eclipseLitFactor(eclipseIntervals, modelNoradIds[mi], tMsNow) : 1);
+          m.setAxesVisible(showAxesRef.current);
+          if (showAxesRef.current) m.setAxesWorldLength(Math.max(camDist * 0.12, m.radius * 1.5));
         }
 
         // ΔV glyphs: read maneuvers from the loaded scenario (store), place each at
@@ -631,6 +701,19 @@ export default function ProximityView() {
             <button className={!showSensors ? 'active' : ''} onClick={() => setShowSensors(false)}>Off</button>
           </div>
         </div>
+        <div className="prox-ctrl">
+          <span>Body axes</span>
+          <div className="prox-seg">
+            <button
+              className={showAxes ? 'active' : ''}
+              onClick={() => setShowAxes(true)}
+              title="Show each craft's body-axis triad (X red / Y nose-green / Z top-blue) — the orientation read"
+            >
+              On
+            </button>
+            <button className={!showAxes ? 'active' : ''} onClick={() => setShowAxes(false)}>Off</button>
+          </div>
+        </div>
         {showSensors && (
           <label className="prox-ctrl">
             <span>FOV opacity</span>
@@ -648,7 +731,7 @@ export default function ProximityView() {
       <div className="proximity-legend">
         chief <span style={{ color: '#ffd166' }}>●</span> · R<span style={{ color: '#f87171' }}>x</span>{' '}
         I<span style={{ color: '#4ade80' }}>y</span> C<span style={{ color: '#60a5fa' }}>z</span>
-        <span className="proximity-caveat"> · orientation: {orientationModeled ? 'modeled' : 'estimated'}</span>
+        <span className="proximity-caveat"> · orientation: {orientationLabel}</span>
         <span ref={readoutRef} className="proximity-scale" />
       </div>
     </div>

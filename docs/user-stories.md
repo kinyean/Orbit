@@ -469,15 +469,20 @@ be expanded as we approach them.
 - US-SENSE-05 — Sensor-frame proximity-view camera mode.
 - US-EVT-01 — Acquisition / loss-of-sight events on the timeline.
 
-# Phase 8 — Environment & events *(outline)*
+# Phase 8 — Environment & events ✅ (done — Decision 25, [phase-8-plan.md](./phase-8-plan.md))
 
-- US-ENV-01 — Sun and Moon positions at sim time.
-- US-ENV-02 — Eclipse umbra / penumbra periods per spacecraft.
-- US-ENV-03 — Spacecraft illumination consistent with Sun vector.
-- US-EVT-02 — Conjunction detection with configurable miss-distance.
-- US-EVT-03 — Constraint checks: approach corridor, sun keep-out, plume
-  impingement.
-- US-EVT-04 — Timeline event annotations.
+- US-ENV-01 ✅ — Sun and Moon positions at sim time (Orekit `CelestialBodyFactory`),
+  streamed as LVLH unit directions (`sunVector`/`moonVector`).
+- US-ENV-02 ✅ — Eclipse umbra / penumbra periods per spacecraft (`EclipseEventComputer`,
+  conical dual-cone in geocentric ECI) → timeline bands.
+- US-ENV-03 ✅ — Spacecraft illumination consistent with the Sun vector (real
+  `DirectionalLight` + Earth terminator; eclipse dimming). Resolves R17 flat lighting.
+- US-EVT-02 ✅ — Conjunction detection with a configurable miss-distance threshold —
+  intra-scenario (`ConjunctionEventComputer`) + catalog screening (`ScreeningService`, UC-7).
+- US-EVT-03 ✅ — Constraint checks: approach corridor + sun keep-out (`ConstraintChecker`).
+  *(Plume impingement deferred — needs per-burn plume geometry.)*
+- US-EVT-04 ✅ — Timeline event annotations (eclipse bands, conjunction ticks, violation marks)
+  + `EnvironmentPanel`.
 
 # Phase 9 — Advanced maneuvers & analysis *(outline)*
 
@@ -506,6 +511,30 @@ be expanded as we approach them.
 - US-IO-01 — PNG snapshot export.
 - US-IO-02 — MP4 sequence export.
 - US-UX-04 — OpenAPI docs polish; user guide.
+
+---
+
+# Measured-data ingestion *(feature track — Decision 26, [measured-data-plan.md](./measured-data-plan.md))*
+
+### US-IO-03 — As Frank, I want to import a measured ephemeris (WOD CSV) as a scenario, so I can analyze/validate against the real flown trajectory. ✅ (slice 1)
+*Acceptance:* server-path `POST /scenarios/import/measured` reads a WOD CSV (constrained to
+`orbit.import.allowed-root`), creates a scenario whose chief is the measured craft
+(`kind:"ephemeris"`, read-only truth; window = data span); the global/proximity views play the
+real orbit. NORAD auto-resolved from the file name (override optional). Audited (`IMPORT_MEASURED`);
+editing preserves the ephemeris chief.
+*Maps to:* [UC-3](./use-cases.md), [UC-8](./use-cases.md); SRS §3.10.3, §4.1.2 (generalizes US-SCN-06).
+
+### US-IO-04 — As Gita, I want imported measured attitude (quaternions) to drive orientation/FOV, so coverage reflects how the craft actually pointed. ✅ (slice 2)
+*Acceptance:* `EST_ATTD_Q1..Q4_8` ingested as a parallel attitude series; `AttitudeProfile.mode="measured"`
+SLERP-streamed through the existing `"fixed"` path; legend reads "measured"; quaternion convention
+resolved empirically + pinned by a signed-axis test (`MeasuredAttitudeTest`, R15/R20). A toggleable
+body-axis triad makes orientation legible. Verified on the dev stack (re-import → chief
+`attitude.mode=measured`; the relative frame carries the chief's varying measured `att`).
+
+### US-IO-05 — As Frank, I want a real measured chief+deputy pair and OEM/AEM import + browser upload. *(slice 3)*
+*Acceptance:* import a dataset as a deputy (two measured craft = a real RPO pair); numerical handoff
+beyond the data window; CCSDS OEM/AEM readers feed the same artifact; large files uploadable from the
+browser (progress).
 
 ---
 

@@ -43,6 +43,11 @@ orbit:
     fetch-timeout-ms: ${CATALOG_FETCH_TIMEOUT_MS:20000}
     # 0 = no cap; set a smaller number to throttle for perf experiments.
     max-satellites: ${CATALOG_MAX_SATELLITES:0}
+  import:
+    # Measured-data import (WOD CSV → scenario). The server reads the file from a
+    # path under this allowed root only (path-traversal guard). Empty = import
+    # disabled. The dev stack mounts the shared data folder here.
+    allowed-root: ${IMPORT_ALLOWED_ROOT:/shared_folder}
   scenario:
     # Per-scenario stream (Phase 4). On connect the backend precomputes the
     # whole [start,end] ephemeris once and pushes it (gzipped); playback is then
