@@ -347,7 +347,7 @@ public class ScenarioService {
             throw new ScenarioValidationException("No maneuver " + maneuverId + " in this scenario");
         }
         ScenarioBody updated = new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
-                body.fidelity(), body.timeRange(), body.chief(), deputies);
+                body.fidelity(), body.timeRange(), body.chief(), deputies, body.missDistanceThresholdM());
 
         int nextNo = saveVersion(scenario, updated, author, "MANEUVER_REMOVE", "Removed maneuver " + maneuverId);
         return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
@@ -418,6 +418,114 @@ public class ScenarioService {
         int nextNo = saveVersion(scenario, updated, author,
                 "ATTITUDE_SET", "Set " + mode + " attitude on " + draft.noradId());
         return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    // --- constraints & conjunctions (Phase 8, US-EVT-02 / US-EVT-03) ----------
+
+    /**
+     * Add a safety/observability constraint to a host (chief or deputy). New immutable
+     * version + one audit row (Decision 16); violation events recompute when the client
+     * reopens the scenario stream.
+     */
+    @Transactional
+    public ScenarioResponse addConstraint(UUID id, ConstraintDraft draft) {
+        User author = userService.currentUser();
+        Scenario scenario = activeScenario(id, author);
+        ScenarioBody body = parse(latestVersion(scenario).getBody());
+
+        validateConstraint(body, draft);
+        String kind = draft.kind().toLowerCase();
+        ScenarioBody.Constraint constraint = new ScenarioBody.Constraint(
+                UUID.randomUUID().toString(), kind, draft.hostNoradId(),
+                draft.sensorId(), draft.targetNoradId(), draft.limitDeg(), draft.rangeM());
+        ScenarioBody updated = mapRole(body, draft.hostNoradId(), r -> {
+            List<ScenarioBody.Constraint> next = new ArrayList<>(r.constraints());
+            next.add(constraint);
+            return r.withConstraints(next);
+        });
+
+        int nextNo = saveVersion(scenario, updated, author,
+                "CONSTRAINT_ADD", "Added " + kind + " constraint to " + draft.hostNoradId());
+        return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    /** Remove a constraint by its id (from whichever role carries it). New version + audit. */
+    @Transactional
+    public ScenarioResponse removeConstraint(UUID id, String constraintId) {
+        User author = userService.currentUser();
+        Scenario scenario = activeScenario(id, author);
+        ScenarioBody body = parse(latestVersion(scenario).getBody());
+
+        boolean[] removed = {false};
+        ScenarioBody updated = mapAllRoles(body, r -> {
+            if (r.constraints().stream().noneMatch(c -> c.id().equals(constraintId))) {
+                return r;
+            }
+            removed[0] = true;
+            return r.withConstraints(
+                    r.constraints().stream().filter(c -> !c.id().equals(constraintId)).toList());
+        });
+        if (!removed[0]) {
+            throw new ScenarioValidationException("No constraint " + constraintId + " in this scenario");
+        }
+
+        int nextNo = saveVersion(scenario, updated, author, "CONSTRAINT_REMOVE", "Removed constraint " + constraintId);
+        return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    /** Set (or clear, with null) the intra-scenario conjunction miss-distance threshold (metres). */
+    @Transactional
+    public ScenarioResponse setMissDistanceThreshold(UUID id, Double thresholdM) {
+        User author = userService.currentUser();
+        Scenario scenario = activeScenario(id, author);
+        ScenarioBody body = parse(latestVersion(scenario).getBody());
+
+        if (thresholdM != null && (!Double.isFinite(thresholdM) || thresholdM <= 0)) {
+            throw new ScenarioValidationException(
+                    "missDistanceThresholdM must be a positive number of metres (or null to clear)");
+        }
+        ScenarioBody updated = new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION, body.fidelity(),
+                body.timeRange(), body.chief(), body.deputies(), thresholdM);
+
+        int nextNo = saveVersion(scenario, updated, author, "MISS_DISTANCE_SET",
+                thresholdM == null ? "Cleared conjunction threshold"
+                        : "Set conjunction threshold to " + Math.round(thresholdM) + " m");
+        return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    private void validateConstraint(ScenarioBody body, ConstraintDraft draft) {
+        if (!roleExists(body, draft.hostNoradId())) {
+            throw new ScenarioValidationException("Host NORAD id " + draft.hostNoradId() + " is not in this scenario");
+        }
+        if (!(draft.limitDeg() > 0 && draft.limitDeg() < 180)) {
+            throw new ScenarioValidationException("constraint limitDeg must be in (0,180) degrees");
+        }
+        String kind = draft.kind() == null ? "" : draft.kind().toLowerCase();
+        switch (kind) {
+            case "sun-keep-out" -> {
+                if (draft.sensorId() == null || draft.sensorId().isBlank()
+                        || !hostHasSensor(body, draft.hostNoradId(), draft.sensorId())) {
+                    throw new ScenarioValidationException(
+                            "sun-keep-out requires a sensorId belonging to host " + draft.hostNoradId());
+                }
+            }
+            case "approach-corridor" -> {
+                if (draft.targetNoradId() == draft.hostNoradId() || !roleExists(body, draft.targetNoradId())) {
+                    throw new ScenarioValidationException(
+                            "approach-corridor requires a targetNoradId in the scenario, different from the host");
+                }
+                if (!(draft.rangeM() > 0)) {
+                    throw new ScenarioValidationException("approach-corridor requires rangeM > 0");
+                }
+            }
+            default -> throw new ScenarioValidationException(
+                    "Unsupported constraint kind \"" + draft.kind() + "\" (sun-keep-out|approach-corridor)");
+        }
+    }
+
+    private boolean hostHasSensor(ScenarioBody body, int noradId, String sensorId) {
+        ScenarioBody.Role r = findRole(body, noradId);
+        return r != null && r.sensors().stream().anyMatch(s -> sensorId.equals(s.id()));
     }
 
     @Transactional
@@ -522,7 +630,7 @@ public class ScenarioService {
                         : d)
                 .toList();
         return new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
-                body.fidelity(), body.timeRange(), body.chief(), deputies);
+                body.fidelity(), body.timeRange(), body.chief(), deputies, body.missDistanceThresholdM());
     }
 
     /** Apply {@code edit} to the role (chief or deputy) matching {@code noradId}; others unchanged. */
@@ -547,7 +655,7 @@ public class ScenarioService {
             throw new ScenarioValidationException("NORAD id " + noradId + " is not in this scenario");
         }
         return new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
-                body.fidelity(), body.timeRange(), chief, deputies);
+                body.fidelity(), body.timeRange(), chief, deputies, body.missDistanceThresholdM());
     }
 
     /** Apply {@code edit} to every role (chief + deputies) — used by id-keyed sensor removal. */
@@ -556,7 +664,7 @@ public class ScenarioService {
         ScenarioBody.Role chief = body.chief() == null ? null : edit.apply(body.chief());
         List<ScenarioBody.Role> deputies = body.deputies().stream().map(edit).toList();
         return new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
-                body.fidelity(), body.timeRange(), chief, deputies);
+                body.fidelity(), body.timeRange(), chief, deputies, body.missDistanceThresholdM());
     }
 
     /** Replace one role's sensor list (by NORAD id; chief or deputy), preserving other fields. */
@@ -673,7 +781,8 @@ public class ScenarioService {
                 .map(n -> resolveRole("deputy", n, existing))
                 .toList();
         return new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION, fidelity,
-                new ScenarioBody.TimeRange(d.start(), d.end()), chief, deputies);
+                new ScenarioBody.TimeRange(d.start(), d.end()), chief, deputies,
+                existing == null ? null : existing.missDistanceThresholdM());
     }
 
     /**
@@ -771,7 +880,8 @@ public class ScenarioService {
             // a consistent v3 (the stored JSON is rewritten on the next save).
             if (body.schemaVersion() != ScenarioBody.CURRENT_SCHEMA_VERSION) {
                 body = new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
-                        body.fidelity(), body.timeRange(), body.chief(), body.deputies());
+                        body.fidelity(), body.timeRange(), body.chief(), body.deputies(),
+                        body.missDistanceThresholdM());
             }
             return body;
         } catch (JsonProcessingException e) {

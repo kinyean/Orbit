@@ -25,7 +25,14 @@ import org.orekit.utils.PVCoordinates;
 import org.orekit.utils.PVCoordinatesProvider;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Service;
+import space.orbit.backend.analysis.ConjunctionEvent;
+import space.orbit.backend.analysis.ConjunctionEventComputer;
+import space.orbit.backend.analysis.ConstraintChecker;
+import space.orbit.backend.analysis.ConstraintViolationEvent;
+import space.orbit.backend.analysis.EclipseEvent;
+import space.orbit.backend.analysis.EclipseEventComputer;
 import space.orbit.backend.analysis.SampledCraft;
+import space.orbit.backend.analysis.SampledGeocentricCraft;
 import space.orbit.backend.analysis.SensorEvent;
 import space.orbit.backend.analysis.SensorEventComputer;
 import space.orbit.backend.io.MeasuredEphemeris;
@@ -68,6 +75,12 @@ public class ScenarioStreamService {
 
     private TimeScale utc;
     private SensorEventComputer sensorEvents;
+    private EclipseEventComputer eclipseEvents;
+    private ConjunctionEventComputer conjunctionEvents;
+    private ConstraintChecker constraintChecker;
+
+    /** Default intra-scenario conjunction threshold (m) when the body sets none (Phase 8). */
+    private static final double DEFAULT_MISS_THRESHOLD_M = 5000.0;
 
     public ScenarioStreamService(ScenarioService scenarioService,
                                  PropagationService propagationService,
@@ -89,6 +102,9 @@ public class ScenarioStreamService {
     void init() {
         utc = TimeScalesFactory.getUTC(); // safe: @DependsOn orekitConfig
         sensorEvents = new SensorEventComputer(); // pure: works on the sampled trajectory, no propagation
+        eclipseEvents = new EclipseEventComputer(); // pure: works on the sampled trajectory (Phase 8)
+        conjunctionEvents = new ConjunctionEventComputer(); // pure (Phase 8)
+        constraintChecker = new ConstraintChecker(); // pure (Phase 8)
     }
 
     /**
@@ -150,7 +166,7 @@ public class ScenarioStreamService {
             // each deputy's closest approach over [start,end] (US-REL-02, Phase 5A) and a
             // CW validity hint (US-REL-03, Phase 5C).
             String relative = encodeRelative(roles, startDate, firstT, effectiveStep, steps, start,
-                    durationSec, body.fidelity(), chief.eccentricity());
+                    durationSec, body.fidelity(), chief.eccentricity(), body.missDistanceThresholdM());
 
             return new EncodedScenario(czml, relative, effectiveStep);
         } catch (OrekitException oe) {
@@ -170,7 +186,8 @@ public class ScenarioStreamService {
      */
     private String encodeRelative(List<PreparedRole> roles, AbsoluteDate startDate,
                                   double firstT, int step, int steps, Instant epoch,
-                                  long durationSec, String fidelity, double chiefEccentricity) {
+                                  long durationSec, String fidelity, double chiefEccentricity,
+                                  Double missThresholdM) {
         PreparedRole chief = roles.get(0);
         Frame eci = frames.eci();
         Frame lvlh = frames.lvlh(chief.provider()); // rotating LVLH over the live chief orbit
@@ -186,8 +203,15 @@ public class ScenarioStreamService {
         double epochSec = epoch.toEpochMilli() / 1000.0;
 
         // Chief body attitude in its own LVLH frame (Phase 7) so the chief's FOV
-        // volumes render. The chief is the LVLH origin (no relative position).
-        double[] chiefAttitude = sampleAttitude(chief, eci, lvlh, startDate, firstT, step, steps, epochSec);
+        // volumes render. The chief is the LVLH origin (no relative position). Its
+        // geocentric ECI position is captured for free (Phase 8 eclipse input).
+        double[] chiefGeoEci = new double[(steps + 1) * 4];
+        double[] chiefAttitude =
+                sampleAttitude(chief, eci, lvlh, startDate, firstT, step, steps, epochSec, chiefGeoEci);
+        // Geocentric ECI tracks for eclipse (Phase 8) — captured in increasing time
+        // order inside the existing loops (no extra propagation, R11/R15).
+        List<SampledGeocentricCraft> geoCrafts = new ArrayList<>();
+        geoCrafts.add(new SampledGeocentricCraft(chief.role().noradId(), chiefGeoEci));
 
         double maxSeparation = 0.0; // over all deputies, within the scenario window (CW hint)
         List<RelativeSamples> deputies = new ArrayList<>();
@@ -198,6 +222,7 @@ public class ScenarioStreamService {
             double[] tmpQ4 = new double[4]; // reused SLERP scratch for measured attitude
             double[] s = new double[(steps + 1) * stride];
             double[] a = new double[(steps + 1) * ATT_STRIDE]; // [t,qx,qy,qz,qw, ...]
+            double[] geo = new double[(steps + 1) * 4]; // [t,x,y,z, ...] geocentric ECI (eclipse)
             // Coarse closest-approach bracket comes free from the sampling loop:
             // |rel| is the chief-relative range (frame-invariant). Restrict to the
             // scenario window [0, durationSec] (the sampled span also has margin).
@@ -208,11 +233,13 @@ public class ScenarioStreamService {
             boolean decayed = false; // once a step leaves the domain, stop re-propagating
             double hR = 0, hI = 0, hC = 0, hvR = 0, hvI = 0, hvC = 0;
             double hqx = 0, hqy = 0, hqz = 0, hqw = 1; // held attitude quaternion
+            double hex = 0, hey = 0, hez = 0; // held geocentric ECI position (eclipse)
             for (int k = 0; k <= steps; k++) {
                 double t = firstT + (double) k * step;
                 int base = k * stride;
                 s[base] = t;
                 a[k * ATT_STRIDE] = t;
+                geo[k * 4] = t;
                 if (!decayed) {
                     try {
                         AbsoluteDate date = startDate.shiftedBy(t);
@@ -220,6 +247,10 @@ public class ScenarioStreamService {
                         PVCoordinates depEci = depProp.getPVCoordinates(date, eci);
                         PVCoordinates rel = toLvlh.transformPVCoordinates(depEci);
                         Vector3D p = rel.getPosition();
+                        Vector3D pe = depEci.getPosition(); // geocentric ECI (eclipse)
+                        hex = pe.getX();
+                        hey = pe.getY();
+                        hez = pe.getZ();
                         hR = p.getX(); // radial
                         hI = p.getY(); // in-track
                         hC = p.getZ(); // cross-track
@@ -269,6 +300,9 @@ public class ScenarioStreamService {
                 a[k * ATT_STRIDE + 2] = hqy;
                 a[k * ATT_STRIDE + 3] = hqz;
                 a[k * ATT_STRIDE + 4] = hqw;
+                geo[k * 4 + 1] = hex;
+                geo[k * 4 + 2] = hey;
+                geo[k * 4 + 3] = hez;
             }
             if (firstValid < 0) {
                 throw new ScenarioStreamUnprocessableException("deputy "
@@ -276,6 +310,8 @@ public class ScenarioStreamService {
             }
             backfillLeading(s, firstValid, stride);
             backfillLeadingAttitude(a, firstValid);
+            backfillLeading(geo, firstValid, 4);
+            geoCrafts.add(new SampledGeocentricCraft(role.noradId(), geo));
             // Refine the closest approach on the live propagators around the coarse
             // bracket (US-REL-02). Distance is frame-invariant — compute it in ECI.
             double[] tca = refineTca(depProp, chief.provider(), eci, startDate,
@@ -287,40 +323,121 @@ public class ScenarioStreamService {
                     a, role.sensors()));
         }
 
-        // Acquisition / loss-of-sight events (Phase 7, US-EVT-01) — computed from the SAME
-        // sampled trajectory + attitude this method just built (NOT a second propagation), so
-        // events are consistent with the drawn FOV + the closest approach (Decision 24). Only
-        // when some craft carries a sensor; every craft is both a potential host and target.
-        List<SensorEvent> events = sensorEvents(chief, chiefAttitude, deputies, stride, firstT, step, steps,
-                epoch, durationSec, chiefRadiusM);
+        // Environment pass (Phase 8, US-ENV-01/02): Sun/Moon LVLH unit directions on the
+        // grid (lighting) + the Sun's geocentric ECI per step (eclipse). Analytic ephemeris
+        // + one frame transform per step — no craft propagation, so determinism holds (R11)
+        // and the live propagators are never queried out of order. Directions go through
+        // transformVector (rotation only, R15). Eclipse runs on the geocentric ECI tracks.
+        // Computed before the constraint check so sun-keep-out can use the Sun vector.
+        //
+        // The LVLH frame wraps the chief provider, so `eci.getTransformTo(lvlh, date)` throws
+        // for a MEASURED (tabulated-ephemeris) chief over the margin steps OUTSIDE its data
+        // window. Guard per step with the same leading-gap-retry / trailing-HOLD pattern as the
+        // position/attitude samplers (a bare throw here would 4422 the whole stream). The Sun
+        // ECI itself is analytic — always available — so eclipse stays correct over the margin.
+        double[] sunVector = new double[(steps + 1) * 4];
+        double[] moonVector = new double[(steps + 1) * 4];
+        double[] sunEci = new double[(steps + 1) * 4]; // un-normalized (the predicate needs |S|)
+        int firstValidEnv = -1;
+        boolean envDecayed = false;
+        double hsx = 0, hsy = 0, hsz = 0, hmx = 0, hmy = 0, hmz = 0; // held LVLH directions
+        for (int k = 0; k <= steps; k++) {
+            double t = firstT + (double) k * step;
+            AbsoluteDate date = startDate.shiftedBy(t);
+            sunVector[k * 4] = t;
+            moonVector[k * 4] = t;
+            sunEci[k * 4] = t;
+            // Sun ECI is analytic (no chief dependency) — fill it at every step for eclipse.
+            Vector3D sunPos = frames.sunPosition(date);
+            sunEci[k * 4 + 1] = sunPos.getX();
+            sunEci[k * 4 + 2] = sunPos.getY();
+            sunEci[k * 4 + 3] = sunPos.getZ();
+            if (!envDecayed) {
+                try {
+                    Transform eciToLvlh = eci.getTransformTo(lvlh, date);
+                    double[] sd = FrameService.directionInLvlh(sunPos, eciToLvlh);
+                    double[] md = FrameService.directionInLvlh(frames.moonPosition(date), eciToLvlh);
+                    hsx = sd[0];
+                    hsy = sd[1];
+                    hsz = sd[2];
+                    hmx = md[0];
+                    hmy = md[1];
+                    hmz = md[2];
+                    if (firstValidEnv < 0) {
+                        firstValidEnv = k;
+                    }
+                } catch (OrekitException leftDomain) {
+                    // Leading margin (before a measured ephemeris starts): keep trying.
+                    // Trailing margin (after it ends): HOLD the last valid direction.
+                    if (firstValidEnv >= 0) {
+                        envDecayed = true;
+                    }
+                }
+            }
+            sunVector[k * 4 + 1] = hsx;
+            sunVector[k * 4 + 2] = hsy;
+            sunVector[k * 4 + 3] = hsz;
+            moonVector[k * 4 + 1] = hmx;
+            moonVector[k * 4 + 2] = hmy;
+            moonVector[k * 4 + 3] = hmz;
+        }
+        // Backfill any leading held directions with the first valid sample.
+        backfillLeading(sunVector, Math.max(firstValidEnv, 0), 4);
+        backfillLeading(moonVector, Math.max(firstValidEnv, 0), 4);
+
+        List<EclipseEvent> eclipses =
+                eclipseEvents.compute(geoCrafts, sunEci, firstT, step, steps, epoch, durationSec);
+
+        // One SampledCraft list (LVLH position + attitude + sensors) feeds all three
+        // LVLH-frame analyses — sensor events, conjunctions, constraints — over the SAME
+        // rendered samples (NOT a second propagation), so every event is consistent with
+        // the drawn scene + the closest approach (Decision 24). Chief pos=null → LVLH origin.
+        List<SampledCraft> craftsLvlh = new ArrayList<>(deputies.size() + 1);
+        craftsLvlh.add(new SampledCraft(chief.role().noradId(), null, stride, chiefAttitude, chief.role().sensors()));
+        for (RelativeSamples d : deputies) {
+            craftsLvlh.add(new SampledCraft(d.noradId(), d.samples(), stride, d.attitude(), d.sensors()));
+        }
+
+        // Acquisition / loss-of-sight (Phase 7, US-EVT-01) — only when some craft has a sensor.
+        List<SensorEvent> events = anySensors(craftsLvlh)
+                ? sensorEvents.compute(craftsLvlh, firstT, step, steps, epoch, durationSec, chiefRadiusM)
+                : List.of();
+        // Intra-scenario conjunctions (Phase 8, US-EVT-02) — always evaluated (cheap pairwise,
+        // formation safety); only pairs closer than the threshold are reported.
+        double threshold = missThresholdM != null ? missThresholdM : DEFAULT_MISS_THRESHOLD_M;
+        List<ConjunctionEvent> conjunctions =
+                conjunctionEvents.compute(craftsLvlh, threshold, firstT, step, steps, epoch, durationSec);
+        // Constraint violations (Phase 8, US-EVT-03) — sun-keep-out + approach-corridor.
+        List<ScenarioBody.Constraint> constraints = gatherConstraints(roles);
+        List<ConstraintViolationEvent> violations = constraints.isEmpty()
+                ? List.of()
+                : constraintChecker.compute(craftsLvlh, sunVector, constraints, firstT, step, steps, epoch, durationSec);
 
         return relativeEncoder.encodeRelative(epoch, step, chief.role().noradId(),
                 chiefAttitude, chief.role().sensors(), deputies, withVel,
-                fidelity, maxSeparation, chiefEccentricity, chiefRadiusM, events);
+                fidelity, maxSeparation, chiefEccentricity, chiefRadiusM, events,
+                sunVector, moonVector, eclipses, conjunctions, violations);
     }
 
-    /**
-     * Detect acquisition/loss events over the already-sampled trajectory (Phase 7). The chief is
-     * the LVLH origin (position {@code null} → (0,0,0)); deputies carry their sampled position +
-     * attitude. Reuses the rendered samples so events agree with the drawn FOV.
-     */
-    private List<SensorEvent> sensorEvents(PreparedRole chief, double[] chiefAttitude,
-                                           List<RelativeSamples> deputies, int stride, double firstT,
-                                           int step, int steps, Instant epoch, long durationSec,
-                                           double chiefRadiusM) {
-        boolean anySensors = chief.role().sensors() != null && !chief.role().sensors().isEmpty();
-        for (RelativeSamples d : deputies) {
-            anySensors |= d.sensors() != null && !d.sensors().isEmpty();
+    /** True when any craft in the scene carries a sensor (gates sensor-event computation). */
+    private static boolean anySensors(List<SampledCraft> crafts) {
+        for (SampledCraft c : crafts) {
+            if (c.sensors() != null && !c.sensors().isEmpty()) {
+                return true;
+            }
         }
-        if (!anySensors) {
-            return List.of();
+        return false;
+    }
+
+    /** Gather every role's constraints into one flat list (Phase 8). */
+    private static List<ScenarioBody.Constraint> gatherConstraints(List<PreparedRole> roles) {
+        List<ScenarioBody.Constraint> all = new ArrayList<>();
+        for (PreparedRole r : roles) {
+            if (r.role().constraints() != null) {
+                all.addAll(r.role().constraints());
+            }
         }
-        List<SampledCraft> crafts = new ArrayList<>(deputies.size() + 1);
-        crafts.add(new SampledCraft(chief.role().noradId(), null, stride, chiefAttitude, chief.role().sensors()));
-        for (RelativeSamples d : deputies) {
-            crafts.add(new SampledCraft(d.noradId(), d.samples(), stride, d.attitude(), d.sensors()));
-        }
-        return sensorEvents.compute(crafts, firstT, step, steps, epoch, durationSec, chiefRadiusM);
+        return all;
     }
 
     /** Attitude sample stride: {@code [t,qx,qy,qz,qw]} (matches the encoder). */
@@ -331,17 +448,26 @@ public class ScenarioStreamService {
      * scene frame) on the position grid (Phase 7). HOLDs the last valid quaternion past
      * a domain exit, mirroring the position sampler. Used for the chief (the deputy loop
      * computes its own attitude inline to reuse the per-step transform).
+     *
+     * <p>{@code geoEciOut} (Phase 8) is a caller-allocated stride-4 array
+     * {@code [t,x,y,z, ...]} filled with the role's geocentric ECI position per step
+     * (captured for free from the same {@code pv} — no extra propagation), with the
+     * same HOLD/backfill semantics; it feeds eclipse detection. Pass {@code null} to skip.
      */
     private double[] sampleAttitude(PreparedRole role, Frame eci, Frame lvlh, AbsoluteDate startDate,
-                                    double firstT, int step, int steps, double epochSec) {
+                                    double firstT, int step, int steps, double epochSec, double[] geoEciOut) {
         double[] a = new double[(steps + 1) * ATT_STRIDE];
         double[] tmp4 = new double[4];
         int firstValid = -1;
         boolean decayed = false;
         double hqx = 0, hqy = 0, hqz = 0, hqw = 1;
+        double hex = 0, hey = 0, hez = 0; // held geocentric ECI position
         for (int k = 0; k <= steps; k++) {
             double t = firstT + (double) k * step;
             a[k * ATT_STRIDE] = t;
+            if (geoEciOut != null) {
+                geoEciOut[k * 4] = t;
+            }
             if (!decayed) {
                 try {
                     AbsoluteDate date = startDate.shiftedBy(t);
@@ -352,6 +478,10 @@ public class ScenarioStreamService {
                     hqy = q[1];
                     hqz = q[2];
                     hqw = q[3];
+                    Vector3D pe = pv.getPosition();
+                    hex = pe.getX();
+                    hey = pe.getY();
+                    hez = pe.getZ();
                     if (firstValid < 0) {
                         firstValid = k;
                     }
@@ -366,10 +496,18 @@ public class ScenarioStreamService {
             a[k * ATT_STRIDE + 2] = hqy;
             a[k * ATT_STRIDE + 3] = hqz;
             a[k * ATT_STRIDE + 4] = hqw;
+            if (geoEciOut != null) {
+                geoEciOut[k * 4 + 1] = hex;
+                geoEciOut[k * 4 + 2] = hey;
+                geoEciOut[k * 4 + 3] = hez;
+            }
         }
         // If the chief never reached a valid state the whole stream already fails in
         // sampleRole; here we just backfill any leading held identity quaternions.
         backfillLeadingAttitude(a, Math.max(firstValid, 0));
+        if (geoEciOut != null) {
+            backfillLeading(geoEciOut, Math.max(firstValid, 0), 4);
+        }
         return a;
     }
 

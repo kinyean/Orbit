@@ -28,6 +28,12 @@ export interface EarthBackdrop {
   /** Place Earth's center at (−radiusM, 0, 0); ≤0 → representative LEO fallback. */
   setChiefRadius(radiusM: number): void;
   setMode(mode: BackdropMode): void;
+  /**
+   * Night-side glow (Phase 8): with the real Sun DirectionalLight the lit hemisphere
+   * is bright and the dark limb shows only this emissive. Low (~0.12) so the
+   * terminator reads; the view can raise it for the flat-lighting fallback.
+   */
+  setEmissiveIntensity(v: number): void;
   dispose(): void;
 }
 
@@ -45,7 +51,7 @@ export function createEarthBackdrop(): EarthBackdrop {
   // logarithmic depth buffer keeps the limb crisp against the close-range scene.
   const earth = new THREE.Group();
   const earthMat = track(
-    new THREE.MeshStandardMaterial({ color: 0x1a3a6b, roughness: 1, metalness: 0, emissive: 0x081a3a, emissiveIntensity: 0.6 }),
+    new THREE.MeshStandardMaterial({ color: 0x1a3a6b, roughness: 1, metalness: 0, emissive: 0x081a3a, emissiveIntensity: 0.12 }),
   );
   earth.add(new THREE.Mesh(track(new THREE.SphereGeometry(EARTH_RADIUS_M, 48, 32)), earthMat));
   earth.position.x = -FALLBACK_CHIEF_RADIUS_M;
@@ -83,6 +89,9 @@ export function createEarthBackdrop(): EarthBackdrop {
     setMode(mode: BackdropMode) {
       earth.visible = mode === 'earth';
       stars.visible = mode !== 'off';
+    },
+    setEmissiveIntensity(v: number) {
+      earthMat.emissiveIntensity = Math.max(0, v);
     },
     dispose() {
       for (const d of disposables) d.dispose();

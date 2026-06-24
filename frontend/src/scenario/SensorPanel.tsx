@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { useStore, type SensorRequest } from '../store/useStore';
-import { useCollapsed } from '../lib/usePanelChrome';
+import { useCollapsed, usePanelSize, usePanelPosition } from '../lib/usePanelChrome';
 
 // Same palette as ProximityView / ManeuverPanel so a craft's color is consistent.
 const CHIEF_COLOR = '#ffd166';
@@ -41,6 +41,41 @@ function rangeLabel(min?: number, max?: number): string {
   return `${fmt(min)}–${fmt(max)}`;
 }
 
+/** Parse a raw numeric-field string; NaN for empty/invalid (callers guard). */
+function num(s: string): number {
+  return parseFloat(s);
+}
+
+/**
+ * The add-sensor form holds its editable numeric fields as RAW STRINGS so they can be
+ * cleared and retyped freely — binding a number-input to a number snaps an emptied
+ * field back to 0 (you could never delete the 0 to type a new value). Parsed to
+ * numbers only on submit.
+ */
+interface SensorForm {
+  kind: string;
+  name: string;
+  fovType: 'cone' | 'rect';
+  halfAngleDeg: string;
+  hDeg: string;
+  vDeg: string;
+  minRangeM: string;
+  maxRangeM: string;
+}
+
+function presetToForm(p: Preset): SensorForm {
+  return {
+    kind: p.kind,
+    name: p.name,
+    fovType: p.fovType,
+    halfAngleDeg: String(p.halfAngleDeg),
+    hDeg: String(p.hDeg),
+    vDeg: String(p.vDeg),
+    minRangeM: String(p.minRangeM),
+    maxRangeM: String(p.maxRangeM),
+  };
+}
+
 /**
  * Sensor panel (Phase 7, US-SENSE-01). Per-craft (chief + deputies) sensor list with
  * an add form (type preset + FOV + range + boresight) and a remove control, plus a
@@ -57,11 +92,12 @@ export default function SensorPanel() {
 
   const [hostId, setHostId] = useState<number | null>(null);
   const [presetIdx, setPresetIdx] = useState(1); // wide imager default (UC-4)
-  const [form, setForm] = useState<Omit<SensorRequest, 'noradId'>>({ ...PRESETS[1] });
+  const [form, setForm] = useState<SensorForm>(() => presetToForm(PRESETS[1]));
   const [boresightIdx, setBoresightIdx] = useState(0);
   const [msg, setMsg] = useState<string | null>(null);
-  const [pos, setPos] = useState({ x: 248, y: 560 });
+  const { pos, setPos, commitPos } = usePanelPosition('sensors', { x: 248, y: 560 });
   const { collapsed, toggle } = useCollapsed('sensors');
+  const panelRef = usePanelSize<HTMLElement>('sensors', collapsed);
 
   function onDragStart(e: ReactPointerEvent) {
     if ((e.target as HTMLElement).closest('button')) return;
@@ -69,12 +105,15 @@ export default function SensorPanel() {
     const startX = e.clientX;
     const startY = e.clientY;
     const origin = { ...pos };
+    let last = origin;
     const move = (ev: PointerEvent) => {
       const x = Math.min(window.innerWidth - 80, Math.max(0, origin.x + (ev.clientX - startX)));
       const y = Math.min(window.innerHeight - 60, Math.max(0, origin.y + (ev.clientY - startY)));
-      setPos({ x, y });
+      last = { x, y };
+      setPos(last);
     };
     const up = () => {
+      commitPos(last); // persist the final spot so a refresh keeps it
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
     };
@@ -91,7 +130,7 @@ export default function SensorPanel() {
 
   function applyPreset(idx: number) {
     setPresetIdx(idx);
-    setForm({ ...PRESETS[idx] });
+    setForm(presetToForm(PRESETS[idx]));
     setBoresightIdx(0);
   }
 
@@ -100,13 +139,20 @@ export default function SensorPanel() {
   // (boresight→edge) is < 90°; a rect's full H/V widths are < 180° (each side < 90°).
   function formError(): string | null {
     if (form.fovType === 'cone') {
-      if (!(form.halfAngleDeg > 0 && form.halfAngleDeg < 90)) {
+      const ha = num(form.halfAngleDeg);
+      if (!(ha > 0 && ha < 90)) {
         return 'Cone half-angle must be between 0° and 90° (measured boresight → edge). 90° or more is a hemisphere, not a pointed cone.';
       }
-    } else if (!(form.hDeg > 0 && form.hDeg < 180) || !(form.vDeg > 0 && form.vDeg < 180)) {
-      return 'Rect H° and V° are full widths and must each be between 0° and 180°.';
+    } else {
+      const h = num(form.hDeg);
+      const v = num(form.vDeg);
+      if (!(h > 0 && h < 180) || !(v > 0 && v < 180)) {
+        return 'Rect H° and V° are full widths and must each be between 0° and 180°.';
+      }
     }
-    if (!(form.minRangeM >= 0) || !(form.maxRangeM > form.minRangeM)) {
+    const mn = num(form.minRangeM);
+    const mx = num(form.maxRangeM);
+    if (!(mn >= 0) || !(mx > mn)) {
       return 'Range must satisfy 0 ≤ min < max (metres).';
     }
     return null;
@@ -119,11 +165,19 @@ export default function SensorPanel() {
     const b = BORESIGHTS[boresightIdx].v;
     setMsg(null);
     const err = await addSensor({
-      ...form,
       noradId: selectedHost,
+      kind: form.kind,
+      name: form.name,
+      fovType: form.fovType,
+      halfAngleDeg: num(form.halfAngleDeg),
+      hDeg: num(form.hDeg),
+      vDeg: num(form.vDeg),
+      minRangeM: num(form.minRangeM),
+      maxRangeM: num(form.maxRangeM),
       boresightX: b[0],
       boresightY: b[1],
       boresightZ: b[2],
+      clockDeg: 0,
     });
     setMsg(err ?? `Added ${form.name} to ${selectedHost}`);
   }
@@ -131,7 +185,7 @@ export default function SensorPanel() {
   const formErr = formError();
 
   return (
-    <aside className="maneuver-panel" style={{ left: pos.x, top: pos.y }}>
+    <aside ref={panelRef} className={`maneuver-panel${collapsed ? ' is-collapsed' : ''}`} style={{ left: pos.x, top: pos.y }}>
       <div className="mvr-drag" onPointerDown={onDragStart} title="Drag to move">
         <span className="mvr-drag-title"><span className="mvr-grip" aria-hidden>⠿</span> Sensors · FOV</span>
         <button className="panel-min" onClick={toggle} title={collapsed ? 'Expand' : 'Minimize'}>
@@ -225,7 +279,7 @@ export default function SensorPanel() {
                     min={0}
                     max={90}
                     value={form.halfAngleDeg}
-                    onChange={(e) => setForm({ ...form, halfAngleDeg: Number(e.target.value) })}
+                    onChange={(e) => setForm({ ...form, halfAngleDeg: e.target.value })}
                   />
                 </label>
               ) : (
@@ -238,7 +292,7 @@ export default function SensorPanel() {
                       min={0}
                       max={180}
                       value={form.hDeg}
-                      onChange={(e) => setForm({ ...form, hDeg: Number(e.target.value) })}
+                      onChange={(e) => setForm({ ...form, hDeg: e.target.value })}
                     />
                   </label>
                   <label title="Full vertical width of the field of view. 0–180°.">
@@ -249,7 +303,7 @@ export default function SensorPanel() {
                       min={0}
                       max={180}
                       value={form.vDeg}
-                      onChange={(e) => setForm({ ...form, vDeg: Number(e.target.value) })}
+                      onChange={(e) => setForm({ ...form, vDeg: e.target.value })}
                     />
                   </label>
                 </>
@@ -268,7 +322,7 @@ export default function SensorPanel() {
                   type="number"
                   step="any"
                   value={form.minRangeM}
-                  onChange={(e) => setForm({ ...form, minRangeM: Number(e.target.value) })}
+                  onChange={(e) => setForm({ ...form, minRangeM: e.target.value })}
                 />
               </label>
               <label>
@@ -277,7 +331,7 @@ export default function SensorPanel() {
                   type="number"
                   step="any"
                   value={form.maxRangeM}
-                  onChange={(e) => setForm({ ...form, maxRangeM: Number(e.target.value) })}
+                  onChange={(e) => setForm({ ...form, maxRangeM: e.target.value })}
                 />
               </label>
               <label>

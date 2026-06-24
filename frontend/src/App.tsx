@@ -11,6 +11,7 @@ import StatusChip from './components/StatusChip';
 import ScenarioPanel from './scenario/ScenarioPanel';
 import ManeuverPanel from './scenario/ManeuverPanel';
 import SensorPanel from './scenario/SensorPanel';
+import EnvironmentPanel from './scenario/EnvironmentPanel';
 import { useStore } from './store/useStore';
 import { startClockEngine } from './store/clockEngine';
 import './App.css';
@@ -134,6 +135,7 @@ export default function App() {
       <ScenarioPanel />
       {scenarioActive && <ManeuverPanel />}
       {scenarioActive && <SensorPanel />}
+      {scenarioActive && <EnvironmentPanel />}
       <StatsOverlay />
       {scenarioActive && (
         <button

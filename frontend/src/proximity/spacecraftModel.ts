@@ -42,6 +42,13 @@ export interface SpacecraftModel {
   setAxesWorldLength(len: number): void;
   /** Uniform scale on the geometry only (the marker stays fixed-pixel). */
   setModelScale(s: number): void;
+  /**
+   * Sun-consistent illumination (Phase 8 / US-ENV-03): `litFactor` ∈ [0,1] dims the
+   * body when it is in Earth's shadow — 1 = full sunlight, ~0.5 = penumbra, ~0.12 =
+   * umbra. Scales each material's base colour + emissive so a craft visibly darkens
+   * as it enters eclipse (UC-5 step 4). Materials are per-model, so this is per-craft.
+   */
+  setEclipse(litFactor: number): void;
   dispose(): void;
 }
 
@@ -74,15 +81,24 @@ export function createSpacecraftModel(color: THREE.Color): SpacecraftModel {
     return x;
   };
 
+  // Standard materials whose colour/emissive are scaled by eclipse lighting (Phase 8).
+  // Each keeps its base values so `setEclipse` is idempotent and reversible.
+  const lit: { mat: THREE.MeshStandardMaterial; baseColor: THREE.Color; baseEmissive: number }[] = [];
+  const trackLit = (m: THREE.MeshStandardMaterial): THREE.MeshStandardMaterial => {
+    lit.push({ mat: m, baseColor: m.color.clone(), baseEmissive: m.emissiveIntensity });
+    return m;
+  };
+  let lastLitFactor = 1;
+
   // --- Bus -----------------------------------------------------------------
-  const busMat = track(
+  const busMat = trackLit(track(
     new THREE.MeshStandardMaterial({ color: color.clone().multiplyScalar(0.75), metalness: 0.3, roughness: 0.6 }),
-  );
+  ));
   const bus = new THREE.Mesh(track(new THREE.BoxGeometry(2.6, 3.6, 2.2)), busMat);
   modelGroup.add(bus);
 
   // --- Solar arrays on hinge joints (deployed along ±X) --------------------
-  const panelMat = track(
+  const panelMat = trackLit(track(
     new THREE.MeshStandardMaterial({
       color: 0x1b2a55,
       emissive: 0x16306b,
@@ -91,7 +107,7 @@ export function createSpacecraftModel(color: THREE.Color): SpacecraftModel {
       roughness: 0.5,
       side: THREE.DoubleSide,
     }),
-  );
+  ));
   const panelGeom = track(new THREE.BoxGeometry(7.5, 0.06, 2.4));
   const makeArray = (sign: 1 | -1): THREE.Group => {
     const hinge = new THREE.Group();
@@ -108,7 +124,7 @@ export function createSpacecraftModel(color: THREE.Color): SpacecraftModel {
   // --- Dish on a gimbal joint (parked pointing +Z, anti-nadir) -------------
   const dish = new THREE.Group();
   dish.position.set(0, 0, 1.3);
-  const dishMat = track(new THREE.MeshStandardMaterial({ color: 0xb8c0cc, metalness: 0.4, roughness: 0.5, side: THREE.DoubleSide }));
+  const dishMat = trackLit(track(new THREE.MeshStandardMaterial({ color: 0xb8c0cc, metalness: 0.4, roughness: 0.5, side: THREE.DoubleSide })));
   const dishMesh = new THREE.Mesh(track(new THREE.ConeGeometry(0.9, 0.5, 20, 1, true)), dishMat);
   dishMesh.rotation.x = -Math.PI / 2; // open face toward +Z
   dishMesh.position.z = 0.25;
@@ -172,6 +188,17 @@ export function createSpacecraftModel(color: THREE.Color): SpacecraftModel {
     },
     setModelScale(s: number) {
       modelGroup.scale.setScalar(s);
+    },
+    setEclipse(litFactor: number) {
+      const f = Math.max(0, Math.min(1, litFactor));
+      if (f === lastLitFactor) return; // changes only at shadow boundaries
+      lastLitFactor = f;
+      // Floor the colour at 12% so an umbra craft is dark but still a readable silhouette.
+      const colorScale = 0.12 + 0.88 * f;
+      for (const { mat, baseColor, baseEmissive } of lit) {
+        mat.color.copy(baseColor).multiplyScalar(colorScale);
+        mat.emissiveIntensity = baseEmissive * f;
+      }
     },
     dispose() {
       disposed = true;

@@ -184,7 +184,7 @@ class ScenarioServiceTests {
         ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
         verify(versions).saveAndFlush(vCap.capture());
         assertThat(vCap.getValue().getVersionNo()).isEqualTo(2);
-        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":4").contains("delta_v");
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":5").contains("delta_v");
         assertThat(s.getLatestVersionId()).isEqualTo(vCap.getValue().getId());
         verify(auditLog, times(1)).save(any());
 
@@ -203,9 +203,9 @@ class ScenarioServiceTests {
 
         ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
         verify(versions).saveAndFlush(vCap.capture());
-        // The v1 body deserialized (null maneuvers/sensors → empty), then re-stamped to v3.
-        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":4").contains("delta_v");
-        assertThat(resp.body().schemaVersion()).isEqualTo(4);
+        // The v1 body deserialized (null maneuvers/sensors → empty), then re-stamped to v5.
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":5").contains("delta_v");
+        assertThat(resp.body().schemaVersion()).isEqualTo(5);
         assertThat(resp.body().chief().noradId()).isEqualTo(25544);
         assertThat(resp.body().deputies().get(0).maneuvers()).hasSize(1);
     }
@@ -287,7 +287,7 @@ class ScenarioServiceTests {
         ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
         verify(versions).saveAndFlush(vCap.capture());
         assertThat(vCap.getValue().getVersionNo()).isEqualTo(2);
-        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":4").contains("Imager");
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":5").contains("Imager");
         assertThat(s.getLatestVersionId()).isEqualTo(vCap.getValue().getId());
         verify(auditLog, times(1)).save(any());
         assertThat(resp.body().chief().sensors()).hasSize(1);
@@ -392,6 +392,80 @@ class ScenarioServiceTests {
         ScenarioResponse resp = service.addManeuver(id,
                 new ManeuverDraft(33591, "2024-06-01T06:00:00Z", "ric", 0.0, 1.0, 0.0));
         assertThat(resp.body().deputies().get(0).sensors()).as("sensors survive a maneuver edit").hasSize(1);
+        assertThat(resp.body().deputies().get(0).maneuvers()).hasSize(1);
+    }
+
+    // --- constraints & conjunctions (Phase 8, US-EVT-02 / US-EVT-03) ---------
+
+    @Test
+    void addApproachCorridorWritesV5VersionWithOneAudit() {
+        UUID id = UUID.randomUUID();
+        Scenario s = existingWithBody(id, DEPUTY_TLE_BODY_V2);
+
+        ScenarioResponse resp = service.addConstraint(id,
+                new ConstraintDraft(25544, "approach-corridor", null, 33591, 15.0, 5000.0));
+
+        ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
+        verify(versions).saveAndFlush(vCap.capture());
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":5").contains("approach-corridor");
+        assertThat(s.getLatestVersionId()).isEqualTo(vCap.getValue().getId());
+        verify(auditLog, times(1)).save(any());
+        assertThat(resp.body().chief().constraints()).hasSize(1);
+        assertThat(resp.body().chief().constraints().get(0).targetNoradId()).isEqualTo(33591);
+    }
+
+    @Test
+    void addSunKeepOutRequiresASensorOnTheHost() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        // No sensor on the host yet → 422.
+        assertThatThrownBy(() -> service.addConstraint(id,
+                new ConstraintDraft(25544, "sun-keep-out", "nope", 0, 20.0, 0.0)))
+                .isInstanceOf(ScenarioValidationException.class);
+        verify(auditLog, never()).save(any());
+    }
+
+    @Test
+    void rejectsConstraintWithBadAngleAndUnknownHost() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        assertThatThrownBy(() -> service.addConstraint(id,
+                new ConstraintDraft(25544, "approach-corridor", null, 33591, 200.0, 5000.0)))
+                .isInstanceOf(ScenarioValidationException.class); // limitDeg out of (0,180)
+        assertThatThrownBy(() -> service.addConstraint(id,
+                new ConstraintDraft(99999, "approach-corridor", null, 33591, 15.0, 5000.0)))
+                .isInstanceOf(ScenarioValidationException.class); // unknown host
+        verify(versions, never()).saveAndFlush(any());
+        verify(auditLog, never()).save(any());
+    }
+
+    @Test
+    void setMissDistanceThresholdWritesNewVersion() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        ScenarioResponse resp = service.setMissDistanceThreshold(id, 1500.0);
+
+        ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
+        verify(versions).saveAndFlush(vCap.capture());
+        assertThat(vCap.getValue().getBody()).contains("missDistanceThresholdM");
+        verify(auditLog, times(1)).save(any());
+        assertThat(resp.body().missDistanceThresholdM()).isEqualTo(1500.0);
+    }
+
+    @Test
+    void editingManeuverPreservesConstraintsAndThreshold() {
+        // Regression: a maneuver edit must not wipe a host's constraints or the threshold (Phase 8).
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        service.addConstraint(id, new ConstraintDraft(25544, "approach-corridor", null, 33591, 15.0, 5000.0));
+        ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
+        verify(versions).saveAndFlush(vCap.capture());
+        ScenarioVersion saved = vCap.getValue();
+        when(versions.findById(saved.getId())).thenReturn(Optional.of(saved));
+
+        ScenarioResponse resp = service.addManeuver(id,
+                new ManeuverDraft(33591, "2024-06-01T06:00:00Z", "ric", 0.0, 1.0, 0.0));
+        assertThat(resp.body().chief().constraints()).as("constraints survive a maneuver edit").hasSize(1);
         assertThat(resp.body().deputies().get(0).maneuvers()).hasSize(1);
     }
 

@@ -3,6 +3,8 @@ package space.orbit.backend.prop;
 import jakarta.annotation.PostConstruct;
 import org.hipparchus.geometry.euclidean.threed.Rotation;
 import org.hipparchus.geometry.euclidean.threed.Vector3D;
+import org.orekit.bodies.CelestialBody;
+import org.orekit.bodies.CelestialBodyFactory;
 import org.orekit.bodies.GeodeticPoint;
 import org.orekit.bodies.OneAxisEllipsoid;
 import org.orekit.frames.Frame;
@@ -42,6 +44,8 @@ public class FrameService {
     private Frame teme;
     private Frame ecef;
     private OneAxisEllipsoid earth;
+    private CelestialBody sun;
+    private CelestialBody moon;
 
     @PostConstruct
     public void init() {
@@ -53,6 +57,11 @@ public class FrameService {
                 Constants.WGS84_EARTH_EQUATORIAL_RADIUS,
                 Constants.WGS84_EARTH_FLATTENING,
                 ecef);
+        // Sun/Moon ephemeris (Phase 8) — the same bodies the numerical force model
+        // already uses for third-body + SRP. Reused here for the Sun-vector stream,
+        // eclipse, lighting, and sun-keep-out (no new dependency).
+        sun = CelestialBodyFactory.getSun();
+        moon = CelestialBodyFactory.getMoon();
     }
 
     public Frame eci() {
@@ -88,6 +97,38 @@ public class FrameService {
     /** The shared WGS84 Earth ellipsoid (reused by the numerical force models). */
     public OneAxisEllipsoid earth() {
         return earth;
+    }
+
+    // --- Sun / Moon (Phase 8, US-ENV-01 / SRS §3.7.1) ------------------------
+
+    /** Sun position in {@link #eci()} (EME2000, metres) at {@code date} — geocentric. */
+    public Vector3D sunPosition(AbsoluteDate date) {
+        return sun.getPosition(date, eci);
+    }
+
+    /** Moon position in {@link #eci()} (EME2000, metres) at {@code date} — geocentric. */
+    public Vector3D moonPosition(AbsoluteDate date) {
+        return moon.getPosition(date, eci);
+    }
+
+    /**
+     * Unit direction of an ECI vector expressed in the chief-LVLH scene frame
+     * (Phase 8). Uses {@link Transform#transformVector} — the rotation only, never
+     * {@code transformPosition} (which would add the chief's offset) — so a Sun/Moon
+     * <em>direction</em> stays a direction (R15). Returns a zero vector for a
+     * degenerate (zero-length) input.
+     *
+     * @param dirEci    a direction (or position used as a direction) in {@link #eci()}
+     * @param eciToLvlh {@code eci().getTransformTo(lvlh, date)} for the step
+     * @return {@code [x, y, z]} unit vector in the LVLH scene
+     */
+    public static double[] directionInLvlh(Vector3D dirEci, Transform eciToLvlh) {
+        Vector3D d = eciToLvlh.transformVector(dirEci);
+        double n = d.getNorm();
+        if (n <= 0) {
+            return new double[] {0, 0, 0};
+        }
+        return new double[] {d.getX() / n, d.getY() / n, d.getZ() / n};
     }
 
     // --- Relative & body frames (Phase 3B, US-FRAME-02, Decision 12) ---------

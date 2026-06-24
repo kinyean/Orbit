@@ -211,10 +211,16 @@ public class CatalogService {
             try {
                 TLE tle = tleFactory.fromGp(r);
                 TLEPropagator prop = propagator.build(tle);
-                double periodMinutes = (2.0 * Math.PI / tle.getMeanMotion()) / 60.0;
+                double meanMotion = tle.getMeanMotion(); // rad/s
+                double periodMinutes = (2.0 * Math.PI / meanMotion) / 60.0;
                 double inclinationDeg = Math.toDegrees(tle.getI());
-                TrackedSatellite sat =
-                        new TrackedSatellite(r.noradId(), r.objectName(), inclinationDeg, periodMinutes, prop);
+                // Orbit shell (Phase 8 screening prune): a = (μ/n²)^(1/3); peri/apo = a(1∓e).
+                double a = Math.cbrt(org.orekit.utils.Constants.WGS84_EARTH_MU / (meanMotion * meanMotion));
+                double e = tle.getE();
+                double perigeeRadiusM = a * (1.0 - e);
+                double apogeeRadiusM = a * (1.0 + e);
+                TrackedSatellite sat = new TrackedSatellite(r.noradId(), r.objectName(),
+                        inclinationDeg, periodMinutes, perigeeRadiusM, apogeeRadiusM, prop);
                 built.add(sat);
                 byNorad.put(r.noradId(), sat);
                 // Freeze the TLE lines + epoch now, while we hold the built TLE,
@@ -350,6 +356,15 @@ public class CatalogService {
     /** Tracked-satellite count (for tests / diagnostics). */
     public int size() {
         return tracked.size();
+    }
+
+    /**
+     * The current live tracked set (Phase 8 catalog conjunction screening, UC-7).
+     * The returned list is the immutable snapshot held since the last refresh — it
+     * is replaced wholesale on refresh, so a screening run sees a consistent set.
+     */
+    public List<TrackedSatellite> tracked() {
+        return tracked;
     }
 
     /**

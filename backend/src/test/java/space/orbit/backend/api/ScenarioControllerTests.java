@@ -19,6 +19,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import space.orbit.backend.analysis.ScreeningService;
 import space.orbit.backend.scenario.DuplicateScenarioNameException;
 import space.orbit.backend.scenario.ManeuverTemplateService;
 import space.orbit.backend.scenario.ScenarioBody;
@@ -45,6 +46,9 @@ class ScenarioControllerTests {
 
     @MockitoBean
     private ManeuverTemplateService templates;
+
+    @MockitoBean
+    private ScreeningService screening;
 
     private static final String VALID_BODY = """
             {"name":"Rendezvous","fidelity":"sgp4",
@@ -139,5 +143,30 @@ class ScenarioControllerTests {
         mvc.perform(post("/scenarios/{id}/maneuvers/hohmann", id)
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void addConstraintReturnsUpdatedScenario() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(service.addConstraint(any(), any())).thenReturn(sampleResponse());
+        String body = "{\"hostNoradId\":25544,\"kind\":\"approach-corridor\","
+                + "\"targetNoradId\":33591,\"limitDeg\":15.0,\"rangeM\":5000.0}";
+        mvc.perform(post("/scenarios/{id}/constraints", id)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.body.fidelity").value("sgp4"));
+    }
+
+    @Test
+    void screenReturnsResults() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(screening.screen(any(), Mockito.anyDouble())).thenReturn(
+                new space.orbit.backend.analysis.ScreeningResult(5000.0, "2026-06-23T00:00:00Z", 14500, 3,
+                        List.of(new space.orbit.backend.analysis.ConjunctionResult(
+                                25544, "ISS", 40001, "TWIN", "2026-06-23T00:10:00Z", 842.0))));
+        mvc.perform(post("/scenarios/{id}/screening", id).param("thresholdKm", "5.0"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.conjunctions[0].catalogNoradId").value(40001))
+                .andExpect(jsonPath("$.catalogSize").value(14500));
     }
 }

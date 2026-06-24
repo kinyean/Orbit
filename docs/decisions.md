@@ -47,6 +47,9 @@ considered**, **Consequences**.
 19. [Scenario body schema v1 + persistence design (Phase 3A)](#19-scenario-body-schema-v1--persistence-design-phase-3a)
 26. [Measured-data ingestion: WOD CSV as an ephemeris-role scenario](#26-measured-data-ingestion-wod-csv-as-an-ephemeris-role-scenario)
 
+**Environment & events**
+25. [Sun/Moon + lighting, eclipse, conjunctions, constraints (Phase 8)](#25-sunmoon--lighting-eclipse-conjunctions-constraints-phase-8)
+
 **Cross-cutting / enterprise**
 16. [Enterprise posture: professional-grade from the start](#16-enterprise-posture-professional-grade-from-the-start)
 17. [Deployment: containerized, cloud + on-prem](#17-deployment-containerized-cloud--on-prem)
@@ -1148,11 +1151,112 @@ determinism intact (R11), no REST/OpenAPI change (`gen:api` is a no-op), exactly
 
 ---
 
+## 25. Sun/Moon + lighting, eclipse, conjunctions, constraints (Phase 8)
+
+**Context.** Phase 8 (roadmap §7; SRS §3.7 / §3.11.3 / §3.12.1 / §3.12.3; US-ENV-01/02/03,
+US-EVT-02/03/04; UC-5, UC-7) makes the scene *environmental*. Phase 7 left two explicit
+holes (Decision 24, [R17](./risks.md)): the proximity view's lighting was **flat /
+non-physical** (no Sun vector), and sensor **sun-keep-out** + Sun occlusion were deferred
+"to Phase 8 with the Sun vector." Phase 8 closes those and adds the rest of §7: Sun/Moon
+positions, per-spacecraft eclipse, Sun-consistent illumination, conjunction detection,
+constraint checks, and the timeline annotations (eclipse bands, conjunction ticks,
+violation marks) — Frank's UC-5 (eclipse/lighting) and UC-7 (conjunction screening), and
+the rest of Gita's UC-4 (sun-keep-out).
+
+**Decision.** Ride the Phase-7 architecture exactly — new sampled-trajectory computers in
+`analysis/` (no re-propagation), additive `scenario-relative` envelope fields
+(`VERSION` stays `"1"`), a forward-additive `ScenarioBody` schema bump (no DB migration),
+all scenario edits through the single audited `ScenarioService`. Sliced 8A / 8B / 8C.
+- **Sun/Moon (8A):** reuse the Orekit `CelestialBodyFactory` Sun/Moon already driving the
+  numerical force model (no new dependency); sample each body's **direction in the
+  chief-LVLH scene** on the render grid (`FrameService.directionInLvlh` →
+  `Transform.transformVector`, rotation only — R15) and stream it (stride-4 unit vectors,
+  additive). The frontend drives a real `DirectionalLight` from it, so the
+  `MeshStandardMaterial` Earth shows a correct day/night terminator and the ambient/
+  hemisphere fill drops low. Resolves the R17 lighting hole.
+- **Eclipse (8A):** conical umbra + penumbra in **geocentric ECI**, computed by
+  `EclipseEventComputer` from per-craft geocentric ECI position arrays **captured for free
+  inside the existing per-step loop** (`depEci.getPosition()` for deputies; the chief's own
+  state threaded out of `sampleAttitude`) — no extra propagation. A distinct
+  `SampledGeocentricCraft` (field `posEci`) vs the LVLH `SampledCraft` (field `pos`)
+  enforces the frame split at the type level (R15). Earth-shadow only (a satellite's lunar
+  eclipse is negligible). Streamed as a top-level `eclipses` array; the frontend pairs
+  ingress/egress into umbra/penumbra bands (proximity dimming via per-craft material
+  `setEclipse`; timeline bands).
+- **Conjunctions: both (8B + 8C).** **Intra-scenario** pairwise closest-approach in the live
+  stream (`ConjunctionEventComputer`, cheap, formation safety) — every unordered pair's
+  LVLH range (frame-invariant) on the grid + a golden-section refine **on the sampled
+  arrays** (NOT the live propagators — consistent with a maneuvered deputy, Decision 24).
+  **Catalog screening** (UC-7) as a separate request→response REST endpoint
+  (`ScreeningService`, `POST /scenarios/{id}/screening?thresholdKm=…`): propagate the
+  scenario craft over the window, screen vs the full live SGP4 catalog with a **two-stage
+  prune** (coarse radial-shell band test — `|p1−p2| ≥ ||p1|−|p2||` — then fine sampled
+  closest-approach + golden-section on survivors, parallelised), returning a sorted list +
+  CSV. A **snapshot**, not a reproducible artifact (the catalog refreshes ~6 h — tagged
+  with the run instant; R11 caveat).
+- **Constraints: sun-keep-out + approach-corridor (8B).** `ScenarioBody` schema **v5** (v4
+  was taken by measured ephemeris) adds a per-role `List<Constraint>` + an optional
+  top-level `missDistanceThresholdM`, forward-additive (v1–v4 bodies coalesce to empty +
+  null, re-stamped on save; no migration). `ConstraintChecker` runs on the sampled
+  trajectory + attitude + Sun vector: **sun-keep-out** = angle(sensor boresight, Sun) <
+  limit (completes UC-4 step 7; on a measured chief it evaluates the craft's real attitude —
+  a free win from measured-data slice 2); **approach-corridor** = the target outside a
+  limit-half-angle cone about the host's body +Y (ram) axis while within range (the
+  `SensorEventComputer` bearing test, inverted). Emits violation-start/end events. Plume
+  impingement is deferred (needs per-burn plume geometry — the `kind` record leaves room).
+- **Determinism (R11):** every new pass runs in increasing-time order over the existing
+  grid with fixed iteration counts (bisection 24, golden-section 60); the Sun/Moon
+  ephemeris is deterministic. Catalog screening is the one documented exception (live
+  catalog).
+
+**Why.** The Phase-7 sampled-trajectory pattern already gives consistency-by-construction
+with the drawn scene + cheapness; eclipse/conjunction/constraints are the same shape.
+Reusing the Orekit Sun/Moon avoids a new dependency. Backend-authoritative Sun direction
+means the lit FOV/keep-out the client draws and the events the backend computes share one
+source of truth (Decision 9). A radial-shell prune is the cheap necessary condition that
+keeps ~14,500-satellite screening tractable. Schema v5 forward-additivity matches every
+prior bump (v2→v3→v4) — no migration.
+
+**Alternatives considered.** Orekit `EclipseDetector`/`EventDetector` on the live
+propagators (rejected — event detectors don't share the rendered samples, reintroducing
+the maneuvered-deputy inconsistency; the sampled predicate is consistent + cheaper).
+A scenario-wide single conjunction model (rejected — intra-scenario formation safety and
+catalog screening are different load profiles, Decision 13; both are wanted). Reconstructing
+geocentric positions from the LVLH samples for eclipse (rejected — strictly more work
+re-deriving raw data already held; capture it for free). A configurable corridor axis
+(deferred — v1 fixes it to body +Y / V-bar, the canonical corridor; the record can grow).
+Streaming the Sun position un-normalised for the client to light from (rejected — the
+direction is what lighting needs; |S| is only needed server-side for the eclipse cone).
+
+**Consequences.** New `analysis/` classes: `EclipseEvent(Computer)`, `SampledGeocentricCraft`,
+`ConjunctionEvent(Computer)`, `ConstraintViolationEvent`, `ConstraintChecker`,
+`ConjunctionResult`/`ScreeningResult`/`ScreeningService`. `FrameService` grows
+`sunPosition`/`moonPosition`/`directionInLvlh`; `QuaternionSamples.rotate` is promoted to a
+shared util (`SensorEventComputer` + `ConstraintChecker` share it). `ScenarioBody` schema
+v5 (`Constraint` + `missDistanceThresholdM`); `ScenarioService` gains
+`addConstraint`/`removeConstraint`/`setMissDistanceThreshold` (audit actions
+`CONSTRAINT_ADD`/`CONSTRAINT_REMOVE`/`MISS_DISTANCE_SET`). New REST: constraints +
+miss-distance + screening (`gen:api` regenerated; stream fields stay WebSocket-only). The
+`encodeRelative` signature grows by five additive trailing params (sun/moon/eclipses +
+conjunctions/violations). Frontend: `relativeBuffer` parses the new fields + builds eclipse
+intervals; `ProximityView` Sun-driven light rig + per-craft eclipse dimming;
+`spacecraftModel.setEclipse` + `earthBackdrop.setEmissiveIntensity`; `Timeline` eclipse
+bands + conjunction/violation marks; new `EnvironmentPanel` (constraints + threshold +
+catalog-screening table/CSV). Backend **152 tests green** (was 126); frontend type-check +
+build green; verified end-to-end on the dev stack (WS frame carries unit `sunVector`/
+`moonVector` + eclipses + a conjunction + violations on `VERSION "1"`; constraint add → 200,
+bad angle / missing sensor → 422; screening 64919 → 61 conjunctions below 50 km, sorted).
+This resolves the Deferred "flat lighting" and "Sun occlusion + sun-keep-out (Phase 8)"
+items (R17 lighting closed; sun-keep-out shipped). **Deferred:** plume impingement;
+gimbaled sensors / frustum FOV (from Phase 7); GPU-depth occlusion; eclipse/conjunction
+annotations on the **global-view** CZML (Phase 8 emits them in the relative envelope).
+
+---
+
 ## 26. Measured-data ingestion: WOD CSV as an ephemeris-role scenario
 
-> (Decision 25 is reserved for Phase 8 — Environment & Events; see
-> [phase-8-plan.md](./phase-8-plan.md). This feature track is numbered 26 to avoid
-> renumbering that reserved entry.)
+> (Decision 25 — Phase 8, Environment & Events — is now written above; this
+> measured-data feature track stays numbered 26.)
 
 **Context.** Real flight telemetry arrived mid-Phase-8: "Whole-Orbit Data" (WOD) CSV
 dumps from TELEOS-2 (1–7 Jan 2026, ~570 MB) carrying measured GNSS ECI position/

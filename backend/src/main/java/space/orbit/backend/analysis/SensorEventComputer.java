@@ -121,7 +121,7 @@ public class SensorEventComputer {
         // Boresight in the LVLH scene = host body-attitude (sampled) applied to the body axis.
         double[] q = new double[4];
         QuaternionSamples.sampleAt(host.att(), t, q);
-        double[] b = rotateByQuat(q, boresightBody);
+        double[] b = QuaternionSamples.rotate(q, boresightBody);
         double bn = Math.sqrt(b[0] * b[0] + b[1] * b[1] + b[2] * b[2]);
         double cos = bn > 0 ? (lx * b[0] + ly * b[1] + lz * b[2]) / (range * bn) : -1;
         if (cos < fovCos) {
@@ -203,22 +203,6 @@ public class SensorEventComputer {
         out3[0] = s[ba + 1] + (s[bb + 1] - s[ba + 1]) * f;
         out3[1] = s[ba + 2] + (s[bb + 2] - s[ba + 2]) * f;
         out3[2] = s[ba + 3] + (s[bb + 3] - s[ba + 3]) * f;
-    }
-
-    /** Rotate {@code v} by a {@code (x,y,z,w)} quaternion (Hamilton / three.js convention). */
-    private static double[] rotateByQuat(double[] q, double[] v) {
-        double x = q[0];
-        double y = q[1];
-        double z = q[2];
-        double w = q[3];
-        double tx = 2.0 * (y * v[2] - z * v[1]);
-        double ty = 2.0 * (z * v[0] - x * v[2]);
-        double tz = 2.0 * (x * v[1] - y * v[0]);
-        return new double[] {
-            v[0] + w * tx + (y * tz - z * ty),
-            v[1] + w * ty + (z * tx - x * tz),
-            v[2] + w * tz + (x * ty - y * tx),
-        };
     }
 
     /** True when the Earth blocks the line segment {@code host}→{@code target} in the LVLH scene. */

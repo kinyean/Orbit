@@ -967,7 +967,7 @@
   transform: translateY(-50%);
   border-radius: 1px;
   pointer-events: none;
-  z-index: 1;
+  z-index: 3; /* point marks sit above the FOV/eclipse bands */
 }
 
 /* Sensor in-view windows (US-EVT-01) — translucent acquisition→loss bands.
@@ -985,7 +985,120 @@
   border-radius: 2px;
   box-shadow: 0 0 4px rgba(34, 197, 94, 0.5);
   pointer-events: none;
+  z-index: 2; /* in front of the eclipse context bands (penumbra 0, umbra 1) */
+}
+
+/* Eclipse bands (Phase 8, US-ENV-02 / UC-5) — penumbra (partial shadow) + umbra
+   (full shadow) per spacecraft. The penumbra band is TALLER and the umbra band is
+   shorter + darker + outlined, so the umbra reads as a dark core nested inside the
+   lighter penumbra "shoulders" — making the two distinguishable even when narrow.
+   Hover the track for a tooltip that names which is which. */
+.timeline-eclipse-penumbra {
+  position: absolute;
+  top: 50%;
+  height: 18px;
+  min-width: 1px;
+  transform: translateY(-50%);
+  background: rgba(96, 116, 150, 0.4);
+  border-radius: 3px;
+  pointer-events: none;
   z-index: 0;
+}
+.timeline-eclipse-umbra {
+  position: absolute;
+  top: 50%;
+  height: 11px;
+  min-width: 1px;
+  transform: translateY(-50%);
+  background: rgba(2, 6, 23, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.55);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Hover tooltip — "what's happening at the cursor time" (Phase 8). */
+.timeline-tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  background: rgba(8, 12, 24, 0.96);
+  border: 1px solid rgba(71, 85, 105, 0.6);
+  border-radius: 6px;
+  padding: 6px 9px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: #cbd5e1;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 20;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
+}
+.timeline-tooltip-time {
+  color: #93c5fd;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  margin-bottom: 2px;
+}
+
+/* Conjunction TCA ticks (Phase 8, US-EVT-02) — magenta diamond-ish marks. */
+.timeline-conjunction {
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 16px;
+  margin-left: -2px;
+  transform: translateY(-50%) rotate(45deg);
+  background: #f0abfc;
+  box-shadow: 0 0 5px rgba(240, 171, 252, 0.8);
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* Constraint-violation markers (Phase 8, US-EVT-03) — red triangle/tick. */
+.timeline-violation {
+  position: absolute;
+  top: 50%;
+  width: 3px;
+  height: 18px;
+  margin-left: -1.5px;
+  transform: translateY(-50%);
+  background: #f87171;
+  box-shadow: 0 0 5px rgba(248, 113, 113, 0.9);
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* Catalog screening results table (Phase 8, UC-7). */
+.screen-results {
+  max-height: 180px;
+  overflow-y: auto;
+  margin: 4px 0;
+}
+.screen-results table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+}
+.screen-results th {
+  text-align: left;
+  color: #94a3b8;
+  font-weight: 600;
+  padding: 2px 4px;
+  position: sticky;
+  top: 0;
+  background: rgba(15, 23, 42, 0.95);
+}
+.screen-results td {
+  padding: 2px 4px;
+  color: #cbd5e1;
+  border-top: 1px solid rgba(71, 85, 105, 0.25);
+  white-space: nowrap;
+}
+.screen-results tbody tr {
+  cursor: pointer;
+}
+.screen-results tbody tr:hover {
+  background: rgba(56, 189, 248, 0.15);
 }
 
 /* Per-craft attitude mode selector in the sensor panel. */
@@ -1005,6 +1118,11 @@
   background: rgba(71, 85, 105, 0.4);
   border-radius: 2px;
   outline: none;
+  /* Sit above every event band/mark (z 0–2) so the current-time thumb is never
+     hidden behind an eclipse band, however long the band is (Phase 8). The 4px
+     track line is semi-transparent so it only faintly crosses the bands. */
+  position: relative;
+  z-index: 4;
 }
 
 .timeline-scrub::-webkit-slider-thumb {
@@ -1014,6 +1132,19 @@
   background: #38bdf8;
   border-radius: 50%;
   cursor: pointer;
+  /* A dark ring + glow so the cyan dot stays legible on top of any event band. */
+  border: 2px solid rgba(8, 12, 24, 0.9);
+  box-shadow: 0 0 4px rgba(56, 189, 248, 0.9);
+}
+
+.timeline-scrub::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: #38bdf8;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid rgba(8, 12, 24, 0.9);
+  box-shadow: 0 0 4px rgba(56, 189, 248, 0.9);
 }
 
 /* Relative-state readout (Phase 5A, US-REL-01 / US-REL-02) */
@@ -1531,6 +1662,83 @@
   color: #94a3b8;
 }
 
+/* Hide the native number-input spinner "scrollers" in the floating panels — they
+   clash with the theme and aren't needed (you type the value). */
+.maneuver-panel input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.maneuver-panel input[type='number']::-webkit-outer-spin-button,
+.maneuver-panel input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Environment panel — a touch taller (its content barely overflowed at 60vh). */
+.env-panel {
+  max-height: 72vh;
+}
+
+/* A labelled field + an action button on one row, sized so the button always fits
+   the panel width (the input shrinks rather than pushing the button off-screen,
+   which is what caused the horizontal scrollbar). */
+.env-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+.env-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+.env-field input {
+  width: 100%;
+  box-sizing: border-box;
+  background: rgba(15, 19, 32, 0.9);
+  border: 1px solid rgba(71, 85, 105, 0.4);
+  border-radius: 6px;
+  color: #e2e8f0;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+.env-field input:focus {
+  outline: none;
+  border-color: rgba(56, 189, 248, 0.6);
+}
+.env-btn {
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 14px;
+  background: rgba(56, 189, 248, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  border-radius: 6px;
+  color: #38bdf8;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.env-btn:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.28);
+}
+.env-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.env-btn-ghost {
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.4);
+  color: #cbd5e1;
+}
+.env-btn-ghost:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.24);
+}
+
 .composer-fidelity {
   margin-top: 8px;
   display: flex;
@@ -1600,4 +1808,13 @@
   overflow: auto;
   min-width: 200px;
   min-height: 64px;
+}
+
+/* When minimized, shrink to just the header. The inline height a user set by dragging
+   the resize handle is stashed + cleared in JS (usePanelSize) so the panel collapses
+   cleanly. We DON'T set overflow:visible here — CSS `resize` is ignored unless overflow
+   is non-visible, so the panel inherits the base `overflow:auto` and stays resizable
+   while minimized (matching the scenario panel). */
+.maneuver-panel.is-collapsed {
+  min-height: 0;
 }

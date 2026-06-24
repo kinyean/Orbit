@@ -344,10 +344,18 @@ a parked pose, and **lighting is still flat** (the Sun vector / terminator is Ph
 measured craft — its real `EST_ATTD` telemetry quaternion drives the model/FOV (`AttitudeProfile.mode
 ="measured"`, SLERP-streamed; see Decision 26 slice-2 addendum, R20). So for measured scenarios this
 risk is closed for orientation (a body-axis triad makes it legible); modeled scenarios remain
-LVLH-modeled, and **lighting is still flat** for all (Sun vector / terminator is Phase 8).
+LVLH-modeled.
 
-**Trigger.** Reliance on *measured* pointing for a non-measured (modeled) craft, or on illumination
-before the Phase 8 Sun vector lands.
+**Status (Phase 8, Decision 25) — lighting RESOLVED.** The proximity view now drives a real
+`DirectionalLight` from the streamed Sun direction (`FrameService.directionInLvlh`), so the Earth
+shows a correct day/night terminator and spacecraft are Sun-consistently lit (and dimmed in
+eclipse — `EclipseEventComputer` + `spacecraftModel.setEclipse`). The flat non-physical lighting is
+gone. Articulation remains a parked deployed pose (no sun-tracking drivers — a later nicety, not a
+correctness risk). So R17 is now down to: **modeled** (not measured) orientation on non-measured
+craft, and parked articulation.
+
+**Trigger.** Reliance on *measured* pointing for a non-measured (modeled) craft (orientation is
+modeled, not measured, there).
 
 ---
 

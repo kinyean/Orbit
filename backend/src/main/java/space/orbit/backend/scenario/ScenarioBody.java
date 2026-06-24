@@ -32,10 +32,26 @@ public record ScenarioBody(
         String fidelity,
         TimeRange timeRange,
         Role chief,
-        List<Role> deputies) {
+        List<Role> deputies,
+        Double missDistanceThresholdM) {
 
-    /** The current body schema version (v4: measured-ephemeris initial state). */
-    public static final int CURRENT_SCHEMA_VERSION = 4;
+    /**
+     * The current body schema version (v5: per-role {@link Constraint} list + a
+     * top-level conjunction {@code missDistanceThresholdM}). Forward-additive: v1–v4
+     * bodies deserialize with empty constraint lists + a null threshold, and
+     * {@link ScenarioService} re-stamps on the next save. No DB migration needed.
+     */
+    public static final int CURRENT_SCHEMA_VERSION = 5;
+
+    /**
+     * Convenience for the pre-v5 5-arg shape (no explicit conjunction threshold —
+     * the stream applies a default). Keeps existing create/seed/import call sites
+     * unchanged; the threshold is set later via {@link ScenarioService#setMissDistanceThreshold}.
+     */
+    public ScenarioBody(int schemaVersion, String fidelity, TimeRange timeRange,
+                        Role chief, List<Role> deputies) {
+        this(schemaVersion, fidelity, timeRange, chief, deputies, null);
+    }
 
     /** ISO-8601 UTC start/end of the scenario's propagation window. */
     public record TimeRange(String start, String end) {}
@@ -48,38 +64,51 @@ public record ScenarioBody(
      * {@link ScenarioService}).
      */
     public record Role(String role, int noradId, String name, InitialState initialState,
-                       List<Maneuver> maneuvers, List<Sensor> sensors, AttitudeProfile attitude) {
+                       List<Maneuver> maneuvers, List<Sensor> sensors, AttitudeProfile attitude,
+                       List<Constraint> constraints) {
 
-        /** Coalesce null maneuver/sensor lists (v1/v2 bodies, or roles built without one) to empty. */
+        /** Coalesce null maneuver/sensor/constraint lists (older bodies, or roles built without one) to empty. */
         public Role {
             maneuvers = maneuvers == null ? List.of() : List.copyOf(maneuvers);
             sensors = sensors == null ? List.of() : List.copyOf(sensors);
+            constraints = constraints == null ? List.of() : List.copyOf(constraints);
+        }
+
+        /** Convenience for the pre-v5 7-arg shape (sensors + attitude, no constraints). */
+        public Role(String role, int noradId, String name, InitialState initialState,
+                    List<Maneuver> maneuvers, List<Sensor> sensors, AttitudeProfile attitude) {
+            this(role, noradId, name, initialState, maneuvers, sensors, attitude, List.of());
         }
 
         /** Convenience: maneuvers only, no sensors / default (LVLH) attitude (Phase 5B call sites, tests). */
         public Role(String role, int noradId, String name, InitialState initialState,
                     List<Maneuver> maneuvers) {
-            this(role, noradId, name, initialState, maneuvers, List.of(), null);
+            this(role, noradId, name, initialState, maneuvers, List.of(), null, List.of());
         }
 
         /** Convenience for callers with no maneuvers (composition, seeds, tests). */
         public Role(String role, int noradId, String name, InitialState initialState) {
-            this(role, noradId, name, initialState, List.of(), List.of(), null);
+            this(role, noradId, name, initialState, List.of(), List.of(), null, List.of());
         }
 
         /** Immutable copy with a replaced maneuver list (other fields preserved). */
         public Role withManeuvers(List<Maneuver> next) {
-            return new Role(role, noradId, name, initialState, next, sensors, attitude);
+            return new Role(role, noradId, name, initialState, next, sensors, attitude, constraints);
         }
 
         /** Immutable copy with a replaced sensor list (other fields preserved). */
         public Role withSensors(List<Sensor> next) {
-            return new Role(role, noradId, name, initialState, maneuvers, next, attitude);
+            return new Role(role, noradId, name, initialState, maneuvers, next, attitude, constraints);
         }
 
         /** Immutable copy with a replaced attitude profile (other fields preserved). */
         public Role withAttitude(AttitudeProfile next) {
-            return new Role(role, noradId, name, initialState, maneuvers, sensors, next);
+            return new Role(role, noradId, name, initialState, maneuvers, sensors, next, constraints);
+        }
+
+        /** Immutable copy with a replaced constraint list (other fields preserved, Phase 8). */
+        public Role withConstraints(List<Constraint> next) {
+            return new Role(role, noradId, name, initialState, maneuvers, sensors, attitude, next);
         }
     }
 
@@ -149,4 +178,18 @@ public record ScenarioBody(
      * at stream time. CCSDS AEM is a later measured source feeding the same mode.
      */
     public record AttitudeProfile(String mode, double[] quaternion) {}
+
+    /**
+     * A safety/observability constraint on a host craft (Phase 8, US-EVT-03 / SRS
+     * §3.12.3). {@code kind = "sun-keep-out"} forbids the Sun coming within
+     * {@code limitDeg} of the host sensor {@code sensorId}'s boresight (UC-4 step 7).
+     * {@code kind = "approach-corridor"} requires the {@code targetNoradId} deputy to
+     * stay within a {@code limitDeg}-half-angle cone about the host's corridor axis
+     * (body +Y / ram) while within {@code rangeM} of the host. {@code id} is a stable
+     * UUID so violation events + the panel can reference it. {@code plume-impingement}
+     * is reserved (deferred — needs per-burn plume geometry). Unused fields per kind
+     * are ignored.
+     */
+    public record Constraint(String id, String kind, int hostNoradId, String sensorId,
+                             int targetNoradId, double limitDeg, double rangeM) {}
 }

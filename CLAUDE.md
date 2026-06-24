@@ -24,29 +24,43 @@ pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
 ## Current phase
-**Phase 7 complete (7A/7B) — sensors & FOV.** Backend 113 tests green, frontend
-type-check + build green. Sensors are first-class scenario objects (per-craft, on the
-chief or a deputy): a FOV shape (cone half-angle or rectangular H×V°), a working range
-band, and a body-fixed boresight (`ScenarioBody` schema v3, audited via `ScenarioService`
-`addSensor`/`removeSensor`/`setAttitude`). Spacecraft **orientation is now
-backend-authoritative + modeled** (not the Phase-6 frontend estimate): a per-craft
-attitude profile (`lvlh` LVLH-aligned from the orbital state via the basis builder, or
-`fixed` constant-inertial) streamed as a three.js-convention quaternion on the additive
-`scenario-relative` envelope (`chief` block + per-deputy `att`), consumed by the
-proximity view (SLERP). The proximity scene draws **translucent FOV volumes**
-(`proximity/sensors.ts`) riding each craft's body frame, with a Sensors view/opacity
-control and a **sensor-frame camera** mode (look down the boresight). The backend
-`analysis/SensorEventComputer` detects **acquisition / loss-of-sight** events (in-FOV +
-range + Earth line-of-sight occlusion, sampled grid + bisection refine — deterministic),
-streamed in an additive top-level `events` array and rendered as **timeline AOS/LOS
-windows**. Contract `VERSION` stays `"1"` (R12); `gen:api` regenerated for the new sensor
-REST endpoints (stream fields are WebSocket-only). Verified on the dev stack: add a
-sensor → 200 with the sensor in the body; bad FOV → 422; the WS relative frame carries
-the chief block + attitude + sensors; a wide cone acquires a deputy (one acquisition at
-range 565 m). **Deferred (Decision 24):** CCSDS AEM measured attitude, gimbaled pointing,
-frustum/polygonal FOV, and Sun occlusion / sun-keep-out (Phase 8). **Phase 8 next** —
-environment & events (roadmap §8): Sun/Moon, eclipse, lighting, conjunctions. See
-Decision 24.
+**Phase 8 complete (8A/8B/8C) — environment & events.** Backend 152 tests green, frontend
+type-check + build green. The scene is now *environmental*, riding the Phase-7 architecture
+exactly (sampled-trajectory `analysis/` computers, additive `scenario-relative` fields with
+`VERSION` still `"1"`, forward-additive `ScenarioBody` schema bump, single audited
+`ScenarioService`). See [phase-8-plan.md](docs/phase-8-plan.md), Decision 25.
+- **8A — Sun/Moon + lighting + eclipse.** Reuses Orekit `CelestialBodyFactory` Sun/Moon
+  (already in the force model — no new dep); samples each body's **direction in the
+  chief-LVLH scene** (`FrameService.directionInLvlh`, rotation-only — R15) → streamed
+  stride-4 `sunVector`/`moonVector`. The proximity view drives a real `DirectionalLight`
+  from it (correct Earth day/night terminator; ambient/hemisphere dropped low), resolving
+  the R17 flat-lighting hole. `analysis/EclipseEventComputer` detects conical umbra/penumbra
+  in **geocentric ECI** from per-craft positions captured for free in the existing loop
+  (`SampledGeocentricCraft` vs the LVLH `SampledCraft` — frame split at the type level);
+  streamed `eclipses`, drawn as timeline bands + per-craft material dimming
+  (`spacecraftModel.setEclipse`, US-ENV-03 / UC-5).
+- **8B — intra-scenario conjunctions + constraints + timeline events.** Schema **v5** (v4
+  was measured ephemeris) adds a per-role `List<Constraint>` + top-level
+  `missDistanceThresholdM`. `analysis/ConjunctionEventComputer` (pairwise LVLH range +
+  golden-section refine **on the samples**) → `conjunctions`. `analysis/ConstraintChecker` →
+  **sun-keep-out** (Sun↔boresight angle, completes UC-4 step 7; on a measured chief uses its
+  real attitude) + **approach-corridor** (target outside a cone about the host ram axis
+  within range) → `violations`. Audited via `addConstraint`/`removeConstraint`/
+  `setMissDistanceThreshold` (new audit actions). New `EnvironmentPanel.tsx`; `Timeline`
+  conjunction ticks + violation marks.
+- **8C — catalog conjunction screening (UC-7).** `analysis/ScreeningService` +
+  `POST /scenarios/{id}/screening?thresholdKm=…`: propagate the scenario craft over the
+  window, screen vs the full live SGP4 catalog with a two-stage prune (radial-shell band →
+  fine sampled closest-approach + golden-section, parallelised), returning a sorted list +
+  CSV. A **snapshot** (catalog refreshes ~6 h — tagged with the run instant, R11 caveat).
+`QuaternionSamples.rotate` promoted to a shared util; `encodeRelative` grew five additive
+trailing params. `gen:api` regenerated (constraint + miss-distance + screening REST; stream
+fields stay WebSocket-only). Verified on the dev stack: WS frame carries unit
+`sunVector`/`moonVector` + eclipses + a conjunction + violations on `VERSION "1"`; constraint
+add → 200, bad angle / missing sensor → 422; screening 64919 → 61 conjunctions below 50 km,
+sorted, named. **Deferred (Decision 25):** plume impingement; gimbaled sensors /
+frustum FOV (from Phase 7); GPU-depth occlusion; eclipse/conjunction annotations on the
+**global-view** CZML. **Phase 9 next** — advanced maneuvers & analysis (roadmap §9).
 
 **Measured-data ingestion — slices 1 & 2 complete (2026-06-22; feature track, not a roadmap
 phase).** Real flight telemetry (TELEOS-2 "Whole-Orbit Data" CSVs: measured GNSS ECI
@@ -113,6 +127,16 @@ Per-phase detail lives in `docs/phase-*-plan.md` and the rationale in
   rendered samples in the LVLH scene, deterministic) streamed in `events` and drawn as
   timeline AOS/LOS windows; `SensorPanel.tsx` (+ type presets) on the audited path.
   [phase-7-plan.md](docs/phase-7-plan.md), Decision 24.
+- **Phase 8** — environment & events: Sun/Moon LVLH directions (`FrameService.directionInLvlh`,
+  reusing Orekit Sun/Moon) → real `DirectionalLight` + Earth terminator (resolves R17 flat
+  lighting); conical eclipse (`analysis/EclipseEventComputer`, geocentric `SampledGeocentricCraft`)
+  → timeline bands + craft dimming; intra-scenario conjunctions (`ConjunctionEventComputer`) +
+  sun-keep-out/approach-corridor constraints (`ConstraintChecker`, `ScenarioBody` schema v5 +
+  `missDistanceThresholdM`, audited) → `conjunctions`/`violations` + timeline marks +
+  `EnvironmentPanel.tsx`; catalog conjunction screening (`ScreeningService`,
+  `POST /scenarios/{id}/screening`, two-stage shell-prune + fine refine) → sortable table + CSV.
+  All `scenario-relative` additions are additive (`VERSION="1"`). [phase-8-plan.md](docs/phase-8-plan.md),
+  Decision 25.
 
 Invariants to preserve (see `decisions.md`): one streaming contract, `VERSION="1"`,
 additive only (R12); every state frame-tagged via `FrameService` — relative velocity

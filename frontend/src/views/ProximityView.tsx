@@ -8,9 +8,12 @@ import {
   simTimeToT,
   deputyPositionAt,
   deputyStateAt,
+  directionAt,
+  buildEclipseIntervals,
   subscribeRelative,
   type SensorDef,
   type SensorEvent,
+  type EclipseInterval,
 } from '../stream/relativeBuffer';
 import { createSpacecraftModel, type SpacecraftModel } from '../proximity/spacecraftModel';
 import { bodyOrientationAt } from '../proximity/orientation';
@@ -69,6 +72,18 @@ function inWindow(wins: [number, number][] | undefined, t: number): boolean {
     if (t >= a && t <= b) return true;
   }
   return false;
+}
+
+/** Sun-lit factor for a craft at sim time `tMs` (Phase 8): 1 = lit, 0.5 = penumbra, 0.12 = umbra. */
+function eclipseLitFactor(intervals: EclipseInterval[], noradId: number, tMs: number): number {
+  let umbra = false;
+  let penumbra = false;
+  for (const iv of intervals) {
+    if (iv.noradId !== noradId || tMs < iv.startMs || tMs > iv.endMs) continue;
+    if (iv.kind === 'umbra') umbra = true;
+    else penumbra = true;
+  }
+  return umbra ? 0.12 : penumbra ? 0.5 : 1;
 }
 
 /**
@@ -173,13 +188,25 @@ export default function ProximityView() {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0a0e1a);
 
-    // Non-physical flat light rig (Phase 6) — makes the MeshStandard models + Earth
-    // visible. The real Sun vector / terminator arrives in Phase 8.
-    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-    scene.add(new THREE.HemisphereLight(0x9bb8ff, 0x202838, 0.7));
+    // Light rig. Phase 8 (US-ENV-03): when the stream carries a Sun vector the key
+    // light tracks the real Sun direction (so the Earth + models show a correct
+    // terminator) and the ambient/hemisphere fill drops low. With no Sun vector
+    // (older backend) it falls back to the Phase-6 flat non-physical rig.
+    const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+    scene.add(ambient);
+    const hemi = new THREE.HemisphereLight(0x9bb8ff, 0x202838, 0.7);
+    scene.add(hemi);
     const keyLight = new THREE.DirectionalLight(0xffffff, 0.6);
-    keyLight.position.set(1, 1, 1);
+    keyLight.position.set(1, 1, 1); // overwritten per frame from the Sun direction when present
     scene.add(keyLight);
+    // Apply the flat vs Sun-driven lighting mode (idempotent; called from rebuild()).
+    const setSunLighting = (hasSun: boolean) => {
+      ambient.intensity = hasSun ? 0.12 : 0.55;
+      hemi.intensity = hasSun ? 0.18 : 0.7;
+      keyLight.intensity = hasSun ? 1.7 : 0.6;
+      earth.setEmissiveIntensity(hasSun ? 0.12 : 0.35);
+    };
+    const sunDir = new Float64Array(3);
 
     const camera = new THREE.PerspectiveCamera(
       50,
@@ -214,6 +241,8 @@ export default function ProximityView() {
     let ribbons: Ribbon[] = [];
     let sensorFovs: { fov: SensorFov; sensorId: string }[] = []; // flattened across all craft (Phase 7)
     let sensorWindows = new Map<string, [number, number][]>(); // per-sensor in-view windows (ms)
+    let eclipseIntervals: EclipseInterval[] = []; // per-craft umbra/penumbra spans (Phase 8)
+    let modelNoradIds: number[] = []; // models[i] → NORAD id (0 = chief), for eclipse lookup
     let builtVersion = -1;
 
     // LOD projection scale: apparent_px(radius) = radius / camDist * projScale.
@@ -307,17 +336,21 @@ export default function ProximityView() {
       // Earth backdrop distance from the chief's geocentric radius (US-PROX-05).
       earth.setChiefRadius(data?.chiefRadiusM ?? 0);
 
-      // Per-sensor in-view windows (ms) for the acquisition highlight (US-EVT-01).
-      if (data?.events && data.events.length > 0) {
-        const loMs = data.epochMs;
-        let maxT = 0;
-        for (const d of data.deputies) {
-          if (d.samples.length >= d.stride) maxT = Math.max(maxT, d.samples[d.samples.length - d.stride]);
-        }
-        sensorWindows = buildSensorWindows(data.events, loMs, loMs + maxT * 1000);
-      } else {
-        sensorWindows = new Map();
+      // Per-sensor in-view windows (ms) for the acquisition highlight (US-EVT-01) and
+      // per-craft eclipse intervals for Sun-consistent dimming (US-ENV-03 / UC-5).
+      const loMs = data?.epochMs ?? 0;
+      let maxT = 0;
+      for (const d of data?.deputies ?? []) {
+        if (d.samples.length >= d.stride) maxT = Math.max(maxT, d.samples[d.samples.length - d.stride]);
       }
+      const hiMs = loMs + maxT * 1000;
+      sensorWindows = data?.events?.length ? buildSensorWindows(data.events, loMs, hiMs) : new Map();
+      eclipseIntervals = data?.eclipses?.length ? buildEclipseIntervals(data.eclipses, loMs, hiMs) : [];
+      modelNoradIds = [
+        data?.chief?.noradId ?? data?.chiefId ?? -1,
+        ...(data?.deputies ?? []).map((d) => d.noradId),
+      ];
+      setSunLighting(!!data?.sunVector);
 
       // Auto-frame: resize axes/grid + place the camera so the deputies fit.
       scene.remove(axes);
@@ -456,7 +489,14 @@ export default function ProximityView() {
 
       let maxDistNow = 1000;
       if (data && models.length) {
+        const tMsNow = useStore.getState().currentTime.getTime();
         const t = simTimeToT(data.epochMs, useStore.getState().currentTime);
+        // Sun-driven key light (Phase 8 / US-ENV-03): track the real Sun direction in
+        // the LVLH scene so the Earth + models show a correct terminator.
+        if (data.sunVector) {
+          directionAt(data.sunVector, t, sunDir);
+          if (sunDir[0] || sunDir[1] || sunDir[2]) keyLight.position.set(sunDir[0], sunDir[1], sunDir[2]);
+        }
         // Chief: keep its modeled body orientation live (varies for eccentric orbits).
         if (data.chief?.attitude && models[0]) {
           bodyOrientationAt(data.chief.attitude, t, out6, false, quat);
@@ -479,9 +519,12 @@ export default function ProximityView() {
         // length tracks the camera distance so it stays a readable on-screen size even
         // when the camera is zoomed out to fit a km-scale FOV cone (a fixed-length triad
         // would vanish there). Floor at the craft size so it never shrinks below the bus.
-        for (const m of models) {
+        for (let mi = 0; mi < models.length; mi++) {
+          const m = models[mi];
           const camDist = camera.position.distanceTo(m.root.position);
           applyLod(m, camDist);
+          // Sun-consistent dimming (Phase 8 / US-ENV-03): darken a craft inside Earth's shadow.
+          m.setEclipse(eclipseIntervals.length ? eclipseLitFactor(eclipseIntervals, modelNoradIds[mi], tMsNow) : 1);
           m.setAxesVisible(showAxesRef.current);
           if (showAxesRef.current) m.setAxesWorldLength(Math.max(camDist * 0.12, m.radius * 1.5));
         }

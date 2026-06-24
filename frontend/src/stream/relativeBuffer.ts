@@ -57,6 +57,42 @@ export interface SensorEvent {
   rangeM: number;
 }
 
+/** An eclipse ingress/egress event (Phase 8, US-ENV-02). */
+export interface EclipseEvent {
+  type: 'penumbra-ingress' | 'umbra-ingress' | 'umbra-egress' | 'penumbra-egress';
+  noradId: number;
+  epochMs: number;
+}
+
+/** A per-craft shadow interval (Phase 8): the craft is in umbra/penumbra over [startMs, endMs]. */
+export interface EclipseInterval {
+  noradId: number;
+  kind: 'umbra' | 'penumbra';
+  startMs: number;
+  endMs: number;
+}
+
+/** An intra-scenario conjunction (Phase 8, US-EVT-02): closest approach of a pair below threshold. */
+export interface ConjunctionEvent {
+  aNoradId: number;
+  bNoradId: number;
+  tcaEpochMs: number;
+  missDistanceM: number;
+}
+
+/** A constraint-violation boundary crossing (Phase 8, US-EVT-03). */
+export interface ViolationEvent {
+  type: 'violation-start' | 'violation-end';
+  constraintId: string;
+  kind: string; // sun-keep-out | approach-corridor
+  hostId: number;
+  sensorId: string | null;
+  targetId: number;
+  epochMs: number;
+  valueDeg: number;
+  limitDeg: number;
+}
+
 export interface RelativeFrameData {
   epochMs: number; // Date.parse(envelope.epoch) — the t=0 reference
   stepSeconds: number;
@@ -76,6 +112,16 @@ export interface RelativeFrameData {
   chief: ChiefRelative | null;
   // Acquisition / loss-of-sight events over the window (Phase 7); empty when absent.
   events: SensorEvent[];
+  // Environment (Phase 8): Sun/Moon unit-direction samples in the LVLH scene,
+  // [t,x,y,z, ...] (stride 4), and per-spacecraft eclipse ingress/egress events.
+  // Null/empty on older backends (the view keeps its flat fallback lighting).
+  sunVector: Float64Array | null;
+  moonVector: Float64Array | null;
+  eclipses: EclipseEvent[];
+  // Intra-scenario conjunctions + constraint violations over the window (Phase 8);
+  // empty when absent / none.
+  conjunctions: ConjunctionEvent[];
+  violations: ViolationEvent[];
 }
 
 let current: RelativeFrameData | null = null;
@@ -268,6 +314,92 @@ export function deputyAttitudeAt(att: Float64Array, t: number, out4: number[] | 
   slerp(att, ba, att, bb, f, out4);
 }
 
+/**
+ * Write a unit direction (Sun/Moon, Phase 8) from a stride-4 `[t,x,y,z, ...]` array
+ * at time `t` (seconds since epoch) into `out3`. Linear interpolation between the
+ * bracketing samples + renormalize; HOLD-clamps at the ends. Falls back to a zero
+ * vector for an empty array. Allocation-free — safe per frame.
+ */
+export function directionAt(arr: Float64Array | null, t: number, out3: number[] | Float64Array): void {
+  if (!arr || arr.length < 4) {
+    out3[0] = out3[1] = out3[2] = 0;
+    return;
+  }
+  const stride = 4;
+  const n = Math.floor(arr.length / stride);
+  const tFirst = arr[0];
+  const tLast = arr[(n - 1) * stride];
+  let x: number;
+  let y: number;
+  let z: number;
+  if (t <= tFirst || n === 1) {
+    x = arr[1];
+    y = arr[2];
+    z = arr[3];
+  } else if (t >= tLast) {
+    const b = (n - 1) * stride;
+    x = arr[b + 1];
+    y = arr[b + 2];
+    z = arr[b + 3];
+  } else {
+    let lo = 0;
+    let hi = n - 1;
+    while (lo + 1 < hi) {
+      const mid = (lo + hi) >> 1;
+      if (arr[mid * stride] <= t) lo = mid;
+      else hi = mid;
+    }
+    const ba = lo * stride;
+    const bb = hi * stride;
+    const ta = arr[ba];
+    const tb = arr[bb];
+    const f = tb > ta ? (t - ta) / (tb - ta) : 0;
+    x = arr[ba + 1] + (arr[bb + 1] - arr[ba + 1]) * f;
+    y = arr[ba + 2] + (arr[bb + 2] - arr[ba + 2]) * f;
+    z = arr[ba + 3] + (arr[bb + 3] - arr[ba + 3]) * f;
+  }
+  const norm = Math.hypot(x, y, z) || 1;
+  out3[0] = x / norm;
+  out3[1] = y / norm;
+  out3[2] = z / norm;
+}
+
+/**
+ * Pair eclipse ingress→egress events into per-craft shadow intervals (Phase 8). A
+ * leading egress (already eclipsed at the window start) runs from `loMs`; a dangling
+ * ingress runs to `hiMs`. Returns both umbra and penumbra intervals. Mirrors the
+ * sensor-window pairing in Timeline / ProximityView.
+ */
+export function buildEclipseIntervals(events: EclipseEvent[], loMs: number, hiMs: number): EclipseInterval[] {
+  const out: EclipseInterval[] = [];
+  // key = `${noradId}|${kind}`; each gets its own ingress/egress pairing.
+  const byKey = new Map<string, { noradId: number; kind: 'umbra' | 'penumbra'; ev: EclipseEvent[] }>();
+  for (const e of events) {
+    const kind: 'umbra' | 'penumbra' = e.type.startsWith('umbra') ? 'umbra' : 'penumbra';
+    const k = `${e.noradId}|${kind}`;
+    let g = byKey.get(k);
+    if (!g) byKey.set(k, (g = { noradId: e.noradId, kind, ev: [] }));
+    g.ev.push(e);
+  }
+  for (const { noradId, kind, ev } of byKey.values()) {
+    ev.sort((a, b) => a.epochMs - b.epochMs);
+    let open: number | null = null;
+    for (const e of ev) {
+      const ingress = e.type === 'penumbra-ingress' || e.type === 'umbra-ingress';
+      if (ingress) {
+        open = e.epochMs;
+      } else if (open !== null) {
+        out.push({ noradId, kind, startMs: open, endMs: e.epochMs });
+        open = null;
+      } else {
+        out.push({ noradId, kind, startMs: loMs, endMs: e.epochMs }); // already eclipsed at t=0
+      }
+    }
+    if (open !== null) out.push({ noradId, kind, startMs: open, endMs: hiMs });
+  }
+  return out;
+}
+
 function copyQuat(src: Float64Array, base: number, out4: number[] | Float64Array): void {
   out4[0] = src[base + 1];
   out4[1] = src[base + 2];
@@ -368,7 +500,70 @@ export function parseRelativeMessage(msg: ScenarioRelativeMessage): RelativeFram
     chiefRadiusM: typeof msg.chiefRadiusM === 'number' ? msg.chiefRadiusM : 0,
     chief: parseChief(msg.chief),
     events: parseEvents(msg.events),
+    sunVector: parseDirection(msg.sunVector),
+    moonVector: parseDirection(msg.moonVector),
+    eclipses: parseEclipses(msg.eclipses),
+    conjunctions: parseConjunctions(msg.conjunctions),
+    violations: parseViolations(msg.violations),
   };
+}
+
+/** Parse the optional top-level `conjunctions` array (Phase 8); empty when absent. */
+function parseConjunctions(raw: unknown): ConjunctionEvent[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ConjunctionEvent[] = [];
+  for (const item of raw) {
+    const c = item as { aNoradId?: unknown; bNoradId?: unknown; tcaEpoch?: unknown; missDistanceM?: unknown };
+    const tcaMs = typeof c.tcaEpoch === 'string' ? Date.parse(c.tcaEpoch) : NaN;
+    if (typeof c.aNoradId !== 'number' || typeof c.bNoradId !== 'number' || Number.isNaN(tcaMs)) continue;
+    out.push({ aNoradId: c.aNoradId, bNoradId: c.bNoradId, tcaEpochMs: tcaMs, missDistanceM: num(c.missDistanceM, 0) });
+  }
+  return out;
+}
+
+/** Parse the optional top-level `violations` array (Phase 8); empty when absent. */
+function parseViolations(raw: unknown): ViolationEvent[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ViolationEvent[] = [];
+  for (const item of raw) {
+    const v = item as {
+      type?: unknown; constraintId?: unknown; kind?: unknown; hostId?: unknown;
+      sensorId?: unknown; targetId?: unknown; epoch?: unknown; valueDeg?: unknown; limitDeg?: unknown;
+    };
+    const epochMs = typeof v.epoch === 'string' ? Date.parse(v.epoch) : NaN;
+    if ((v.type !== 'violation-start' && v.type !== 'violation-end') || Number.isNaN(epochMs)) continue;
+    out.push({
+      type: v.type,
+      constraintId: typeof v.constraintId === 'string' ? v.constraintId : '',
+      kind: typeof v.kind === 'string' ? v.kind : '',
+      hostId: num(v.hostId, -1),
+      sensorId: typeof v.sensorId === 'string' ? v.sensorId : null,
+      targetId: num(v.targetId, 0),
+      epochMs,
+      valueDeg: num(v.valueDeg, 0),
+      limitDeg: num(v.limitDeg, 0),
+    });
+  }
+  return out;
+}
+
+/** Parse a stride-4 direction array (Phase 8) into a Float64Array; null when absent. */
+function parseDirection(raw: unknown): Float64Array | null {
+  return Array.isArray(raw) && raw.length >= 4 ? Float64Array.from(raw as number[]) : null;
+}
+
+/** Parse the optional top-level `eclipses` array (Phase 8); empty when absent. */
+function parseEclipses(raw: unknown): EclipseEvent[] {
+  if (!Array.isArray(raw)) return [];
+  const valid = new Set(['penumbra-ingress', 'umbra-ingress', 'umbra-egress', 'penumbra-egress']);
+  const out: EclipseEvent[] = [];
+  for (const item of raw) {
+    const e = item as { type?: unknown; noradId?: unknown; epoch?: unknown };
+    const epochMs = typeof e.epoch === 'string' ? Date.parse(e.epoch) : NaN;
+    if (typeof e.type !== 'string' || !valid.has(e.type) || Number.isNaN(epochMs)) continue;
+    out.push({ type: e.type as EclipseEvent['type'], noradId: num(e.noradId, -1), epochMs });
+  }
+  return out;
 }
 
 /** Parse the optional top-level `events` array (Phase 7); empty when absent. */

@@ -7,6 +7,9 @@ import type { components } from '../api/schema';
 export type ScenarioSummary = components['schemas']['ScenarioSummary'];
 type ScenarioRequest = components['schemas']['ScenarioRequest'];
 type ScenarioBodyT = components['schemas']['ScenarioBody'];
+/** Catalog conjunction screening result (Phase 8, US-EVT-02 / UC-7). */
+export type ScreeningResult = components['schemas']['ScreeningResult'];
+export type ConjunctionResult = components['schemas']['ConjunctionResult'];
 
 /** The scenario currently loaded for playback (Phase 4): its id, name, and body. */
 export interface LoadedScenario {
@@ -179,6 +182,25 @@ export interface State {
   addSensor: (req: SensorRequest) => Promise<string | null>;
   removeSensor: (sensorId: string) => Promise<string | null>;
   setAttitude: (noradId: number, mode: 'lvlh' | 'fixed', quaternion?: number[]) => Promise<string | null>;
+
+  // Constraints & conjunctions (Phase 8, US-EVT-02 / US-EVT-03). Same audited-edit
+  // + reload pattern as sensors. Return an error message on failure (else null).
+  addConstraint: (req: ConstraintRequest) => Promise<string | null>;
+  removeConstraint: (constraintId: string) => Promise<string | null>;
+  setMissDistance: (thresholdM: number | null) => Promise<string | null>;
+  // Catalog conjunction screening (Phase 8, US-EVT-02 / UC-7). One-shot REST
+  // analysis → a sorted result, or an error message string.
+  screenCatalog: (thresholdKm: number) => Promise<ScreeningResult | string>;
+}
+
+/** Add-constraint request shape (mirrors the backend ConstraintRequest DTO). */
+export interface ConstraintRequest {
+  hostNoradId: number;
+  kind: 'sun-keep-out' | 'approach-corridor';
+  sensorId?: string;
+  targetNoradId?: number;
+  limitDeg: number;
+  rangeM?: number;
 }
 
 /** Add-sensor request shape (mirrors the backend SensorRequest DTO). */
@@ -605,6 +627,51 @@ export const useStore = create<State>((set, get) => ({
     if (error) return errorMessage(error);
     await get().loadScenario(id);
     return null;
+  },
+
+  addConstraint: async (req) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { error } = await api.POST('/scenarios/{id}/constraints', {
+      params: { path: { id } },
+      body: req,
+    });
+    if (error) return errorMessage(error);
+    await get().loadScenario(id); // re-propagate: violation events re-emit
+    return null;
+  },
+
+  removeConstraint: async (constraintId) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { error } = await api.DELETE('/scenarios/{id}/constraints/{constraintId}', {
+      params: { path: { id, constraintId } },
+    });
+    if (error) return errorMessage(error);
+    await get().loadScenario(id);
+    return null;
+  },
+
+  setMissDistance: async (thresholdM) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { error } = await api.PUT('/scenarios/{id}/miss-distance', {
+      params: { path: { id } },
+      body: { missDistanceThresholdM: thresholdM ?? undefined },
+    });
+    if (error) return errorMessage(error);
+    await get().loadScenario(id);
+    return null;
+  },
+
+  screenCatalog: async (thresholdKm) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { data, error } = await api.POST('/scenarios/{id}/screening', {
+      params: { path: { id }, query: { thresholdKm } },
+    });
+    if (error || !data) return errorMessage(error);
+    return data; // does NOT reload the scenario — a one-shot read-only analysis
   },
 }));
 

@@ -14,9 +14,13 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import space.orbit.backend.analysis.ScreeningResult;
+import space.orbit.backend.analysis.ScreeningService;
 import space.orbit.backend.scenario.AttitudeDraft;
+import space.orbit.backend.scenario.ConstraintDraft;
 import space.orbit.backend.scenario.ManeuverDraft;
 import space.orbit.backend.scenario.ManeuverTemplateService;
 import space.orbit.backend.scenario.ScenarioDraft;
@@ -45,10 +49,13 @@ public class ScenarioController {
 
     private final ScenarioService service;
     private final ManeuverTemplateService templates;
+    private final ScreeningService screening;
 
-    public ScenarioController(ScenarioService service, ManeuverTemplateService templates) {
+    public ScenarioController(ScenarioService service, ManeuverTemplateService templates,
+                              ScreeningService screening) {
         this.service = service;
         this.templates = templates;
+        this.screening = screening;
     }
 
     @PostMapping
@@ -138,6 +145,36 @@ public class ScenarioController {
     @PutMapping("/{id}/attitude")
     public ScenarioResponse setAttitude(@PathVariable UUID id, @Valid @RequestBody AttitudeRequest req) {
         return service.setAttitude(id, new AttitudeDraft(req.noradId(), req.mode(), req.quaternion()));
+    }
+
+    // --- constraints & conjunctions (Phase 8, US-EVT-02 / US-EVT-03) ---------
+
+    @PostMapping("/{id}/constraints")
+    public ScenarioResponse addConstraint(@PathVariable UUID id, @Valid @RequestBody ConstraintRequest req) {
+        return service.addConstraint(id, new ConstraintDraft(
+                req.hostNoradId(), req.kind(), req.sensorId(), req.targetNoradId(),
+                req.limitDeg(), req.rangeM()));
+    }
+
+    @DeleteMapping("/{id}/constraints/{constraintId}")
+    public ScenarioResponse removeConstraint(@PathVariable UUID id, @PathVariable String constraintId) {
+        return service.removeConstraint(id, constraintId);
+    }
+
+    @PutMapping("/{id}/miss-distance")
+    public ScenarioResponse setMissDistance(@PathVariable UUID id, @Valid @RequestBody MissDistanceRequest req) {
+        return service.setMissDistanceThreshold(id, req.missDistanceThresholdM());
+    }
+
+    /**
+     * Screen the scenario craft against the live catalog (Phase 8, US-EVT-02 / UC-7).
+     * One-shot analysis (not the stream) → a sorted list of close approaches below
+     * {@code thresholdKm} (default 5 km).
+     */
+    @PostMapping("/{id}/screening")
+    public ScreeningResult screen(@PathVariable UUID id,
+                                  @RequestParam(name = "thresholdKm", defaultValue = "5.0") double thresholdKm) {
+        return screening.screen(id, thresholdKm);
     }
 
     private static ScenarioDraft toDraft(ScenarioRequest req) {
@@ -230,5 +267,24 @@ public class ScenarioController {
             @Positive int noradId,
             String mode,
             double[] quaternion) {
+    }
+
+    /**
+     * Add-constraint payload (Phase 8, US-EVT-03). {@code kind} ∈ {sun-keep-out,
+     * approach-corridor}. sun-keep-out uses {@code sensorId} (on the host) + {@code limitDeg};
+     * approach-corridor uses {@code targetNoradId} + {@code limitDeg} + {@code rangeM}.
+     * Semantics validated in the service → 422.
+     */
+    public record ConstraintRequest(
+            @Positive int hostNoradId,
+            @NotBlank String kind,
+            String sensorId,
+            int targetNoradId,
+            double limitDeg,
+            double rangeM) {
+    }
+
+    /** Set conjunction miss-distance threshold (Phase 8, US-EVT-02). Null clears it. */
+    public record MissDistanceRequest(Double missDistanceThresholdM) {
     }
 }

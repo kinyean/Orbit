@@ -469,15 +469,20 @@ be expanded as we approach them.
 - US-SENSE-05 — Sensor-frame proximity-view camera mode.
 - US-EVT-01 — Acquisition / loss-of-sight events on the timeline.
 
-# Phase 8 — Environment & events *(outline)*
+# Phase 8 — Environment & events ✅ (done — Decision 25, [phase-8-plan.md](./phase-8-plan.md))
 
-- US-ENV-01 — Sun and Moon positions at sim time.
-- US-ENV-02 — Eclipse umbra / penumbra periods per spacecraft.
-- US-ENV-03 — Spacecraft illumination consistent with Sun vector.
-- US-EVT-02 — Conjunction detection with configurable miss-distance.
-- US-EVT-03 — Constraint checks: approach corridor, sun keep-out, plume
-  impingement.
-- US-EVT-04 — Timeline event annotations.
+- US-ENV-01 ✅ — Sun and Moon positions at sim time (Orekit `CelestialBodyFactory`),
+  streamed as LVLH unit directions (`sunVector`/`moonVector`).
+- US-ENV-02 ✅ — Eclipse umbra / penumbra periods per spacecraft (`EclipseEventComputer`,
+  conical dual-cone in geocentric ECI) → timeline bands.
+- US-ENV-03 ✅ — Spacecraft illumination consistent with the Sun vector (real
+  `DirectionalLight` + Earth terminator; eclipse dimming). Resolves R17 flat lighting.
+- US-EVT-02 ✅ — Conjunction detection with a configurable miss-distance threshold —
+  intra-scenario (`ConjunctionEventComputer`) + catalog screening (`ScreeningService`, UC-7).
+- US-EVT-03 ✅ — Constraint checks: approach corridor + sun keep-out (`ConstraintChecker`).
+  *(Plume impingement deferred — needs per-burn plume geometry.)*
+- US-EVT-04 ✅ — Timeline event annotations (eclipse bands, conjunction ticks, violation marks)
+  + `EnvironmentPanel`.
 
 # Phase 9 — Advanced maneuvers & analysis *(outline)*
 

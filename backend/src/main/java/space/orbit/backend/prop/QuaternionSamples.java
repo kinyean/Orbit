@@ -57,6 +57,27 @@ public final class QuaternionSamples {
         slerp(a, ba, a, bb, f, out4);
     }
 
+    /**
+     * Rotate vector {@code v} by the {@code (x,y,z,w)} quaternion {@code q} (Hamilton /
+     * three.js convention) into a new array. Shared by {@code SensorEventComputer} and
+     * {@code ConstraintChecker} (Phase 8) so the body→LVLH-scene boresight rotation is
+     * computed one way everywhere — matching the frontend's {@code applyQuaternion}.
+     */
+    public static double[] rotate(double[] q, double[] v) {
+        double x = q[0];
+        double y = q[1];
+        double z = q[2];
+        double w = q[3];
+        double tx = 2.0 * (y * v[2] - z * v[1]);
+        double ty = 2.0 * (z * v[0] - x * v[2]);
+        double tz = 2.0 * (x * v[1] - y * v[0]);
+        return new double[] {
+            v[0] + w * tx + (y * tz - z * ty),
+            v[1] + w * ty + (z * tx - x * tz),
+            v[2] + w * tz + (x * ty - y * tx),
+        };
+    }
+
     private static void copyQuat(double[] a, int base, double[] out4) {
         out4[0] = a[base + 1];
         out4[1] = a[base + 2];
