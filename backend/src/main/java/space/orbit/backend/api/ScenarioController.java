@@ -117,7 +117,8 @@ public class ScenarioController {
     @PostMapping("/{id}/maneuvers")
     public ScenarioResponse addManeuver(@PathVariable UUID id, @Valid @RequestBody ManeuverRequest req) {
         return service.addManeuver(id, new ManeuverDraft(
-                req.deputyNoradId(), req.epoch(), req.frame(), req.r(), req.i(), req.c()));
+                req.deputyNoradId(), req.epoch(), req.frame(), req.r(), req.i(), req.c(),
+                req.thrustN(), req.ispSec()));
     }
 
     @DeleteMapping("/{id}/maneuvers/{maneuverId}")
@@ -279,8 +280,10 @@ public class ScenarioController {
     }
 
     /**
-     * Impulsive ΔV maneuver payload (Phase 5B, US-MAN-01). {@code frame} optional
-     * (defaults to RIC, the only frame in 5B); ΔV components are metres/second.
+     * ΔV maneuver payload (Phase 5B, US-MAN-01). {@code frame} optional (defaults to
+     * RIC); ΔV components are metres/second. Optional {@code thrustN} (N) + {@code ispSec}
+     * (s) make it a finite burn (Phase 9, US-MAN-11) — both required together, else 422;
+     * omit both for an impulsive ΔV.
      */
     public record ManeuverRequest(
             @Positive int deputyNoradId,
@@ -288,7 +291,9 @@ public class ScenarioController {
             String frame,
             double r,
             double i,
-            double c) {
+            double c,
+            Double thrustN,
+            Double ispSec) {
     }
 
     /** Hohmann template payload (Phase 5C, US-MAN-02): target circular altitude (km). */

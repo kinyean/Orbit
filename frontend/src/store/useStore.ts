@@ -199,7 +199,12 @@ export interface State {
 
   // Maneuvers (Phase 5B, US-MAN-01). Edit → new version + audit (backend) → reload
   // the loaded scenario so the stream re-propagates with the maneuver applied.
-  addManeuver: (deputyNoradId: number, epoch: string, dv: { r: number; i: number; c: number }) => Promise<void>;
+  addManeuver: (
+    deputyNoradId: number,
+    epoch: string,
+    dv: { r: number; i: number; c: number },
+    finite?: { thrustN: number; ispSec: number },
+  ) => Promise<void>;
   removeManeuver: (maneuverId: string) => Promise<void>;
   // Maneuver templates (Phase 5C, US-MAN-02/03). Compute ΔV server-side, insert,
   // and reload (re-propagate). Return an error message on failure (else null).
@@ -596,12 +601,15 @@ export const useStore = create<State>((set, get) => ({
     if (data.id) await get().loadScenario(data.id); // lands in the composer + plays the real track
   },
 
-  addManeuver: async (deputyNoradId, epoch, dv) => {
+  addManeuver: async (deputyNoradId, epoch, dv, finite) => {
     const id = get().loadedScenario?.id;
     if (!id) return;
     const { error } = await api.POST('/scenarios/{id}/maneuvers', {
       params: { path: { id } },
-      body: { deputyNoradId, epoch, frame: 'ric', r: dv.r, i: dv.i, c: dv.c },
+      body: {
+        deputyNoradId, epoch, frame: 'ric', r: dv.r, i: dv.i, c: dv.c,
+        ...(finite ? { thrustN: finite.thrustN, ispSec: finite.ispSec } : {}),
+      },
     });
     if (error) {
       console.error('Failed to add maneuver', error);

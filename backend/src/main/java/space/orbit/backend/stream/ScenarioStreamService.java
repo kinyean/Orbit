@@ -780,7 +780,8 @@ public class ScenarioStreamService {
                 continue;
             }
             AbsoluteDate epoch = new AbsoluteDate(parseInstant(m.epoch()), utc);
-            impulses.add(new Impulse(epoch, m.deltaV().r(), m.deltaV().i(), m.deltaV().c()));
+            impulses.add(new Impulse(epoch, m.deltaV().r(), m.deltaV().i(), m.deltaV().c(),
+                    m.thrustN(), m.ispSec()));
         }
         return impulses;
     }

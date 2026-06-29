@@ -1597,6 +1597,40 @@
   color: #64748b;
 }
 
+.mvr-finite-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.mvr-finite-toggle input {
+  width: auto;
+  height: auto;
+}
+
+.mvr-finite {
+  display: flex;
+  gap: 6px;
+}
+
+.mvr-finite label {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.mvr-finite-tag {
+  color: #fbbf24;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .mvr-cw-warn {
   margin-bottom: 8px;
   padding: 6px 8px;

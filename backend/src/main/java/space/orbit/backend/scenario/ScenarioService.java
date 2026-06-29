@@ -282,7 +282,7 @@ public class ScenarioService {
         validateManeuver(body, draft);
         ScenarioBody.Maneuver maneuver = new ScenarioBody.Maneuver(
                 UUID.randomUUID().toString(), "delta_v", draft.epoch(), "ric",
-                new ScenarioBody.DeltaV(draft.r(), draft.i(), draft.c()));
+                new ScenarioBody.DeltaV(draft.r(), draft.i(), draft.c()), draft.thrustN(), draft.ispSec());
 
         ScenarioBody updated = withDeputyManeuvers(body, draft.deputyNoradId(), existing -> {
             List<ScenarioBody.Maneuver> next = new ArrayList<>(existing);
@@ -316,7 +316,7 @@ public class ScenarioService {
         for (ManeuverDraft draft : drafts) {
             ScenarioBody.Maneuver maneuver = new ScenarioBody.Maneuver(
                     UUID.randomUUID().toString(), "delta_v", draft.epoch(), "ric",
-                    new ScenarioBody.DeltaV(draft.r(), draft.i(), draft.c()));
+                    new ScenarioBody.DeltaV(draft.r(), draft.i(), draft.c()), draft.thrustN(), draft.ispSec());
             updated = withDeputyManeuvers(updated, draft.deputyNoradId(), existing -> {
                 List<ScenarioBody.Maneuver> next = new ArrayList<>(existing);
                 next.add(maneuver);
@@ -802,6 +802,17 @@ public class ScenarioService {
         }
         if (!Double.isFinite(draft.r()) || !Double.isFinite(draft.i()) || !Double.isFinite(draft.c())) {
             throw new ScenarioValidationException("ΔV components must be finite");
+        }
+        // Finite-burn parameters (Phase 9, US-MAN-11): thrust + Isp come as a pair, both > 0.
+        boolean hasThrust = draft.thrustN() != null;
+        boolean hasIsp = draft.ispSec() != null;
+        if (hasThrust != hasIsp) {
+            throw new ScenarioValidationException(
+                    "A finite burn needs both thrust (N) and Isp (s); got only one");
+        }
+        if (hasThrust && (!Double.isFinite(draft.thrustN()) || draft.thrustN() <= 0.0
+                || !Double.isFinite(draft.ispSec()) || draft.ispSec() <= 0.0)) {
+            throw new ScenarioValidationException("Finite-burn thrust (N) and Isp (s) must be positive and finite");
         }
         Instant epoch = parseInstant(draft.epoch(), "maneuver.epoch");
         Instant start = parseInstant(body.timeRange().start(), "timeRange.start");

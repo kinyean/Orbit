@@ -433,6 +433,10 @@ export interface components {
             epoch?: string;
             frame?: string;
             deltaV?: components["schemas"]["DeltaV"];
+            /** Format: double */
+            thrustN?: number;
+            /** Format: double */
+            ispSec?: number;
         };
         Mount: {
             boresightBody?: number[];
@@ -618,6 +622,10 @@ export interface components {
             i?: number;
             /** Format: double */
             c?: number;
+            /** Format: double */
+            thrustN?: number;
+            /** Format: double */
+            ispSec?: number;
         };
         RendezvousRequest: {
             /** Format: int32 */

@@ -67,6 +67,9 @@ export default function ManeuverPanel() {
   const [r, setR] = useState('0');
   const [i, setI] = useState('0');
   const [c, setC] = useState('0');
+  const [finiteBurn, setFiniteBurn] = useState(false);
+  const [thrustN, setThrustN] = useState('500');
+  const [ispSec, setIspSec] = useState('300');
   const [targetAlt, setTargetAlt] = useState('');
   const [arrival, setArrival] = useState('');
   const [phasingRevs, setPhasingRevs] = useState('');
@@ -131,11 +134,12 @@ export default function ManeuverPanel() {
     if (selected == null || !epoch) return;
     const d = new Date(`${epoch}:00Z`);
     if (Number.isNaN(d.getTime())) return;
-    await addManeuver(selected, d.toISOString(), {
-      r: Number(r) || 0,
-      i: Number(i) || 0,
-      c: Number(c) || 0,
-    });
+    await addManeuver(
+      selected,
+      d.toISOString(),
+      { r: Number(r) || 0, i: Number(i) || 0, c: Number(c) || 0 },
+      finiteBurn ? { thrustN: Number(thrustN) || 0, ispSec: Number(ispSec) || 0 } : undefined,
+    );
     setR('0');
     setI('0');
     setC('0');
@@ -282,6 +286,11 @@ export default function ManeuverPanel() {
                     <span className="mvr-dv">
                       R{signed(m.deltaV?.r)} I{signed(m.deltaV?.i)} C{signed(m.deltaV?.c)} · |
                       {magnitude(m.deltaV).toFixed(2)}|
+                      {m.thrustN != null && m.ispSec != null && (
+                        <span className="mvr-finite-tag" title={`finite burn — ${m.thrustN} N, Isp ${m.ispSec} s`}>
+                          {' '}finite
+                        </span>
+                      )}
                     </span>
                     <button
                       className="mvr-remove"
@@ -333,10 +342,45 @@ export default function ManeuverPanel() {
             C<input type="number" step="any" value={c} onChange={(e) => setC(e.target.value)} />
           </label>
         </div>
+        <label className="mvr-finite-toggle">
+          <input
+            type="checkbox"
+            checked={finiteBurn}
+            onChange={(e) => setFiniteBurn(e.target.checked)}
+          />
+          <span>finite burn (thrust + Isp)</span>
+        </label>
+        {finiteBurn && (
+          <div className="mvr-finite">
+            <label>
+              thrust (N)
+              <input
+                type="number"
+                step="any"
+                min="0"
+                value={thrustN}
+                onChange={(e) => setThrustN(e.target.value)}
+              />
+            </label>
+            <label>
+              Isp (s)
+              <input
+                type="number"
+                step="any"
+                min="0"
+                value={ispSec}
+                onChange={(e) => setIspSec(e.target.value)}
+              />
+            </label>
+          </div>
+        )}
         <button type="submit" disabled={!epoch}>
           Add Δv
         </button>
-        <div className="mvr-note">maneuvered deputies propagate numerically</div>
+        <div className="mvr-note">
+          maneuvered deputies propagate numerically
+          {finiteBurn ? ' · finite burn integrated as constant thrust (duration from the rocket equation)' : ''}
+        </div>
       </form>
 
       <div className="mvr-templates">

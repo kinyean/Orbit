@@ -131,12 +131,31 @@ public record ScenarioBody(
     public record Tle(String line1, String line2, String epoch) {}
 
     /**
-     * An impulsive ΔV applied to a deputy (Phase 5B, US-MAN-01). {@code kind} is
-     * {@code "delta_v"}; {@code frame} is {@code "ric"} in 5B (body-frame ΔV
-     * arrives with attitude in Phase 7). {@code id} is a stable UUID so glyphs and
-     * the ΔV budget can reference it and edits stay idempotent.
+     * A ΔV applied to a deputy (Phase 5B, US-MAN-01). {@code kind} is {@code "delta_v"};
+     * {@code frame} is {@code "ric"} (body-frame ΔV arrives with attitude in Phase 7).
+     * {@code id} is a stable UUID so glyphs and the ΔV budget can reference it and edits
+     * stay idempotent.
+     *
+     * <p><b>Finite burns (Phase 9, US-MAN-11, v6-additive).</b> When {@code thrustN} (N)
+     * and {@code ispSec} (s) are both present + positive the burn is integrated as a
+     * finite constant-thrust maneuver achieving this {@code deltaV} over the duration the
+     * rocket equation implies (centred on {@code epoch}); when either is null the burn is
+     * impulsive (the Phase-5B behaviour). Forward-additive: older bodies deserialize with
+     * null thrust/Isp (impulsive).
      */
-    public record Maneuver(String id, String kind, String epoch, String frame, DeltaV deltaV) {}
+    public record Maneuver(String id, String kind, String epoch, String frame, DeltaV deltaV,
+                           Double thrustN, Double ispSec) {
+
+        /** Impulsive convenience (no finite-burn parameters) — keeps every Phase-5B/5C call site. */
+        public Maneuver(String id, String kind, String epoch, String frame, DeltaV deltaV) {
+            this(id, kind, epoch, frame, deltaV, null, null);
+        }
+
+        /** True when this burn carries finite-thrust parameters (thrust + Isp, both positive). */
+        public boolean finite() {
+            return thrustN != null && ispSec != null && thrustN > 0.0 && ispSec > 0.0;
+        }
+    }
 
     /** A ΔV vector in metres/second, components in the maneuver's {@code frame}. */
     public record DeltaV(double r, double i, double c) {}

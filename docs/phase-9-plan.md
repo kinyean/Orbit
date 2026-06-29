@@ -8,18 +8,19 @@ becomes Decision 27 (still to write — see Remaining). This file is the **resum
 ## Status (as of this session)
 
 - **9A — Flight-ready rendezvous: ✅ done & verified.**
-- **9B — CW close-range templates: ✅ core done & verified** (NMC + V-bar/R-bar hold).
-  Finite burns / glideslope / closed-loop station-keeping **deferred** (see Remaining).
+- **9B — CW close-range templates + finite burns: ✅ done & verified** (NMC + V-bar/R-bar hold +
+  finite burns). Glideslope / closed-loop station-keeping **deferred** (see Remaining).
 - **9C — Monte Carlo + covariance: ✅ done & verified.**
 - **9D — Link budget / SNR: ✅ done** (`LinkBudgetComputer`, schema v6 `LinkBudget`,
   additive `linkBudgets` stream, `SensorPanel` fields + `Timeline` SNR band; `LinkBudgetComputerTests`).
 - **Docs (Decision 27, acceptance-criteria, user-stories, risks, roadmap, CLAUDE.md): ✅ done**
   (2026-06-29 — Decision 27 written, R16 resolved, R21 added).
 
-**Backend `./gradlew test` = 178 green** (was 152 at Phase 8 start). Frontend `type-check`
-+ `build` green; `gen:api` regenerated. All slices verified on the live dev stack.
-**Committed 2026-06-29** on branch `Phase-9` (9A/9B-core/9C/9D + docs in one Phase-9 commit).
-Remaining work below is finite burns + glideslope + station-keeping (finish 9B).
+**Backend `./gradlew test` = 183 green** (was 152 at Phase 8 start; +5 for finite burns). Frontend
+`type-check` + `build` green; `gen:api` regenerated. All slices verified on the live dev stack.
+**Committed 2026-06-29** on branch `Phase-9` (9A/9B/9C/9D + docs across two Phase-9 commits — the
+first without finite burns, the second adding them). Remaining work below is glideslope +
+closed-loop station-keeping (finish 9B).
 
 ---
 
@@ -145,19 +146,26 @@ Remaining work below is finite burns + glideslope + station-keeping (finish 9B).
   threshold crossings, determinism. Update encoder/stream tests for the additive field.
 
 ### 2. Deferred maneuvers (finish 9B)
-- **Finite burns (US-MAN-11).** `Maneuver` record (schema v6) + optional `thrustN, ispSec,
-  durationSec` (+ 5-arg convenience ctor; null → impulsive). Extend `Impulse` (or add a `Burn`) with
-  the finite fields + a 4-arg convenience ctor (keeps all call sites). `PropagationService.buildManeuvered`
-  branches: finite → Orekit `ConstantThrustManeuver(epoch, duration, thrust, isp, LofOffset(QSW)
-  attitudeOverride, dirUnit)` (mass is set via `settings.massKg()` in `NumericalPropagation.build` —
-  confirmed available); compute duration from the intended ΔV via Tsiolkovsky if the user gives ΔV+thrust+Isp.
-  CW fidelity: approximate as impulsive at the burn midpoint (documented). Thread the fields through
-  `ScenarioStreamService.toImpulses` + `ScreeningService.toImpulses` + the controller `ManeuverRequest`
-  + `ManeuverDraft` (convenience ctors!). Frontend: finite toggle on the Add-Δv form; the ΔV glyph
-  shows the burn-duration window. Tests: v6 round-trip + one audit row; finite ≈ equivalent impulse.
-- **Glideslope (US):** discretize a constant-closing-rate approach along V-bar/R-bar into segments,
-  each a `CwTargeting.twoImpulse` leg. **Closed-loop station-keeping:** propagate the relative orbit,
-  detect drift past a tolerance, emit corrective `CwTargeting` burns on an interval.
+- **Finite burns (US-MAN-11) — ✅ DONE (2026-06-29).** As built: optional `thrustN`/`ispSec` added to
+  `Impulse` (4-arg impulsive convenience ctor) + `ScenarioBody.Maneuver` (5-arg convenience ctor) +
+  `ManeuverDraft` (6-arg) + controller `ManeuverRequest`; null → impulsive (Phase-5B behaviour
+  preserved). `PropagationService.buildManeuvered` branches: finite → `ConstantThrustManeuver(start,
+  duration, thrust, isp, LofOffset(QSW), dirUnit)` as a **force model**; impulsive → the existing
+  `ImpulseManeuver` detector. Duration from the intended ΔV via the static `finiteDuration` (Tsiolkovsky,
+  pinned initial mass `PropagationSettings.DEFAULT.massKg()`); the burn is **centred on the epoch**
+  (`start = epoch − duration/2`) so it collapses to the impulse as thrust→∞ and matches the CW
+  midpoint. Fields threaded through `ScenarioStreamService` / `ScreeningService` / `MonteCarloService`
+  `toImpulses` (and preserved in `perturbImpulses`). CW path unchanged — it already applies the ΔV
+  impulsively at the epoch (= midpoint). Validation: thrust+Isp required together + positive (422).
+  Tests: `PropagationServiceTests` (finite ≈ equivalent impulse ≪ un-maneuvered; duration achieves the
+  ΔV), `ScenarioServiceTests` (v6 persist + one audit; reject thrust-only / non-positive). Frontend:
+  `ManeuverPanel` finite toggle (thrust + Isp) + a "finite" tag in the list. *Deviation from the sketch:*
+  no stored `durationSec` (derived at build time); the ΔV glyph stays at the centred midpoint (the
+  burn-window animation is a deferred nicety — the frontend doesn't carry the pinned mass).
+- **Glideslope (US-MAN-09) — ⬜ still deferred:** discretize a constant-closing-rate approach along
+  V-bar/R-bar into segments, each a `CwTargeting.twoImpulse` leg. **Closed-loop station-keeping
+  (US-MAN-10) — ⬜ still deferred:** propagate the relative orbit, detect drift past a tolerance, emit
+  corrective `CwTargeting` burns on an interval.
 
 ### 3. Docs — ✅ DONE (2026-06-29)
 *(Decision 27 written; R16 resolved + R21 added; acceptance-criteria / user-stories / roadmap /

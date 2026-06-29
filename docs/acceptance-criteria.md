@@ -613,14 +613,14 @@ cone); Sun occlusion / sun-keep-out (Phase 8); GPU-depth occlusion of the drawn 
 
 > Sliced **9A / 9B / 9C / 9D** (see [phase-9-plan.md](./phase-9-plan.md), Decision 27).
 >
-> **In progress — 9A / 9B-core / 9C / 9D done; backend 178 tests green + frontend
+> **In progress — 9A / 9B (incl. finite burns) / 9C / 9D done; backend 183 tests green + frontend
 > type-check/build green** (2026-06-29). New `analysis/` computers (`RendezvousSearchService`,
 > `MonteCarloService`, `LinkBudgetComputer`) + `scenario/RendezvousCorrector` + `prop/CwTargeting`
 > on the Phase-7/8 sampled-trajectory pattern; `ScenarioBody` schema **v6** (optional `LinkBudget`
-> on a sensor); additive `scenario-relative` `linkBudgets`; new rendezvous-search / phasing / nmc /
-> hold / monte-carlo / set-link-budget REST. Resolves **R16**; first **seeded RNG** (determinism
-> held, **R21**). **Remaining:** finite burns (US-MAN-11), glideslope (US-MAN-09), closed-loop
-> station-keeping (US-MAN-10).
+> on a sensor + finite-burn thrust/Isp on a maneuver); additive `scenario-relative` `linkBudgets`;
+> new rendezvous-search / phasing / nmc / hold / monte-carlo / set-link-budget REST + finite-burn
+> fields on the maneuver REST. Resolves **R16**; first **seeded RNG** (determinism held, **R21**).
+> **Remaining:** glideslope (US-MAN-09), closed-loop station-keeping (US-MAN-10).
 
 **9A — flight-ready rendezvous (US-MAN-06; closes R16)** ✅
 - [x] Two-impulse rendezvous defaults to a **differential corrector** (`RendezvousCorrector`,
@@ -633,17 +633,25 @@ cone); Sun occlusion / sun-keep-out (Phase 8); GPU-depth occlusion of the drawn 
 - [x] **Phasing** co-elliptic template (`ManeuverTemplateService.phasing`, window-guarded);
       `POST /maneuvers/phasing`. `RendezvousRequest` gained `corrected`/`nRev`.
 
-**9B core — CW close-range templates (US-MAN-07/08)** ✅ *(US-MAN-09/10/11 deferred)*
+**9B — CW close-range templates + finite burns (US-MAN-07/08/11)** ✅ *(US-MAN-09/10 deferred)*
 - [x] `prop/CwTargeting` — analytic CW STM blocks matching `CwPropagation.advance` +
       `twoImpulse(r0,v0,rT,vT,n,dt)` (null at the integer-rev singularity); `CwTargetingTest`
       (lands-on-target, NMC closed loop, integer-rev null).
 - [x] **NMC ellipse** (`ManeuverTemplateService.nmc`, `vy=−2nx`); `POST /maneuvers/nmc`.
 - [x] **V-bar / R-bar hold** (`ManeuverTemplateService.hold`, CW two-impulse to a hold point, zero
       arrival velocity); `POST /maneuvers/hold`. `relativeStateLvlh` (rotating-LVLH relative state, R15).
+- [x] **Finite-burn maneuvers (US-MAN-11)** — optional `thrustN`/`ispSec` on `Impulse`/`Maneuver`
+      (v6-additive; null → impulsive); `PropagationService.buildManeuvered` branches to an Orekit
+      `ConstantThrustManeuver` of the Tsiolkovsky duration achieving the ΔV, centred on the epoch
+      (collapses to the impulse as thrust→∞; mass depleted via the rocket equation). Threaded through
+      stream / screening / Monte-Carlo `toImpulses`; CW/impulse-equivalent treat it as impulsive at the
+      epoch (= midpoint). Validation: thrust+Isp required together, both positive, else 422.
+      `PropagationServiceTests` (finite ≈ equivalent impulse, ≪ the un-maneuvered track; Tsiolkovsky
+      duration achieves the target ΔV); `ScenarioServiceTests` (v6 persist + one audit; reject
+      thrust-only / non-positive). `ManeuverPanel` finite toggle (thrust + Isp). Dev-stack: add → 200
+      (persisted v6 thrustN/ispSec), thrust-only → 422, impulsive → 200.
 - [ ] Glideslope (US-MAN-09) — deferred (discretize into `CwTargeting.twoImpulse` legs).
 - [ ] Closed-loop station-keeping (US-MAN-10) — deferred (drift-detect + corrective `CwTargeting` burns).
-- [ ] Finite-burn maneuvers (US-MAN-11) — deferred (schema-v6 finite fields + Orekit
-      `ConstantThrustManeuver` branch in `PropagationService.buildManeuvered`).
 
 **9C — Monte Carlo + covariance (US-MC-01/02, UC-6)** ✅
 - [x] `POST /scenarios/{id}/monte-carlo` (`MonteCarloService`): per-sample Gaussian perturbation of

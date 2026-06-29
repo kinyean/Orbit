@@ -509,7 +509,8 @@ given distance + arrival epoch, with zero arrival velocity (`ManeuverTemplateSer
 
 ### US-MAN-10 — Closed-loop station-keeping. ⬜ *(deferred — propagate the relative orbit, detect drift past tolerance, emit corrective `CwTargeting` burns on an interval)*
 
-### US-MAN-11 — Finite-burn maneuvers (thrust, Isp, duration). ⬜ *(deferred — `Maneuver`/`Impulse` schema-v6 finite fields + Orekit `ConstantThrustManeuver` branch in `PropagationService.buildManeuvered`; the schema-v6 seam is ready)*
+### US-MAN-11 — As Maya, I want finite-burn maneuvers (thrust, Isp), so my ΔV plan reflects burns that take real time (and real propellant). ✅ (9B)
+*Acceptance:* a maneuver carries optional `thrustN` (N) + `ispSec` (s) (v6-additive on `Maneuver`/`Impulse`; null → impulsive). `PropagationService.buildManeuvered` realises a finite burn as an Orekit `ConstantThrustManeuver` of the Tsiolkovsky duration that achieves the intended ΔV, centred on the epoch (collapses to the impulse as thrust→∞; mass depleted via the rocket equation). `PropagationServiceTests` (finite ≈ equivalent impulse but ≫ the un-maneuvered track; duration achieves the target ΔV); thrust+Isp required together + positive, else 422. `ManeuverPanel` finite toggle. *Maps to:* SRS §3.5.2. *(Burn-window glyph animation deferred — the glyph sits at the centred midpoint.)*
 
 ### US-MC-01 — As Frank, I want Monte Carlo dispersion on initial state + maneuver execution error, so I can quantify trajectory uncertainty. ✅ (9C)
 *Acceptance:* `POST /scenarios/{id}/monte-carlo` perturbs the deputy ECI seed (Gaussian pos/vel) +

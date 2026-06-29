@@ -232,6 +232,47 @@ class ScenarioServiceTests {
     }
 
     @Test
+    void addFiniteBurnPersistsThrustAndIspWithOneAudit() {
+        UUID id = UUID.randomUUID();
+        Scenario s = existingWithBody(id, DEPUTY_TLE_BODY_V2);
+
+        ScenarioResponse resp = service.addManeuver(id, new ManeuverDraft(
+                33591, "2024-06-01T06:00:00Z", "ric", 0.0, 1.5, 0.0, 500.0, 300.0));
+
+        ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
+        verify(versions).saveAndFlush(vCap.capture());
+        assertThat(vCap.getValue().getBody())
+                .contains("\"schemaVersion\":6").contains("thrustN").contains("ispSec");
+        verify(auditLog, times(1)).save(any());
+
+        ScenarioBody.Maneuver m = resp.body().deputies().get(0).maneuvers().get(0);
+        assertThat(m.finite()).isTrue();
+        assertThat(m.thrustN()).isEqualTo(500.0);
+        assertThat(m.ispSec()).isEqualTo(300.0);
+    }
+
+    @Test
+    void rejectsFiniteBurnWithOnlyThrust() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        assertThatThrownBy(() -> service.addManeuver(id, new ManeuverDraft(
+                33591, "2024-06-01T06:00:00Z", "ric", 0.0, 1.5, 0.0, 500.0, null)))
+                .isInstanceOf(ScenarioValidationException.class);
+        verify(versions, never()).saveAndFlush(any());
+        verify(auditLog, never()).save(any());
+    }
+
+    @Test
+    void rejectsFiniteBurnWithNonPositiveThrust() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        assertThatThrownBy(() -> service.addManeuver(id, new ManeuverDraft(
+                33591, "2024-06-01T06:00:00Z", "ric", 0.0, 1.5, 0.0, 0.0, 300.0)))
+                .isInstanceOf(ScenarioValidationException.class);
+        verify(auditLog, never()).save(any());
+    }
+
+    @Test
     void rejectsNonRicManeuverFrame() {
         UUID id = UUID.randomUUID();
         existingWithBody(id, DEPUTY_TLE_BODY_V2);

@@ -89,6 +89,45 @@ class PropagationServiceTests {
     }
 
     @Test
+    void finiteBurnApproximatesEquivalentImpulse() {
+        // A short, high-thrust finite burn (Phase 9, US-MAN-11) centred on the epoch should
+        // land within metres of the same ΔV applied impulsively — yet both must differ from
+        // the un-maneuvered track by far more, proving the burn actually fired.
+        Fixture f = fixture();
+        AbsoluteDate burn = f.tle().getDate().shiftedBy(600.0);   // mid-stream (not the seed epoch)
+        AbsoluteDate at = f.tle().getDate().shiftedBy(3600.0);
+        double dvIntrack = 2.0; // m/s
+
+        StateVector reference = f.service().sample(
+                f.service().propagatorFor(f.tle(), Fidelity.NUMERICAL), at);
+        StateVector impulsive = f.service().sample(f.service().propagatorFor(
+                f.tle(), Fidelity.NUMERICAL,
+                java.util.List.of(new Impulse(burn, 0.0, dvIntrack, 0.0))), at);
+        StateVector finite = f.service().sample(f.service().propagatorFor(
+                f.tle(), Fidelity.NUMERICAL,
+                java.util.List.of(new Impulse(burn, 0.0, dvIntrack, 0.0, 1000.0, 300.0))), at);
+
+        assertThat(finite.position().distance(impulsive.position()))
+                .as("finite burn vs equivalent impulse, 50 min later (m)")
+                .isLessThan(100.0);
+        assertThat(impulsive.position().distance(reference.position()))
+                .as("a 2 m/s in-track ΔV must move the track by far more than the finite/impulse gap (m)")
+                .isGreaterThan(1000.0);
+    }
+
+    @Test
+    void finiteDurationAchievesTheTargetDeltaV() {
+        // The Tsiolkovsky duration must be the one whose integrated thrust yields the ΔV.
+        double dv = 2.0, thrust = 1000.0, isp = 300.0, mass = 500.0;
+        double g0 = 9.80665, ve = isp * g0;
+        double duration = PropagationService.finiteDuration(dv, thrust, isp, mass);
+        double mdot = thrust / ve;
+        double achievedDv = ve * Math.log(mass / (mass - mdot * duration));
+        assertThat(achievedDv).as("ΔV achieved over the computed burn duration (m/s)")
+                .isCloseTo(dv, org.assertj.core.data.Offset.offset(1.0e-6));
+    }
+
+    @Test
     void bothEnginesAgreeOnGrossPositionShortlyAfterEpoch() {
         // Over 60 s the perturbations barely diverge from SGP4; the two engines
         // should place the satellite within a few km. Catches a seed/frame

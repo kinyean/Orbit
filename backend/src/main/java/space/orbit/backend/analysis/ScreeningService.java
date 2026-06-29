@@ -307,7 +307,7 @@ public class ScreeningService {
                 continue;
             }
             impulses.add(new Impulse(new AbsoluteDate(parseInstant(m.epoch()), utc),
-                    m.deltaV().r(), m.deltaV().i(), m.deltaV().c()));
+                    m.deltaV().r(), m.deltaV().i(), m.deltaV().c(), m.thrustN(), m.ispSec()));
         }
         return impulses;
     }

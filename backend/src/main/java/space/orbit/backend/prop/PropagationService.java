@@ -4,6 +4,7 @@ import java.util.Comparator;
 import java.util.List;
 import org.hipparchus.geometry.euclidean.threed.Vector3D;
 import org.orekit.attitudes.LofOffset;
+import org.orekit.forces.maneuvers.ConstantThrustManeuver;
 import org.orekit.forces.maneuvers.Control3DVectorCostType;
 import org.orekit.forces.maneuvers.ImpulseManeuver;
 import org.orekit.forces.maneuvers.ImpulseProvider;
@@ -89,6 +90,11 @@ public class PropagationService {
      * threshold) with its ΔV expressed in a QSW/RIC-aligned {@link LofOffset}
      * attitude, {@link Control3DVectorCostType#NONE} (no mass bookkeeping). Impulses
      * are attached in a sorted order so same-instant burns compose deterministically.
+     *
+     * <p><b>Finite burns (Phase 9, US-MAN-11).</b> An {@link Impulse#finite()} burn is
+     * realised as an Orekit {@link ConstantThrustManeuver} force model instead — a real
+     * thrust integrated over a window, with mass depleted via the rocket equation. See
+     * {@link #buildManeuvered}.
      */
     public Propagator propagatorFor(TLE tle, Fidelity fidelity, List<Impulse> impulses) {
         if (impulses == null || impulses.isEmpty()) {
@@ -108,20 +114,63 @@ public class PropagationService {
         return buildManeuvered(seed, impulses == null ? List.of() : impulses);
     }
 
-    /** Numerical propagator from a seed + sorted RIC impulses (the shared core). */
+    /** Standard gravity (m/s²) for the rocket equation; effective exhaust velocity = Isp·g0. */
+    private static final double G0 = 9.80665;
+
+    /**
+     * Numerical propagator from a seed + sorted RIC impulses (the shared core).
+     *
+     * <p>An impulsive burn is an {@link ImpulseManeuver} event detector (instant ΔV reset,
+     * no mass change); a {@link Impulse#finite() finite} burn is a
+     * {@link ConstantThrustManeuver} force model — a real thrust integrated over the
+     * {@link #finiteDuration duration} that achieves the requested ΔV (Tsiolkovsky, using
+     * the pinned initial mass), centred on the maneuver epoch so it collapses to the
+     * impulsive case as thrust → ∞. Both share the QSW/RIC {@link LofOffset} so the ΔV /
+     * thrust direction is interpreted in RIC. Attached in {@link #IMPULSE_ORDER} so same-
+     * instant burns compose deterministically (R11).
+     */
     private NumericalPropagator buildManeuvered(StateVector seed, List<Impulse> impulses) {
         NumericalPropagator propagator = numericalPropagation.build(seed, PropagationSettings.DEFAULT);
         LofOffset ricAttitude = new LofOffset(frames.eci(), LOFType.QSW); // satellite frame = RIC
+        double massKg = PropagationSettings.DEFAULT.massKg();
         impulses.stream().sorted(IMPULSE_ORDER).forEach(imp -> {
-            DateDetector trigger = new DateDetector(imp.epoch())
-                    .withMaxCheck(60.0)
-                    .withThreshold(1.0e-6);
             Vector3D deltaVRic = new Vector3D(imp.r(), imp.i(), imp.c());
-            propagator.addEventDetector(new ImpulseManeuver(
-                    trigger, ricAttitude, ImpulseProvider.of(deltaVRic),
-                    Double.POSITIVE_INFINITY, Control3DVectorCostType.NONE));
+            if (imp.finite()) {
+                double dvMag = deltaVRic.getNorm();
+                double duration = finiteDuration(dvMag, imp.thrustN(), imp.ispSec(), massKg);
+                // Centre the burn on the epoch so the finite burn's effective ΔV lands at
+                // the same instant the impulsive case would (and matches the CW midpoint).
+                AbsoluteDate start = imp.epoch().shiftedBy(-duration / 2.0);
+                Vector3D dir = dvMag > 0 ? deltaVRic.normalize() : Vector3D.PLUS_I;
+                propagator.addForceModel(new ConstantThrustManeuver(
+                        start, duration, imp.thrustN(), imp.ispSec(), ricAttitude, dir));
+            } else {
+                DateDetector trigger = new DateDetector(imp.epoch())
+                        .withMaxCheck(60.0)
+                        .withThreshold(1.0e-6);
+                propagator.addEventDetector(new ImpulseManeuver(
+                        trigger, ricAttitude, ImpulseProvider.of(deltaVRic),
+                        Double.POSITIVE_INFINITY, Control3DVectorCostType.NONE));
+            }
         });
         return propagator;
+    }
+
+    /**
+     * Burn duration (s) that achieves a {@code dvMag} (m/s) ΔV with a constant
+     * {@code thrustN} (N) / {@code ispSec} (s) engine from an initial {@code massKg}
+     * (kg), via the Tsiolkovsky rocket equation:
+     * {@code Δm = m0·(1−e^{−Δv/ve})}, {@code ṁ = F/ve}, {@code t = Δm/ṁ} with
+     * {@code ve = Isp·g0}. Independent of thrust magnitude up to the achieved-ΔV
+     * level (thrust only sets how long it takes). Uses the pinned initial mass for
+     * every burn; sequential mass depletion across multiple finite burns is a
+     * second-order approximation (acceptable for ΔV that is small vs the wet mass).
+     */
+    static double finiteDuration(double dvMag, double thrustN, double ispSec, double massKg) {
+        double ve = ispSec * G0;
+        double deltaM = massKg * (1.0 - Math.exp(-dvMag / ve));
+        double mdot = thrustN / ve;
+        return deltaM / mdot;
     }
 
     /**

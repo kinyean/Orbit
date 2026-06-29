@@ -229,7 +229,9 @@ public class MonteCarloService {
             Vector3D tilt = e1.scalarMultiply(Math.cos(phi)).add(e2.scalarMultiply(Math.sin(phi)));
             Vector3D newU = u.scalarMultiply(Math.cos(theta)).add(tilt.scalarMultiply(Math.sin(theta)));
             Vector3D nv = newU.scalarMultiply(newMag);
-            out.add(new Impulse(imp.epoch(), nv.getX(), nv.getY(), nv.getZ()));
+            // Preserve finite-burn parameters: dispersion perturbs the achieved ΔV (so a
+            // finite burn's duration recomputes from the perturbed magnitude), not the engine.
+            out.add(new Impulse(imp.epoch(), nv.getX(), nv.getY(), nv.getZ(), imp.thrustN(), imp.ispSec()));
         }
         return out;
     }
@@ -347,7 +349,7 @@ public class MonteCarloService {
                 continue;
             }
             impulses.add(new Impulse(new AbsoluteDate(parseInstant(m.epoch()), utc),
-                    m.deltaV().r(), m.deltaV().i(), m.deltaV().c()));
+                    m.deltaV().r(), m.deltaV().i(), m.deltaV().c(), m.thrustN(), m.ispSec()));
         }
         return impulses;
     }
