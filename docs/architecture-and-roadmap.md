@@ -358,20 +358,22 @@ end-to-end on the dev stack.
   two-stage shell-prune + fine refine) → sorted results table + CSV (UC-7); a snapshot vs the
   live catalog (R11 caveat).
 
-### Phase 9 — Advanced maneuvers & analysis 🔶 (in progress — 9A/9B-core/9C/9D done; see [phase-9-plan.md](./phase-9-plan.md), Decision 27)
+### Phase 9 — Advanced maneuvers & analysis ✅ (done — see [phase-9-plan.md](./phase-9-plan.md), Decision 27)
 Sliced 9A/9B/9C/9D. Rides the Phase 4–8 architecture (sampled-trajectory `analysis/` computers,
 additive `scenario-relative` fields — `VERSION` stays `"1"`, forward-additive `ScenarioBody`
-schema **v6**, single audited `ScenarioService`). Backend 183 tests green; frontend type-check +
+schema **v6**, single audited `ScenarioService`). Backend 187 tests green; frontend type-check +
 build green; verified on the dev stack. Resolves **R16**; introduces the first **seeded RNG**
 (determinism held — per-sample seed + ordered collect).
 - ✅ **9A — Flight-ready rendezvous** — moves the two-impulse Lambert template (Phase 5C) from an
   open-loop two-body *sketch* to a converged plan: a **differential corrector**
   (`RendezvousCorrector`) against the real propagators (fixes the R16 model-mismatch miss), an
   **arrival × revolution ΔV search** (`RendezvousSearchService`), and a **phasing-orbit planner**.
-- ✅ **9B — CW close-range templates + finite burns** — NMC ellipse + V-bar/R-bar hold (`CwTargeting` +
-  `ManeuverTemplateService.nmc`/`hold`); **finite-burn maneuvers** (thrust, Isp; v6-additive
-  `Impulse`/`Maneuver` fields → Orekit `ConstantThrustManeuver` of the Tsiolkovsky duration, centred on
-  the epoch). ⬜ *Deferred:* glideslope, closed-loop station-keeping — the `CwTargeting` seam is in place.
+- ✅ **9B — CW close-range templates + finite burns** — NMC ellipse + V-bar/R-bar hold + **glideslope**
+  (constant-closing-rate approach in chained CW two-impulse legs + park) + **closed-loop
+  station-keeping** (periodic corrective burns, fed back from the real propagator)
+  (`CwTargeting` + `ManeuverTemplateService.nmc`/`hold`/`glideslope`/`stationKeep`); **finite-burn
+  maneuvers** (thrust, Isp; v6-additive `Impulse`/`Maneuver` fields → Orekit `ConstantThrustManeuver`
+  of the Tsiolkovsky duration, centred on the epoch).
 - ✅ **9C — Monte Carlo + covariance** — dispersion on initial state + maneuver execution +
   covariance ellipsoids in the relative frame (`MonteCarloService`, UC-6).
 - ✅ **9D — Link budget / SNR overlays** for RF and optical sensors (`LinkBudgetComputer`,

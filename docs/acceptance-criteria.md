@@ -613,14 +613,15 @@ cone); Sun occlusion / sun-keep-out (Phase 8); GPU-depth occlusion of the drawn 
 
 > Sliced **9A / 9B / 9C / 9D** (see [phase-9-plan.md](./phase-9-plan.md), Decision 27).
 >
-> **In progress — 9A / 9B (incl. finite burns) / 9C / 9D done; backend 183 tests green + frontend
-> type-check/build green** (2026-06-29). New `analysis/` computers (`RendezvousSearchService`,
-> `MonteCarloService`, `LinkBudgetComputer`) + `scenario/RendezvousCorrector` + `prop/CwTargeting`
-> on the Phase-7/8 sampled-trajectory pattern; `ScenarioBody` schema **v6** (optional `LinkBudget`
-> on a sensor + finite-burn thrust/Isp on a maneuver); additive `scenario-relative` `linkBudgets`;
-> new rendezvous-search / phasing / nmc / hold / monte-carlo / set-link-budget REST + finite-burn
-> fields on the maneuver REST. Resolves **R16**; first **seeded RNG** (determinism held, **R21**).
-> **Remaining:** glideslope (US-MAN-09), closed-loop station-keeping (US-MAN-10).
+> **Complete — 9A / 9B / 9C / 9D done; backend 187 tests green + frontend type-check/build green**
+> (2026-06-29). New `analysis/` computers (`RendezvousSearchService`, `MonteCarloService`,
+> `LinkBudgetComputer`) + `scenario/RendezvousCorrector` + `prop/CwTargeting` on the Phase-7/8
+> sampled-trajectory pattern; `ScenarioBody` schema **v6** (optional `LinkBudget` on a sensor +
+> finite-burn thrust/Isp on a maneuver); additive `scenario-relative` `linkBudgets`; new
+> rendezvous-search / phasing / nmc / hold / glideslope / station-keep / monte-carlo /
+> set-link-budget REST + finite-burn fields on the maneuver REST. Resolves **R16**; first **seeded
+> RNG** (determinism held, **R21**). *Deferred:* optical detector NEP/QE link detail; finite-burn
+> ΔV-glyph burn-window animation.
 
 **9A — flight-ready rendezvous (US-MAN-06; closes R16)** ✅
 - [x] Two-impulse rendezvous defaults to a **differential corrector** (`RendezvousCorrector`,
@@ -633,7 +634,7 @@ cone); Sun occlusion / sun-keep-out (Phase 8); GPU-depth occlusion of the drawn 
 - [x] **Phasing** co-elliptic template (`ManeuverTemplateService.phasing`, window-guarded);
       `POST /maneuvers/phasing`. `RendezvousRequest` gained `corrected`/`nRev`.
 
-**9B — CW close-range templates + finite burns (US-MAN-07/08/11)** ✅ *(US-MAN-09/10 deferred)*
+**9B — CW close-range templates + finite burns (US-MAN-07/08/09/10/11)** ✅
 - [x] `prop/CwTargeting` — analytic CW STM blocks matching `CwPropagation.advance` +
       `twoImpulse(r0,v0,rT,vT,n,dt)` (null at the integer-rev singularity); `CwTargetingTest`
       (lands-on-target, NMC closed loop, integer-rev null).
@@ -650,8 +651,19 @@ cone); Sun occlusion / sun-keep-out (Phase 8); GPU-depth occlusion of the drawn 
       duration achieves the target ΔV); `ScenarioServiceTests` (v6 persist + one audit; reject
       thrust-only / non-positive). `ManeuverPanel` finite toggle (thrust + Isp). Dev-stack: add → 200
       (persisted v6 thrustN/ispSec), thrust-only → 422, impulsive → 200.
-- [ ] Glideslope (US-MAN-09) — deferred (discretize into `CwTargeting.twoImpulse` legs).
-- [ ] Closed-loop station-keeping (US-MAN-10) — deferred (drift-detect + corrective `CwTargeting` burns).
+- [x] **Glideslope (US-MAN-09)** — constant-closing-rate V-bar/R-bar approach from `startRangeM` to
+      `endRangeM`, discretized into `segments` chained `CwTargeting.twoImpulse` legs (one corrective
+      burn per waypoint) + a final park burn; constant closing speed (leg duration scales with leg
+      length). `POST /maneuvers/glideslope`; rejects non-closing ranges / CW-singular legs / overrun.
+      `ManeuverTemplateServiceTests` (chain ends in a park burn, strictly-increasing epochs; reject
+      non-closing). `ManeuverPanel` glideslope form. Dev-stack: 200 (7 burns), non-closing → 422.
+- [x] **Closed-loop station-keeping (US-MAN-10)** — periodic corrective burns holding a V-bar/R-bar
+      point: each correction rebuilds the deputy's **real** (numerical, corrections-so-far) propagator,
+      reads back its drifted relative state in the chief LVLH, and solves the CW departure burn
+      re-aiming at the point one interval later — genuinely closed-loop (each correction sees the prior
+      drift). Bounded by the window + `corrections` cap. `POST /maneuvers/station-keep`.
+      `ManeuverTemplateServiceTests` (one burn per interval, interval-spaced epochs; reject window
+      overrun). `ManeuverPanel` station-keep form. Dev-stack: 200 (6 corrections), overrun → 422.
 
 **9C — Monte Carlo + covariance (US-MC-01/02, UC-6)** ✅
 - [x] `POST /scenarios/{id}/monte-carlo` (`MonteCarloService`): per-sample Gaussian perturbation of

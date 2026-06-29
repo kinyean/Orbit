@@ -191,4 +191,92 @@ class ManeuverTemplateServiceTests {
             assertThat(Double.isFinite(d.r()) && Double.isFinite(d.i()) && Double.isFinite(d.c())).isTrue();
         }
     }
+
+    @Test
+    void glideslopeInsertsAChainEndingInAParkBurn() {
+        ScenarioService scenarioService = mock(ScenarioService.class);
+        String start = "2024-06-01T12:00:00Z";
+        ScenarioBody b = closeBody(start, "2024-06-01T16:00:00Z");
+        when(scenarioService.get(any())).thenReturn(
+                new ScenarioResponse(ID.toString(), "S", "o", "2024-06-01T00:00:00Z", 1, 1, b));
+        when(scenarioService.addManeuvers(eq(ID), any(), any())).thenReturn(
+                new ScenarioResponse(ID.toString(), "S", "o", "2024-06-01T00:00:00Z", 2, 2, b));
+
+        // V-bar approach 1000 → 100 m at 2 m/s in 4 segments.
+        service(scenarioService).glideslope(ID, 25545, "vbar", 1000.0, 100.0, 2.0, 4);
+
+        ArgumentCaptor<List<ManeuverDraft>> cap = captureDrafts(scenarioService);
+        org.mockito.Mockito.verify(scenarioService).addManeuvers(eq(ID), cap.capture(), any());
+        List<ManeuverDraft> drafts = cap.getValue();
+        // 4 segments → 5 transfer legs (acquire + 4) + 1 final park burn.
+        assertThat(drafts).hasSize(6);
+        assertThat(drafts.get(0).epoch()).isEqualTo(start);
+        for (int k = 1; k < drafts.size(); k++) {
+            assertThat(Instant.parse(drafts.get(k).epoch()))
+                    .as("epochs strictly increasing along the glideslope")
+                    .isAfter(Instant.parse(drafts.get(k - 1).epoch()));
+        }
+        for (ManeuverDraft d : drafts) {
+            assertThat(Double.isFinite(d.r()) && Double.isFinite(d.i()) && Double.isFinite(d.c())).isTrue();
+        }
+    }
+
+    @Test
+    void glideslopeRejectsNonClosingRanges() {
+        ScenarioService scenarioService = mock(ScenarioService.class);
+        ScenarioBody b = closeBody("2024-06-01T12:00:00Z", "2024-06-01T16:00:00Z");
+        when(scenarioService.get(any())).thenReturn(
+                new ScenarioResponse(ID.toString(), "S", "o", "2024-06-01T00:00:00Z", 1, 1, b));
+
+        // end range ≥ start range is not "closing in" → rejected, nothing inserted.
+        assertThatThrownBy(() -> service(scenarioService).glideslope(ID, 25545, "vbar", 100.0, 1000.0, 2.0, 4))
+                .isInstanceOf(ScenarioValidationException.class)
+                .hasMessageContaining("closing in");
+        org.mockito.Mockito.verify(scenarioService, org.mockito.Mockito.never())
+                .addManeuvers(any(), any(), any());
+    }
+
+    @Test
+    void stationKeepInsertsOneCorrectiveBurnPerInterval() {
+        ScenarioService scenarioService = mock(ScenarioService.class);
+        String start = "2024-06-01T12:00:00Z";
+        ScenarioBody b = closeBody(start, "2024-06-01T16:00:00Z");
+        when(scenarioService.get(any())).thenReturn(
+                new ScenarioResponse(ID.toString(), "S", "o", "2024-06-01T00:00:00Z", 1, 1, b));
+        when(scenarioService.addManeuvers(eq(ID), any(), any())).thenReturn(
+                new ScenarioResponse(ID.toString(), "S", "o", "2024-06-01T00:00:00Z", 2, 2, b));
+
+        // Hold a V-bar point at 800 m: one corrective burn every 1200 s, 4 corrections.
+        service(scenarioService).stationKeep(ID, 25545, "vbar", 800.0, 1200.0, 4);
+
+        ArgumentCaptor<List<ManeuverDraft>> cap = captureDrafts(scenarioService);
+        org.mockito.Mockito.verify(scenarioService).addManeuvers(eq(ID), cap.capture(), any());
+        List<ManeuverDraft> drafts = cap.getValue();
+        assertThat(drafts).hasSize(4);
+        assertThat(drafts.get(0).epoch()).isEqualTo(start);
+        // Corrections are spaced one interval apart and all finite.
+        for (int k = 1; k < drafts.size(); k++) {
+            double gap = Instant.parse(drafts.get(k).epoch()).getEpochSecond()
+                    - Instant.parse(drafts.get(k - 1).epoch()).getEpochSecond();
+            assertThat(gap).isEqualTo(1200.0);
+        }
+        for (ManeuverDraft d : drafts) {
+            assertThat(Double.isFinite(d.r()) && Double.isFinite(d.i()) && Double.isFinite(d.c())).isTrue();
+        }
+    }
+
+    @Test
+    void stationKeepRejectsAnIntervalThatOverrunsTheWindow() {
+        ScenarioService scenarioService = mock(ScenarioService.class);
+        // A 30-minute window but a 1-hour interval → no full interval fits → rejected.
+        ScenarioBody b = closeBody("2024-06-01T12:00:00Z", "2024-06-01T12:30:00Z");
+        when(scenarioService.get(any())).thenReturn(
+                new ScenarioResponse(ID.toString(), "S", "o", "2024-06-01T00:00:00Z", 1, 1, b));
+
+        assertThatThrownBy(() -> service(scenarioService).stationKeep(ID, 25545, "vbar", 800.0, 3600.0, 4))
+                .isInstanceOf(ScenarioValidationException.class)
+                .hasMessageContaining("no corrections fit");
+        org.mockito.Mockito.verify(scenarioService, org.mockito.Mockito.never())
+                .addManeuvers(any(), any(), any());
+    }
 }

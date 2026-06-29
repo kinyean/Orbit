@@ -59,6 +59,8 @@ export default function ManeuverPanel() {
   const applyPhasing = useStore((s) => s.applyPhasing);
   const applyNmc = useStore((s) => s.applyNmc);
   const applyHold = useStore((s) => s.applyHold);
+  const applyGlideslope = useStore((s) => s.applyGlideslope);
+  const applyStationKeep = useStore((s) => s.applyStationKeep);
   // React to relative-buffer changes (carries the CW validity hint).
   useSyncExternalStore(subscribeRelative, getRelativeVersion);
 
@@ -76,6 +78,15 @@ export default function ManeuverPanel() {
   const [holdAxis, setHoldAxis] = useState<'vbar' | 'rbar'>('vbar');
   const [holdDist, setHoldDist] = useState('');
   const [holdArrival, setHoldArrival] = useState('');
+  const [gsAxis, setGsAxis] = useState<'vbar' | 'rbar'>('vbar');
+  const [gsStart, setGsStart] = useState('1000');
+  const [gsEnd, setGsEnd] = useState('100');
+  const [gsRate, setGsRate] = useState('1');
+  const [gsSegments, setGsSegments] = useState('6');
+  const [skAxis, setSkAxis] = useState<'vbar' | 'rbar'>('vbar');
+  const [skDist, setSkDist] = useState('500');
+  const [skInterval, setSkInterval] = useState('600');
+  const [skCorrections, setSkCorrections] = useState('6');
   const [searchResult, setSearchResult] = useState<RendezvousSearchResult | null>(null);
   const [selectedCell, setSelectedCell] = useState<DvCell | null>(null);
   const [searching, setSearching] = useState(false);
@@ -240,6 +251,33 @@ export default function ManeuverPanel() {
       setMsg(err ?? `${holdAxis.toUpperCase()} hold inserted at ${holdDist} m`);
     } catch (e) {
       setMsg(`Hold failed: ${msgOf(e)}`);
+    }
+  }
+
+  async function onGlideslope() {
+    if (selected == null) { setMsg('Select a deputy first.'); return; }
+    setMsg('Computing glideslope…');
+    try {
+      const err = await applyGlideslope(
+        selected, gsAxis, Number(gsStart) || 0, Number(gsEnd) || 0,
+        Number(gsRate) || 0, Number(gsSegments) || 0,
+      );
+      setMsg(err ?? `${gsAxis.toUpperCase()} glideslope ${gsStart}→${gsEnd} m @ ${gsRate} m/s inserted`);
+    } catch (e) {
+      setMsg(`Glideslope failed: ${msgOf(e)}`);
+    }
+  }
+
+  async function onStationKeep() {
+    if (selected == null) { setMsg('Select a deputy first.'); return; }
+    setMsg('Computing station-keeping…');
+    try {
+      const err = await applyStationKeep(
+        selected, skAxis, Number(skDist) || 0, Number(skInterval) || 0, Number(skCorrections) || 0,
+      );
+      setMsg(err ?? `${skAxis.toUpperCase()} station-keep @ ${skDist} m inserted`);
+    } catch (e) {
+      setMsg(`Station-keeping failed: ${msgOf(e)}`);
     }
   }
 
@@ -515,12 +553,75 @@ export default function ManeuverPanel() {
           </button>
         </div>
 
+        <div className="mvr-add-title" style={{ marginTop: 6 }}>Glideslope (CW approach)</div>
+        <div className="mvr-template-row">
+          <label>
+            Glideslope → axis
+            <select value={gsAxis} onChange={(e) => setGsAxis(e.target.value as 'vbar' | 'rbar')} aria-label="Glideslope axis">
+              <option value="vbar">V-bar (in-track)</option>
+              <option value="rbar">R-bar (radial)</option>
+            </select>
+          </label>
+          <label>
+            rate (m/s)
+            <input type="number" step="any" min="0" placeholder="1" value={gsRate} onChange={(e) => setGsRate(e.target.value)} />
+          </label>
+        </div>
+        <div className="mvr-template-row">
+          <label>
+            start (m)
+            <input type="number" step="any" placeholder="1000" value={gsStart} onChange={(e) => setGsStart(e.target.value)} />
+          </label>
+          <label>
+            end (m)
+            <input type="number" step="any" placeholder="100" value={gsEnd} onChange={(e) => setGsEnd(e.target.value)} />
+          </label>
+          <label>
+            legs
+            <input type="number" step="1" min="1" max="30" placeholder="6" value={gsSegments} onChange={(e) => setGsSegments(e.target.value)} />
+          </label>
+          <button type="button" onClick={() => void onGlideslope()}>
+            Insert
+          </button>
+        </div>
+
+        <div className="mvr-add-title" style={{ marginTop: 6 }}>Station-keeping (closed-loop)</div>
+        <div className="mvr-template-row">
+          <label>
+            Station-keep → axis
+            <select value={skAxis} onChange={(e) => setSkAxis(e.target.value as 'vbar' | 'rbar')} aria-label="Station-keep axis">
+              <option value="vbar">V-bar (in-track)</option>
+              <option value="rbar">R-bar (radial)</option>
+            </select>
+          </label>
+          <label>
+            distance (m)
+            <input type="number" step="any" placeholder="±500" value={skDist} onChange={(e) => setSkDist(e.target.value)} />
+          </label>
+        </div>
+        <div className="mvr-template-row">
+          <label>
+            interval (s)
+            <input type="number" step="any" min="0" placeholder="600" value={skInterval} onChange={(e) => setSkInterval(e.target.value)} />
+          </label>
+          <label>
+            corrections
+            <input type="number" step="1" min="1" max="24" placeholder="6" value={skCorrections} onChange={(e) => setSkCorrections(e.target.value)} />
+          </label>
+          <button type="button" onClick={() => void onStationKeep()}>
+            Insert
+          </button>
+        </div>
+
         <div className="mvr-note">
           Altitude is absolute (height above the surface, not a change). Rendezvous departs
           at the scenario start; the corrected transfer is closed-loop against the real
           model. Phasing walks the along-track gap down over N revolutions (a two-body sketch).
-          NMC / hold are CW close-range templates (valid within ~10 km of the chief); signed
-          hold distance places the point ahead/behind (V-bar) or above/below (R-bar).
+          NMC / hold / glideslope / station-keeping are CW close-range templates (valid within
+          ~10 km of the chief); signed distance places the point ahead/behind (V-bar) or
+          above/below (R-bar). The glideslope approaches along the axis from start→end range at a
+          constant closing rate (in {gsSegments || 'N'} legs) and parks at rest; station-keeping
+          holds a point with a corrective burn each interval (closed-loop against the real model).
         </div>
         {msg && <div className="mvr-msg">{msg}</div>}
       </div>

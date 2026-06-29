@@ -1406,8 +1406,13 @@ migration), all scenario edits through the single audited `ScenarioService`. Sli
   achieves the requested ΔV (centred on the epoch → it collapses to the impulsive case as thrust → ∞;
   mass depleted via the rocket equation), while the impulsive case stays an `ImpulseManeuver` detector.
   CW and the impulse-equivalent treat a finite burn as impulsive at the epoch (= the centred midpoint).
-  **Deferred within 9B:** glideslope, closed-loop station-keeping — the `CwTargeting` primitive is in
-  place for both.
+  **Glideslope** (`glideslope`) discretizes a constant-closing-rate V-bar/R-bar approach into chained
+  `CwTargeting.twoImpulse` legs (one corrective burn per waypoint, constant closing speed → leg
+  duration scales with length) + a final park burn. **Closed-loop station-keeping** (`stationKeep`)
+  holds a V-bar/R-bar point with a corrective burn each interval; uniquely among the templates it is
+  genuinely closed-loop — each correction rebuilds the deputy's *real* (numerical, corrections-so-far)
+  propagator, reads back its drifted relative state, and solves the CW re-aiming burn, so the burns
+  counter whatever the real model (and the forced point) actually do.
 - **9C — Monte Carlo + covariance (UC-6).** `analysis/MonteCarloService` perturbs the deputy's
   ECI seed (Gaussian pos/vel) + maneuver ΔV (magnitude + pointing tilt), propagates each sample,
   expresses it chief-LVLH, and aggregates the cloud + per-epoch covariance ellipsoids (Hipparchus
@@ -1448,20 +1453,21 @@ model* (deferred — the Friis form with optical-band parameters is the v1; the 
 `RendezvousSearchResult`, `MonteCarloService`/`MonteCarloResult`/`EllipsoidSample`,
 `LinkBudgetComputer`/`LinkBudgetSeries`; new `scenario/RendezvousCorrector` + `LinkBudgetDraft`;
 new `prop/CwTargeting`. `ManeuverTemplateService` grows `rendezvous(corrected,nRev)` / `phasing` /
-`nmc` / `hold` / `relativeStateLvlh`; `PropagationService` extracts `buildManeuvered` +
+`nmc` / `hold` / `glideslope` / `stationKeep` / `relativeStateLvlh`; `PropagationService` extracts `buildManeuvered` +
 `propagatorFor(seed, impulses)` + the static `finiteDuration` (Tsiolkovsky) and branches it on
 `Impulse.finite()`; `FrameService` extracts public `matrixToQuaternionXyzw`. `Impulse` /
 `ScenarioBody.Maneuver` / `ManeuverDraft` / `ManeuverRequest` grow optional `thrustN`/`ispSec` (with
 impulsive convenience ctors that keep every Phase-5B/5C call site). New REST:
 `POST /maneuvers/rendezvous/search`, `/maneuvers/phasing`, `/maneuvers/nmc`, `/maneuvers/hold`,
-`/scenarios/{id}/monte-carlo`, + `setLinkBudget` + finite-burn fields on `/maneuvers` (`gen:api`
-regenerated; stream `linkBudgets` stays WebSocket-only). `ScenarioBody` schema v6. Frontend:
-`ManeuverPanel` (ΔV-map table + corrected insert + phasing + close-range NMC/hold + a finite-burn
-toggle), new `MonteCarloPanel` + `proximity/montecarlo.ts` (cloud + 3σ ellipsoid shells),
-`SensorPanel` link-budget fields, `Timeline` SNR band, `relativeBuffer` parsing. **This resolves R16**
+`/maneuvers/glideslope`, `/maneuvers/station-keep`, `/scenarios/{id}/monte-carlo`, + `setLinkBudget`
++ finite-burn fields on `/maneuvers` (`gen:api` regenerated; stream `linkBudgets` stays
+WebSocket-only). `ScenarioBody` schema v6. Frontend: `ManeuverPanel` (ΔV-map table + corrected
+insert + phasing + close-range NMC/hold/glideslope/station-keep + a finite-burn toggle), new
+`MonteCarloPanel` + `proximity/montecarlo.ts` (cloud + 3σ ellipsoid shells), `SensorPanel`
+link-budget fields, `Timeline` SNR band, `relativeBuffer` parsing. **This resolves R16**
 (differential corrector) and introduces the **first seeded RNG** (determinism held per above). Backend
-test count **152 → 183**. **Deferred (build next):** glideslope, closed-loop station-keeping; optical
-NEP/QE detail; the finite-burn ΔV-glyph burn-window animation.
+test count **152 → 187**. **Deferred:** optical detector NEP/QE link detail; the finite-burn
+ΔV-glyph burn-window animation.
 
 ---
 

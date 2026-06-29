@@ -171,6 +171,20 @@ public class ScenarioController {
         return templates.hold(id, req.deputyNoradId(), req.axis(), req.distanceM(), req.arrivalEpoch());
     }
 
+    /** Glideslope approach (Phase 9B, US-MAN-09): constant-closing-rate V-bar/R-bar approach. */
+    @PostMapping("/{id}/maneuvers/glideslope")
+    public ScenarioResponse glideslope(@PathVariable UUID id, @Valid @RequestBody GlideslopeRequest req) {
+        return templates.glideslope(id, req.deputyNoradId(), req.axis(),
+                req.startRangeM(), req.endRangeM(), req.closingRateMps(), req.segments());
+    }
+
+    /** Closed-loop station-keeping (Phase 9B, US-MAN-10): periodic corrective burns holding a point. */
+    @PostMapping("/{id}/maneuvers/station-keep")
+    public ScenarioResponse stationKeep(@PathVariable UUID id, @Valid @RequestBody StationKeepRequest req) {
+        return templates.stationKeep(id, req.deputyNoradId(), req.axis(),
+                req.distanceM(), req.intervalSec(), req.corrections());
+    }
+
     // --- sensors & attitude (Phase 7, US-SENSE-01 / US-PROX-01) --------------
 
     @PostMapping("/{id}/sensors")
@@ -354,6 +368,33 @@ public class ScenarioController {
             @NotBlank String axis,
             double distanceM,
             @NotBlank String arrivalEpoch) {
+    }
+
+    /**
+     * Glideslope payload (Phase 9B, US-MAN-09): a constant-closing-rate approach along
+     * {@code axis} ({@code "vbar"}/{@code "rbar"}) from {@code startRangeM} to {@code endRangeM}
+     * (signed, same side, closing in) at {@code closingRateMps}, in {@code segments} legs.
+     */
+    public record GlideslopeRequest(
+            @Positive int deputyNoradId,
+            @NotBlank String axis,
+            double startRangeM,
+            double endRangeM,
+            @Positive double closingRateMps,
+            @Positive int segments) {
+    }
+
+    /**
+     * Station-keeping payload (Phase 9B, US-MAN-10): hold the deputy at the {@code axis}
+     * ({@code "vbar"}/{@code "rbar"}) point {@code distanceM} from the chief with a corrective
+     * burn every {@code intervalSec}, for {@code corrections} corrections (bounded by the window).
+     */
+    public record StationKeepRequest(
+            @Positive int deputyNoradId,
+            @NotBlank String axis,
+            double distanceM,
+            @Positive double intervalSec,
+            @Positive int corrections) {
     }
 
     /**

@@ -4,6 +4,7 @@ import jakarta.annotation.PostConstruct;
 import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.hipparchus.geometry.euclidean.threed.Vector3D;
@@ -370,6 +371,197 @@ public class ManeuverTemplateService {
         return scenarioService.addManeuvers(id, drafts, String.format(
                 "%s hold @ %.0f m (CW two-impulse, Δv total %.2f m/s)",
                 axisNorm.toUpperCase(), distanceM, total));
+    }
+
+    /**
+     * Glideslope approach (US-MAN-09): a constant-closing-rate straight-line approach along
+     * the chief's in-track (V-bar) or radial (R-bar) axis, from {@code startRangeM} to
+     * {@code endRangeM}, parking at rest at the end point. The line is discretized into
+     * {@code segments} CW two-impulse legs (plus an acquisition leg from the deputy's current
+     * state to the start point); a single corrective burn at each waypoint both kills the
+     * previous leg's arrival velocity and sets up the next, and a final burn nulls the velocity
+     * at the end point. Each leg is flown at the constant {@code closingRateMps}, so leg
+     * duration scales with leg length.
+     *
+     * <p>Like the other close-range templates this is computed in CW from the deputy's current
+     * relative state but executed in the real model (a documented approximation); more segments
+     * tighten the straight-line tracking. {@code startRangeM}/{@code endRangeM} are signed (same
+     * sign = same side; {@code |end| < |start|} = closing in).
+     *
+     * @param axis {@code "vbar"} (in-track) or {@code "rbar"} (radial)
+     */
+    public ScenarioResponse glideslope(UUID id, int deputyNoradId, String axis,
+                                       double startRangeM, double endRangeM,
+                                       double closingRateMps, int segments) {
+        ScenarioBody body = scenarioService.get(id).body();
+        ScenarioBody.Role deputy = deputyRole(body, deputyNoradId);
+        if (body.chief() == null) {
+            throw new ScenarioValidationException("a glideslope requires a chief");
+        }
+        if (!(closingRateMps > 0.0) || !Double.isFinite(closingRateMps)) {
+            throw new ScenarioValidationException("closing rate must be a positive speed (m/s)");
+        }
+        if (segments < 1 || segments > 30) {
+            throw new ScenarioValidationException("segments must be between 1 and 30");
+        }
+        if (!Double.isFinite(startRangeM) || !Double.isFinite(endRangeM)
+                || startRangeM == 0.0 || endRangeM == 0.0
+                || Math.signum(startRangeM) != Math.signum(endRangeM)
+                || Math.abs(endRangeM) >= Math.abs(startRangeM)) {
+            throw new ScenarioValidationException(
+                    "glideslope ranges must be non-zero, same side, and closing in (|end| < |start|)");
+        }
+        String axisNorm = axis == null ? "vbar" : axis.trim().toLowerCase();
+        int ax = switch (axisNorm) {
+            case "rbar" -> 0; // radial
+            case "vbar" -> 1; // in-track
+            default -> throw new ScenarioValidationException("glideslope axis must be 'vbar' or 'rbar'");
+        };
+
+        Instant startInstant = parseInstant(body.timeRange().start());
+        Instant endInstant = parseInstant(body.timeRange().end());
+        AbsoluteDate t1 = new AbsoluteDate(startInstant, utc);
+        TLE chiefTle = tleOf(body.chief());
+        Propagator chiefProp = propagationService.propagatorFor(chiefTle, Fidelity.SGP4);
+        Propagator depProp = propagationService.propagatorFor(tleOf(deputy), Fidelity.SGP4);
+        double n = chiefTle.getMeanMotion();
+        double[] s = relativeStateLvlh(chiefProp, depProp, t1);
+
+        double[] rCur = {s[0], s[1], s[2]};
+        double[] vCur = {s[3], s[4], s[5]};
+        List<ManeuverDraft> drafts = new ArrayList<>();
+        double cumT = 0.0;
+        // Waypoints p[k] (k = 0..segments) along the axis from start to end; the deputy
+        // acquires p[0] from its current state, then walks down to p[segments].
+        for (int k = 0; k <= segments; k++) {
+            double range = startRangeM + (endRangeM - startRangeM) * ((double) k / segments);
+            double[] rT = {0.0, 0.0, 0.0};
+            rT[ax] = range;
+            double legDist = Math.sqrt(
+                    (rT[0] - rCur[0]) * (rT[0] - rCur[0])
+                    + (rT[1] - rCur[1]) * (rT[1] - rCur[1])
+                    + (rT[2] - rCur[2]) * (rT[2] - rCur[2]));
+            double dt = legDist / closingRateMps;
+            if (dt <= 0.0) {
+                continue; // already at this waypoint (degenerate leg)
+            }
+            double[] res = CwTargeting.twoImpulse(rCur, vCur, rT, new double[] {0, 0, 0}, n, dt);
+            if (res == null) {
+                throw new ScenarioValidationException(
+                        "a glideslope leg is near an integer number of orbits (CW-singular) — "
+                        + "raise the closing rate or segment count");
+            }
+            Instant epoch = startInstant.plusNanos(Math.round(cumT * 1.0e9));
+            if (epoch.isAfter(endInstant)) {
+                throw new ScenarioValidationException(
+                        "the glideslope runs past the scenario end — shorten the range, raise the "
+                        + "closing rate, or extend the time range");
+            }
+            drafts.add(new ManeuverDraft(deputyNoradId, epoch.toString(), "ric", res[0], res[1], res[2]));
+            // Arrival velocity at rT (before any correction): res[3..5] = vT − vArr = −vArr.
+            vCur = new double[] {-res[3], -res[4], -res[5]};
+            rCur = rT;
+            cumT += dt;
+        }
+        // Final park burn: null the residual velocity at the end point (arrive at rest).
+        Instant parkEpoch = startInstant.plusNanos(Math.round(cumT * 1.0e9));
+        if (parkEpoch.isAfter(endInstant)) {
+            throw new ScenarioValidationException(
+                    "the glideslope runs past the scenario end — shorten the range, raise the "
+                    + "closing rate, or extend the time range");
+        }
+        drafts.add(new ManeuverDraft(deputyNoradId, parkEpoch.toString(), "ric", -vCur[0], -vCur[1], -vCur[2]));
+
+        double total = 0.0;
+        for (ManeuverDraft d : drafts) {
+            total += Math.sqrt(d.r() * d.r() + d.i() * d.i() + d.c() * d.c());
+        }
+        return scenarioService.addManeuvers(id, drafts, String.format(
+                "%s glideslope %.0f→%.0f m @ %.2f m/s (%d-segment CW, Δv total %.2f m/s)",
+                axisNorm.toUpperCase(), startRangeM, endRangeM, closingRateMps, segments, total));
+    }
+
+    /**
+     * Closed-loop station-keeping (US-MAN-10): hold the deputy at a V-bar/R-bar point against
+     * the real perturbative drift, with a corrective burn every {@code intervalSec} for
+     * {@code corrections} corrections (bounded by the window). Unlike the other templates this
+     * is genuinely <em>closed-loop</em>: at each correction it rebuilds the deputy's real
+     * (numerical, corrections-so-far) propagator, reads back its actual relative state in the
+     * chief LVLH, and solves the CW departure burn that re-aims it at the hold point one
+     * interval later. Each correction therefore sees the drift the previous ones left — the
+     * burns counteract whatever the real model (and a forced hold point) actually do.
+     *
+     * <p>The corrections are computed in CW but applied to (and fed back from) the real
+     * propagators (chief at the stream fidelity, deputy numerical), so the burn sizes reflect
+     * the true cost of the hold. Rebuilding the numerical propagator each step is the dominant
+     * cost; {@code corrections} is capped accordingly.
+     *
+     * @param axis {@code "vbar"} (in-track) or {@code "rbar"} (radial)
+     */
+    public ScenarioResponse stationKeep(UUID id, int deputyNoradId, String axis,
+                                        double distanceM, double intervalSec, int corrections) {
+        ScenarioBody body = scenarioService.get(id).body();
+        ScenarioBody.Role deputy = deputyRole(body, deputyNoradId);
+        if (body.chief() == null) {
+            throw new ScenarioValidationException("station-keeping requires a chief");
+        }
+        if (!(intervalSec > 0.0) || !Double.isFinite(intervalSec)) {
+            throw new ScenarioValidationException("the correction interval must be a positive number of seconds");
+        }
+        if (corrections < 1 || corrections > 24) {
+            throw new ScenarioValidationException("corrections must be between 1 and 24");
+        }
+        if (!Double.isFinite(distanceM) || distanceM == 0.0) {
+            throw new ScenarioValidationException("the hold distance must be a non-zero number of metres");
+        }
+        String axisNorm = axis == null ? "vbar" : axis.trim().toLowerCase();
+        double[] rT = switch (axisNorm) {
+            case "rbar" -> new double[] {distanceM, 0.0, 0.0};
+            case "vbar" -> new double[] {0.0, distanceM, 0.0};
+            default -> throw new ScenarioValidationException("station-keeping axis must be 'vbar' or 'rbar'");
+        };
+
+        Instant startInstant = parseInstant(body.timeRange().start());
+        Instant endInstant = parseInstant(body.timeRange().end());
+        TLE chiefTle = tleOf(body.chief());
+        TLE depTle = tleOf(deputy);
+        Propagator chiefProp = propagationService.propagatorFor(chiefTle, chiefStreamFidelity(body.fidelity()));
+        double n = chiefTle.getMeanMotion();
+
+        List<Impulse> impulses = new ArrayList<>();
+        List<ManeuverDraft> drafts = new ArrayList<>();
+        for (int k = 0; k < corrections; k++) {
+            Instant epoch = startInstant.plusNanos(Math.round(k * intervalSec * 1.0e9));
+            // Need a full interval before the window ends to target the next station point.
+            if (epoch.plusNanos(Math.round(intervalSec * 1.0e9)).isAfter(endInstant)) {
+                break;
+            }
+            AbsoluteDate t = new AbsoluteDate(epoch, utc);
+            // Rebuild the deputy with the corrections applied so far → its REAL drifted state.
+            Propagator depProp = propagationService.propagatorFor(depTle, Fidelity.NUMERICAL, impulses);
+            double[] s = relativeStateLvlh(chiefProp, depProp, t);
+            double[] res = CwTargeting.twoImpulse(
+                    new double[] {s[0], s[1], s[2]}, new double[] {s[3], s[4], s[5]},
+                    rT, new double[] {0, 0, 0}, n, intervalSec);
+            if (res == null) {
+                throw new ScenarioValidationException(
+                        "the correction interval is near an integer number of orbits (CW-singular) — "
+                        + "pick a different interval");
+            }
+            impulses.add(new Impulse(t, res[0], res[1], res[2]));
+            drafts.add(new ManeuverDraft(deputyNoradId, epoch.toString(), "ric", res[0], res[1], res[2]));
+        }
+        if (drafts.isEmpty()) {
+            throw new ScenarioValidationException(
+                    "no corrections fit before the scenario end — shorten the interval or extend the window");
+        }
+        double total = 0.0;
+        for (ManeuverDraft d : drafts) {
+            total += Math.sqrt(d.r() * d.r() + d.i() * d.i() + d.c() * d.c());
+        }
+        return scenarioService.addManeuvers(id, drafts, String.format(
+                "%s station-keep @ %.0f m (%d corrections every %.0f s, Δv total %.2f m/s)",
+                axisNorm.toUpperCase(), distanceM, drafts.size(), intervalSec, total));
     }
 
     /** The fidelity the scenario flies the chief with (CW models the deputy relatively,

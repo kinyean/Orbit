@@ -9,18 +9,18 @@ becomes Decision 27 (still to write — see Remaining). This file is the **resum
 
 - **9A — Flight-ready rendezvous: ✅ done & verified.**
 - **9B — CW close-range templates + finite burns: ✅ done & verified** (NMC + V-bar/R-bar hold +
-  finite burns). Glideslope / closed-loop station-keeping **deferred** (see Remaining).
+  finite burns + glideslope + closed-loop station-keeping).
 - **9C — Monte Carlo + covariance: ✅ done & verified.**
 - **9D — Link budget / SNR: ✅ done** (`LinkBudgetComputer`, schema v6 `LinkBudget`,
   additive `linkBudgets` stream, `SensorPanel` fields + `Timeline` SNR band; `LinkBudgetComputerTests`).
 - **Docs (Decision 27, acceptance-criteria, user-stories, risks, roadmap, CLAUDE.md): ✅ done**
   (2026-06-29 — Decision 27 written, R16 resolved, R21 added).
 
-**Backend `./gradlew test` = 183 green** (was 152 at Phase 8 start; +5 for finite burns). Frontend
+**Phase 9 is COMPLETE.** Backend `./gradlew test` = **187 green** (was 152 at Phase 8 start). Frontend
 `type-check` + `build` green; `gen:api` regenerated. All slices verified on the live dev stack.
-**Committed 2026-06-29** on branch `Phase-9` (9A/9B/9C/9D + docs across two Phase-9 commits — the
-first without finite burns, the second adding them). Remaining work below is glideslope +
-closed-loop station-keeping (finish 9B).
+Committed on branch `Phase-9` across three commits (the Phase-9 base; finite burns; glideslope +
+station-keeping). Only explicitly-deferred niceties remain (optical NEP/QE detail; finite-burn glyph
+window). **Phase 10 next** — enterprise hardening (roadmap §10).
 
 ---
 
@@ -123,9 +123,10 @@ closed-loop station-keeping (finish 9B).
 
 ## Remaining work (next session, in priority order)
 
-> **Updated 2026-06-29:** items 1 (9D link budget) and 3 (docs) are now **done** — see Status
-> above. The only remaining Phase-9 code is **item 2 (deferred maneuvers)**: finite burns,
-> glideslope, closed-loop station-keeping.
+> **Updated 2026-06-29:** ALL items below are now **done** — 9D link budget, finite burns,
+> glideslope, closed-loop station-keeping, and the docs. **Phase 9 is complete.** Sections kept
+> for the record. Only explicitly-deferred niceties remain (optical NEP/QE detail; finite-burn
+> glyph window).
 
 ### 1. 9D — Link budget / SNR overlays (US-EVT-05, Gita) — ✅ DONE
 *(Built as below; kept for the record.)* Mirror the Phase-7/8 sampled-trajectory + additive-stream pattern.
@@ -162,10 +163,22 @@ closed-loop station-keeping (finish 9B).
   `ManeuverPanel` finite toggle (thrust + Isp) + a "finite" tag in the list. *Deviation from the sketch:*
   no stored `durationSec` (derived at build time); the ΔV glyph stays at the centred midpoint (the
   burn-window animation is a deferred nicety — the frontend doesn't carry the pinned mass).
-- **Glideslope (US-MAN-09) — ⬜ still deferred:** discretize a constant-closing-rate approach along
-  V-bar/R-bar into segments, each a `CwTargeting.twoImpulse` leg. **Closed-loop station-keeping
-  (US-MAN-10) — ⬜ still deferred:** propagate the relative orbit, detect drift past a tolerance, emit
-  corrective `CwTargeting` burns on an interval.
+- **Glideslope (US-MAN-09) — ✅ DONE (2026-06-29).** `ManeuverTemplateService.glideslope` discretizes
+  a constant-closing-rate V-bar/R-bar approach from `startRangeM` to `endRangeM` into `segments`
+  chained `CwTargeting.twoImpulse` legs (one corrective burn per waypoint — the departure burn
+  computed against the previous leg's arrival velocity) + a final park burn; constant closing speed
+  (each leg dt = legDist/closingRate). Rejects non-closing ranges / CW-singular legs / window overrun.
+  `POST /maneuvers/glideslope` + `GlideslopeRequest`; `applyGlideslope` + a glideslope form in
+  `ManeuverPanel`. Tests in `ManeuverTemplateServiceTests`. Dev-stack: 200 (7 burns), non-closing → 422.
+- **Closed-loop station-keeping (US-MAN-10) — ✅ DONE (2026-06-29).** `ManeuverTemplateService.stationKeep`
+  holds a V-bar/R-bar point with a corrective burn every `intervalSec` for `corrections` corrections
+  (bounded by the window). Genuinely closed-loop: each correction rebuilds the deputy's REAL (numerical,
+  corrections-so-far) propagator, reads back its drifted relative state in the chief LVLH (chief at the
+  stream fidelity), and solves the CW departure burn re-aiming at the point one interval later — so each
+  correction sees the prior drift. `POST /maneuvers/station-keep` + `StationKeepRequest`;
+  `applyStationKeep` + a station-keep form in `ManeuverPanel`. Tests in `ManeuverTemplateServiceTests`.
+  Dev-stack: 200 (6 corrections), window-overrun interval → 422. *(Cost note: rebuilding the numerical
+  propagator each correction is the dominant cost — `corrections` capped at 24.)*
 
 ### 3. Docs — ✅ DONE (2026-06-29)
 *(Decision 27 written; R16 resolved + R21 added; acceptance-criteria / user-stories / roadmap /

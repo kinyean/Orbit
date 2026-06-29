@@ -224,6 +224,14 @@ export interface State {
   applyHold: (
     deputyNoradId: number, axis: 'vbar' | 'rbar', distanceM: number, arrivalEpoch: string,
   ) => Promise<string | null>;
+  applyGlideslope: (
+    deputyNoradId: number, axis: 'vbar' | 'rbar',
+    startRangeM: number, endRangeM: number, closingRateMps: number, segments: number,
+  ) => Promise<string | null>;
+  applyStationKeep: (
+    deputyNoradId: number, axis: 'vbar' | 'rbar',
+    distanceM: number, intervalSec: number, corrections: number,
+  ) => Promise<string | null>;
 
   // Sensors & attitude (Phase 7, US-SENSE-01 / US-PROX-01). Edit → new version +
   // audit (backend) → reload so the stream re-emits FOV/attitude/events. Return an
@@ -696,6 +704,30 @@ export const useStore = create<State>((set, get) => ({
     const { error } = await api.POST('/scenarios/{id}/maneuvers/hold', {
       params: { path: { id } },
       body: { deputyNoradId, axis, distanceM, arrivalEpoch },
+    });
+    if (error) return errorMessage(error);
+    await get().loadScenario(id);
+    return null;
+  },
+
+  applyGlideslope: async (deputyNoradId, axis, startRangeM, endRangeM, closingRateMps, segments) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { error } = await api.POST('/scenarios/{id}/maneuvers/glideslope', {
+      params: { path: { id } },
+      body: { deputyNoradId, axis, startRangeM, endRangeM, closingRateMps, segments },
+    });
+    if (error) return errorMessage(error);
+    await get().loadScenario(id);
+    return null;
+  },
+
+  applyStationKeep: async (deputyNoradId, axis, distanceM, intervalSec, corrections) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { error } = await api.POST('/scenarios/{id}/maneuvers/station-keep', {
+      params: { path: { id } },
+      body: { deputyNoradId, axis, distanceM, intervalSec, corrections },
     });
     if (error) return errorMessage(error);
     await get().loadScenario(id);

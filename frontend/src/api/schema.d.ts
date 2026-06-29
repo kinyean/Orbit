@@ -148,6 +148,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/scenarios/{id}/maneuvers/station-keep": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["stationKeep"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/scenarios/{id}/maneuvers/rendezvous": {
         parameters: {
             query?: never;
@@ -238,6 +254,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["hohmann"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scenarios/{id}/maneuvers/glideslope": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["glideslope"];
         delete?: never;
         options?: never;
         head?: never;
@@ -627,6 +659,17 @@ export interface components {
             /** Format: double */
             ispSec?: number;
         };
+        StationKeepRequest: {
+            /** Format: int32 */
+            deputyNoradId?: number;
+            axis: string;
+            /** Format: double */
+            distanceM?: number;
+            /** Format: double */
+            intervalSec?: number;
+            /** Format: int32 */
+            corrections?: number;
+        };
         RendezvousRequest: {
             /** Format: int32 */
             deputyNoradId?: number;
@@ -685,6 +728,19 @@ export interface components {
             deputyNoradId?: number;
             /** Format: double */
             targetAltitudeKm?: number;
+        };
+        GlideslopeRequest: {
+            /** Format: int32 */
+            deputyNoradId?: number;
+            axis: string;
+            /** Format: double */
+            startRangeM?: number;
+            /** Format: double */
+            endRangeM?: number;
+            /** Format: double */
+            closingRateMps?: number;
+            /** Format: int32 */
+            segments?: number;
         };
         ConstraintRequest: {
             /** Format: int32 */
@@ -1032,6 +1088,32 @@ export interface operations {
             };
         };
     };
+    stationKeep: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StationKeepRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScenarioResponse"];
+                };
+            };
+        };
+    };
     rendezvous: {
         parameters: {
             query?: never;
@@ -1174,6 +1256,32 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["HohmannRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScenarioResponse"];
+                };
+            };
+        };
+    };
+    glideslope: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GlideslopeRequest"];
             };
         };
         responses: {

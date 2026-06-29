@@ -484,7 +484,7 @@ be expanded as we approach them.
 - US-EVT-04 ✅ — Timeline event annotations (eclipse bands, conjunction ticks, violation marks)
   + `EnvironmentPanel`.
 
-# Phase 9 — Advanced maneuvers & analysis 🔶 (in progress — Decision 27, [phase-9-plan.md](./phase-9-plan.md))
+# Phase 9 — Advanced maneuvers & analysis ✅ (done — Decision 27, [phase-9-plan.md](./phase-9-plan.md))
 
 ### US-MAN-06 — As Maya, I want a converged two-impulse rendezvous (not an open-loop sketch), so the deputy actually arrives at the chief. ✅ (9A)
 *Acceptance:* the two-impulse rendezvous defaults to a **differential corrector**
@@ -505,9 +505,11 @@ deputy traces a closed natural-motion ellipse in LVLH (`CwTargeting` + `Maneuver
 given distance + arrival epoch, with zero arrival velocity (`ManeuverTemplateService.hold`).
 *Maps to:* SRS §3.5.3; RPO approach geometries.
 
-### US-MAN-09 — Glideslope template. ⬜ *(deferred — discretize a constant-closing-rate approach into `CwTargeting.twoImpulse` legs; the primitive is in place)*
+### US-MAN-09 — As Maya, I want a glideslope template, so I can sketch a controlled constant-rate approach. ✅ (9B)
+*Acceptance:* `POST /maneuvers/glideslope` discretizes a constant-closing-rate approach along V-bar/R-bar from `startRangeM` to `endRangeM` into `segments` chained `CwTargeting.twoImpulse` legs (a corrective burn at each waypoint) + a final burn parking at rest; constant closing speed (leg duration scales with length). Rejects non-closing ranges / CW-singular legs / window overrun. `ManeuverTemplateServiceTests` (park-burn chain, strictly-increasing epochs). *Maps to:* RPO glideslope; SRS §3.5.3.
 
-### US-MAN-10 — Closed-loop station-keeping. ⬜ *(deferred — propagate the relative orbit, detect drift past tolerance, emit corrective `CwTargeting` burns on an interval)*
+### US-MAN-10 — As Frank, I want closed-loop station-keeping, so a deputy holds a point against real drift. ✅ (9B)
+*Acceptance:* `POST /maneuvers/station-keep` holds a V-bar/R-bar point with a corrective burn every `intervalSec` for `corrections` corrections (bounded by the window). Genuinely closed-loop: each correction rebuilds the deputy's real (numerical, corrections-so-far) propagator, reads back its drifted relative state, and solves the CW re-aiming burn — so each correction counters the prior drift. `ManeuverTemplateServiceTests` (one burn per interval; reject window overrun). *Maps to:* station-keeping; SRS §3.5.3.
 
 ### US-MAN-11 — As Maya, I want finite-burn maneuvers (thrust, Isp), so my ΔV plan reflects burns that take real time (and real propellant). ✅ (9B)
 *Acceptance:* a maneuver carries optional `thrustN` (N) + `ispSec` (s) (v6-additive on `Maneuver`/`Impulse`; null → impulsive). `PropagationService.buildManeuvered` realises a finite burn as an Orekit `ConstantThrustManeuver` of the Tsiolkovsky duration that achieves the intended ΔV, centred on the epoch (collapses to the impulse as thrust→∞; mass depleted via the rocket equation). `PropagationServiceTests` (finite ≈ equivalent impulse but ≫ the un-maneuvered track; duration achieves the target ΔV); thrust+Isp required together + positive, else 422. `ManeuverPanel` finite toggle. *Maps to:* SRS §3.5.2. *(Burn-window glyph animation deferred — the glyph sits at the centred midpoint.)*

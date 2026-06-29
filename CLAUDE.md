@@ -24,7 +24,7 @@ pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
 ## Current phase
-**Phase 9 in progress (9A/9B-core/9C/9D done) — advanced maneuvers & analysis.** Backend 178
+**Phase 9 complete (9A/9B/9C/9D) — advanced maneuvers & analysis.** Backend 187
 tests green, frontend type-check + build green. Rides the Phase 4–8 architecture exactly
 (sampled-trajectory `analysis/` computers, additive `scenario-relative` fields with `VERSION`
 still `"1"`, forward-additive `ScenarioBody` schema **v6**, single audited `ScenarioService`).
@@ -45,8 +45,12 @@ ordered collect). See [phase-9-plan.md](docs/phase-9-plan.md), Decision 27.
   realises a finite burn as an Orekit `ConstantThrustManeuver` of the Tsiolkovsky duration that
   achieves the ΔV (centred on the epoch → collapses to the impulse as thrust→∞; mass depleted via the
   rocket equation). CW/impulse-equivalent paths treat it as impulsive at the epoch (= midpoint).
-  `ManeuverPanel` finite toggle (thrust + Isp). **Deferred:** glideslope, closed-loop station-keeping
-  (the `CwTargeting` seam is ready).
+  `ManeuverPanel` finite toggle (thrust + Isp). **Glideslope (US-MAN-09):** a constant-closing-rate
+  V-bar/R-bar approach discretized into chained CW two-impulse legs (`ManeuverTemplateService.glideslope`)
+  + a final park burn; `POST /maneuvers/glideslope`. **Closed-loop station-keeping (US-MAN-10):**
+  periodic corrective burns holding a V-bar/R-bar point — genuinely closed-loop (each correction
+  rebuilds the deputy's real numerical propagator with the corrections so far, reads back its drifted
+  relative state, and re-aims via CW); `POST /maneuvers/station-keep`.
 - **9C — Monte Carlo + covariance (UC-6).** `analysis/MonteCarloService` perturbs the deputy ECI
   seed (Gaussian pos/vel) + maneuver ΔV (mag + pointing), propagates each sample in a **bounded**
   `ForkJoinPool` (≤6, caps memory), aggregates the cloud + per-epoch covariance ellipsoids
@@ -62,10 +66,11 @@ ordered collect). See [phase-9-plan.md](docs/phase-9-plan.md), Decision 27.
   range-doubling); streamed additively as `linkBudgets` (strided). `SensorPanel` link-budget
   fields + `Timeline` SNR band. **Deferred:** optical detector NEP/QE detail.
 
-`gen:api` regenerated (rendezvous-search / phasing / nmc / hold / monte-carlo / set-link-budget /
-finite-burn fields on the maneuver REST; stream `linkBudgets` stays WebSocket-only). **Remaining for
-Phase 9 done:** glideslope, closed-loop station-keeping (both on the `CwTargeting` seam).
-Backend **183 tests green**.
+`gen:api` regenerated (rendezvous-search / phasing / nmc / hold / glideslope / station-keep /
+monte-carlo / set-link-budget / finite-burn fields on the maneuver REST; stream `linkBudgets` stays
+WebSocket-only). Backend **187 tests green**. **Deferred (Decision 27):** optical detector NEP/QE
+link detail; the finite-burn ΔV-glyph burn-window animation. **Phase 10 next** — enterprise hardening
+(roadmap §10).
 
 **Measured-data ingestion — slices 1 & 2 complete (2026-06-22; feature track, not a roadmap
 phase).** Real flight telemetry (TELEOS-2 "Whole-Orbit Data" CSVs: measured GNSS ECI
