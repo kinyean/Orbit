@@ -21,6 +21,7 @@ import { createRibbon, type Ribbon } from '../proximity/ribbons';
 import { CameraRig, type CameraFocus } from '../proximity/cameraModes';
 import { createEarthBackdrop, type BackdropMode } from '../proximity/earthBackdrop';
 import { createSensorFov, type SensorFov } from '../proximity/sensors';
+import { buildMonteCarloLayer, type MonteCarloLayer } from '../proximity/montecarlo';
 
 // Marker / model colors. Chief = amber (matches the globe's CHIEF_RGB); deputies
 // cycle a palette matching the globe's SCENARIO_DEPUTY_PALETTE so a deputy is the
@@ -37,6 +38,17 @@ const FADE_HI = 20;
 
 function fmtDistance(m: number): string {
   return m >= 1000 ? `${(m / 1000).toFixed(m >= 100000 ? 0 : 1)} km` : `${m.toFixed(0)} m`;
+}
+
+/** Max chief-relative range a deputy reaches over its whole sampled window (m). Framing
+ *  uses this (not just the load instant) so the camera fits the entire relative orbit. */
+function deputyMaxRange(samples: Float64Array, stride: number): number {
+  let mx = 0;
+  for (let k = 0; k + stride <= samples.length; k += stride) {
+    const r = Math.hypot(samples[k + 1], samples[k + 2], samples[k + 3]);
+    if (r > mx) mx = r;
+  }
+  return mx;
 }
 
 /** Pair acquisition→loss events into in-view windows (ms) per sensorId (US-EVT-01). */
@@ -102,6 +114,12 @@ function eclipseLitFactor(intervals: EclipseInterval[], noradId: number, tMs: nu
  */
 export default function ProximityView() {
   const containerRef = useRef<HTMLDivElement>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const mcLayerRef = useRef<MonteCarloLayer | null>(null);
+  // Re-frame the camera on the current craft (set inside the scene effect; called by the
+  // "Fit" button). Plus the current grid scale, shown in the legend.
+  const fitRef = useRef<(() => void) | null>(null);
+  const [gridInfo, setGridInfo] = useState<{ cellM: number; spanM: number } | null>(null);
   const readoutRef = useRef<HTMLDivElement>(null);
 
   // Low-frequency, user-driven UI state (Decision 5 governs HIGH-freq data only —
@@ -187,6 +205,7 @@ export default function ProximityView() {
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0a0e1a);
+    sceneRef.current = scene; // exposed so the Monte Carlo effect can attach its overlay
 
     // Light rig. Phase 8 (US-ENV-03): when the stream carries a Sun vector the key
     // light tracks the real Sun direction (so the Earth + models show a correct
@@ -285,6 +304,41 @@ export default function ProximityView() {
       ribbons = [];
     };
 
+    // Re-frame the camera + axes/grid so a span of ~maxDist fits, and publish the grid
+    // scale for the legend. Factored out so the "Fit" button can re-frame on demand.
+    const frameTo = (maxDist: number) => {
+      const md = Math.max(maxDist, 1); // guard against a zero/degenerate span
+      scene.remove(axes);
+      axes.dispose();
+      axes = new THREE.AxesHelper(md);
+      scene.add(axes);
+      scene.remove(grid);
+      grid.geometry.dispose();
+      (grid.material as THREE.Material).dispose();
+      grid = new THREE.GridHelper(md * 2, 10, 0x334155, 0x1e293b);
+      grid.rotation.x = Math.PI / 2;
+      scene.add(grid);
+      recomputeProjScale(Math.max(1, container.clientHeight));
+      const fit = md * 1.8 + 100;
+      camera.position.set(fit, fit * 0.6, fit);
+      controls.maxDistance = Math.max(2e5, fit * 4);
+      controls.update();
+      setGridInfo({ cellM: (md * 2) / 10, spanM: md * 2 }); // 10 divisions → cell = span/10
+    };
+
+    // Frame extent from the CRAFT, not sensor ranges (a sensor's max-range can be hundreds
+    // of km and would zoom the camera uselessly far out): the chief-model floor expanded by
+    // the farthest range any deputy reaches over the window.
+    const computeMaxDist = (): number => {
+      const data = getRelativeData();
+      let md = (models[0]?.radius ?? 10) * 4;
+      for (const dep of data?.deputies ?? []) {
+        md = Math.max(md, deputyMaxRange(dep.samples, dep.stride));
+      }
+      return md;
+    };
+    fitRef.current = () => frameTo(computeMaxDist());
+
     const rebuild = () => {
       const data = getRelativeData();
       builtVersion = getRelativeVersion();
@@ -292,8 +346,6 @@ export default function ProximityView() {
       rig.reset();
       lastFocus = 'external';
       lastDeputy = 0;
-
-      const h = Math.max(1, container.clientHeight);
 
       // Chief model at the origin. Seed its orientation from the streamed attitude
       // (Phase 7) at t=0, falling back to the fixed LVLH pose; the loop keeps it live.
@@ -312,9 +364,6 @@ export default function ProximityView() {
       // zoom) and from the chief's own sensor cones (so a single craft + FOV still
       // frames). Deputy positions expand it below.
       let maxDist = chief.radius * 4; // ~40 m → the 10 m model renders as geometry on load
-      for (const s of data?.chief?.sensors ?? []) {
-        maxDist = Math.max(maxDist, s.maxRangeM > 0 ? s.maxRangeM : 1000);
-      }
       const out: [number, number, number] = [0, 0, 0];
       data?.deputies.forEach((dep, i) => {
         const color = DEPUTY_COLORS[i % DEPUTY_COLORS.length];
@@ -326,7 +375,8 @@ export default function ProximityView() {
         models.push(m);
         ribbons.push(createRibbon(dep.samples, dep.stride, color));
         if (dep.sensors.length) buildSensors(m, dep.sensors, color);
-        maxDist = Math.max(maxDist, Math.hypot(out[0], out[1], out[2]));
+        // Frame to the whole relative orbit, not just the load instant.
+        maxDist = Math.max(maxDist, deputyMaxRange(dep.samples, dep.stride));
       });
       for (const r of ribbons) {
         scene.add(r.predicted);
@@ -352,23 +402,8 @@ export default function ProximityView() {
       ];
       setSunLighting(!!data?.sunVector);
 
-      // Auto-frame: resize axes/grid + place the camera so the deputies fit.
-      scene.remove(axes);
-      axes.dispose();
-      axes = new THREE.AxesHelper(maxDist);
-      scene.add(axes);
-      scene.remove(grid);
-      grid.geometry.dispose();
-      (grid.material as THREE.Material).dispose();
-      grid = new THREE.GridHelper(maxDist * 2, 10, 0x334155, 0x1e293b);
-      grid.rotation.x = Math.PI / 2;
-      scene.add(grid);
-
-      recomputeProjScale(h);
-      const fit = maxDist * 1.8 + 100;
-      camera.position.set(fit, fit * 0.6, fit);
-      controls.maxDistance = Math.max(2e5, fit * 4);
-      controls.update();
+      // Auto-frame to the craft (camera + axes/grid + the legend scale label).
+      frameTo(maxDist);
     };
 
     // ΔV maneuver glyphs (US-MAN-04): one arrow per maneuver, shown when the clock
@@ -619,8 +654,37 @@ export default function ProximityView() {
       if (renderer.domElement.parentElement === container) {
         container.removeChild(renderer.domElement);
       }
+      sceneRef.current = null;
     };
   }, []);
+
+  // Monte Carlo overlay (Phase 9C, UC-6): build the cloud + ellipsoid layer from the
+  // static Zustand result and attach it to the scene; rebuild on a new result or a
+  // visibility toggle, dispose the old one. (Static geometry — no per-frame work.)
+  const monteCarlo = useStore((s) => s.monteCarlo);
+  const monteCarloVisible = useStore((s) => s.monteCarloVisible);
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return undefined;
+    if (mcLayerRef.current) {
+      scene.remove(mcLayerRef.current.group);
+      mcLayerRef.current.dispose();
+      mcLayerRef.current = null;
+    }
+    if (monteCarlo && monteCarloVisible) {
+      const layer = buildMonteCarloLayer(monteCarlo);
+      mcLayerRef.current = layer;
+      scene.add(layer.group);
+    }
+    return () => {
+      const sc = sceneRef.current;
+      if (mcLayerRef.current) {
+        if (sc) sc.remove(mcLayerRef.current.group);
+        mcLayerRef.current.dispose();
+        mcLayerRef.current = null;
+      }
+    };
+  }, [monteCarlo, monteCarloVisible]);
 
   // Flat list of sensor camera options (US-SENSE-05): chief sensors, then each
   // deputy's. modelIdx is the index into the proximity `models[]` array (0 = chief).
@@ -680,6 +744,14 @@ export default function ProximityView() {
           </select>
         </label>
         <div className="prox-ctrl">
+          <span>Re-frame</span>
+          <div className="prox-seg">
+            <button onClick={() => fitRef.current?.()} title="Re-frame the camera to fit the spacecraft (no zoom-hunting)">
+              Fit
+            </button>
+          </div>
+        </div>
+        <div className="prox-ctrl">
           <span>Backdrop</span>
           <div className="prox-seg">
             {(['earth', 'stars', 'off'] as BackdropMode[]).map((m) => (
@@ -732,6 +804,9 @@ export default function ProximityView() {
         chief <span style={{ color: '#ffd166' }}>●</span> · R<span style={{ color: '#f87171' }}>x</span>{' '}
         I<span style={{ color: '#4ade80' }}>y</span> C<span style={{ color: '#60a5fa' }}>z</span>
         <span className="proximity-caveat"> · orientation: {orientationLabel}</span>
+        {gridInfo && (
+          <span className="proximity-caveat"> · grid {fmtDistance(gridInfo.cellM)}/sq (span {fmtDistance(gridInfo.spanM)})</span>
+        )}
         <span ref={readoutRef} className="proximity-scale" />
       </div>
     </div>

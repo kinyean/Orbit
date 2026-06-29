@@ -6,6 +6,7 @@ import {
   subscribeRelative,
   buildEclipseIntervals,
   type SensorEvent,
+  type LinkBudgetSeriesData,
 } from '../stream/relativeBuffer';
 
 // Same deputy palette as ProximityView / RelativeReadout (color identity).
@@ -48,6 +49,55 @@ function buildFovWindows(events: SensorEvent[], lo: number, hi: number): FovWind
     if (open !== null) windows.push({ key: `${k}-tail`, startMs: open, endMs: hi, label: k });
   }
   return windows;
+}
+
+interface SnrInterval {
+  key: string;
+  hostId: number;
+  sensorId: string;
+  targetId: number;
+  startMs: number;
+  endMs: number;
+}
+
+/**
+ * Intervals where a link's SNR is below its detection threshold (Phase 9D, US-EVT-05) —
+ * the "weak link" red bands. Each {@code series} is [t(sec from epoch), snr(dB), …]; the
+ * threshold crossings are linearly interpolated, mirroring the eclipse/FOV banding.
+ */
+function buildSnrWeakIntervals(lbs: LinkBudgetSeriesData[], epochMs: number): SnrInterval[] {
+  const out: SnrInterval[] = [];
+  for (const lb of lbs) {
+    const s = lb.series;
+    const thr = lb.thresholdDb;
+    let segStart: number | null = null;
+    let prevMs = 0;
+    let prevSnr = 0;
+    let havePrev = false;
+    const cross = (aMs: number, aSnr: number, bMs: number, bSnr: number) =>
+      bSnr === aSnr ? bMs : aMs + ((thr - aSnr) / (bSnr - aSnr)) * (bMs - aMs);
+    for (let i = 0; i + 1 < s.length; i += 2) {
+      const tMs = epochMs + s[i] * 1000;
+      const snr = s[i + 1];
+      const weak = snr < thr;
+      if (weak && segStart === null) {
+        segStart = havePrev && prevSnr >= thr ? cross(prevMs, prevSnr, tMs, snr) : tMs;
+      } else if (!weak && segStart !== null) {
+        const endMs = havePrev && prevSnr < thr ? cross(prevMs, prevSnr, tMs, snr) : tMs;
+        out.push({ key: `${lb.hostId}|${lb.sensorId}|${lb.targetId}-${segStart}`,
+          hostId: lb.hostId, sensorId: lb.sensorId, targetId: lb.targetId, startMs: segStart, endMs });
+        segStart = null;
+      }
+      prevMs = tMs;
+      prevSnr = snr;
+      havePrev = true;
+    }
+    if (segStart !== null) {
+      out.push({ key: `${lb.hostId}|${lb.sensorId}|${lb.targetId}-tail`,
+        hostId: lb.hostId, sensorId: lb.sensorId, targetId: lb.targetId, startMs: segStart, endMs: prevMs });
+    }
+  }
+  return out;
 }
 
 /** Compact UTC label for the scrub-bar endpoints. */
@@ -118,6 +168,10 @@ export default function Timeline() {
     (v) => v.type === 'violation-start' && v.epochMs >= lo && v.epochMs <= hi,
   );
 
+  // Link-budget weak-SNR bands (US-EVT-05): red where SNR < the detection threshold.
+  const snrWeak = buildSnrWeakIntervals(rel?.linkBudgets ?? [], rel?.epochMs ?? 0)
+    .filter((w) => w.endMs >= lo && w.startMs <= hi);
+
   // What is happening at the cursor time? (drives the hover tooltip). Lists the cursor
   // time, every band the cursor is inside, and any instant marks within ~8px.
   function describeAt(clientX: number): { leftPct: number; lines: string[] } | null {
@@ -157,6 +211,11 @@ export default function Timeline() {
     for (const { dep } of tcaTicks) {
       if (Math.abs((dep.tcaEpochMs as number) - tMs) <= tol) {
         lines.push(`╎ closest approach — ${dep.name}${dep.tcaDistanceM !== null ? ` · ${(dep.tcaDistanceM / 1000).toFixed(2)} km` : ''}`);
+      }
+    }
+    for (const w of snrWeak) {
+      if (tMs >= w.startMs && tMs <= w.endMs) {
+        lines.push(`▽ SNR below threshold — ${sensorNameById.get(w.sensorId) ?? 'link'} on ${nm(w.hostId)} → ${nm(w.targetId)}`);
       }
     }
     return { leftPct: frac * 100, lines };
@@ -200,6 +259,25 @@ export default function Timeline() {
                 const sensor = sensorNameById.get(s) ?? 'sensor';
                 return `Sensor in view · ${sensor} on ${nm(Number(h))} sees ${nm(Number(t))} · ${hhmm(a)}–${hhmm(b)}`;
               })()}
+            />
+          );
+        })}
+        {snrWeak.map((w) => {
+          const a = Math.max(lo, w.startMs);
+          const b = Math.min(hi, w.endMs);
+          return (
+            <span
+              key={w.key}
+              style={{
+                position: 'absolute',
+                left: `${((a - lo) / span) * 100}%`,
+                width: `${Math.max(0.4, ((b - a) / span) * 100)}%`,
+                bottom: 0,
+                height: '30%',
+                background: 'rgba(248, 113, 113, 0.5)',
+                pointerEvents: 'none',
+              }}
+              title={`SNR below threshold · ${sensorNameById.get(w.sensorId) ?? 'link'} on ${nm(w.hostId)} → ${nm(w.targetId)} · ${hhmm(a)}–${hhmm(b)}`}
             />
           );
         })}

@@ -358,19 +358,23 @@ end-to-end on the dev stack.
   two-stage shell-prune + fine refine) → sorted results table + CSV (UC-7); a snapshot vs the
   live catalog (R11 caveat).
 
-### Phase 9 — Advanced maneuvers & analysis
-- **Flight-ready rendezvous** — move the two-impulse Lambert template (Phase 5C) from an
-  open-loop two-body *sketch* toward a converged plan: a **differential corrector** against
-  the real propagators (fixes the R16 model-mismatch miss), an **arrival-time × revolution
-  ΔV search** (so finding a cheap/feasible transfer isn't trial-and-error), and a
-  **phasing-orbit planner** (the realistic multi-rev co-elliptic approach). See
-  [phase-6-plan.md](./phase-6-plan.md) "Future improvements" + risks R16.
-- Maneuver templates: glideslope, V-bar/R-bar hold, NMC ellipse,
-  station-keeping (closed-loop terminal approaches on the existing CW engine).
-- Finite-burn maneuvers (thrust, Isp, duration).
-- Monte Carlo dispersion on initial state + maneuver execution.
-- Covariance ellipsoids in the relative frame.
-- Link budget / SNR overlays for RF and optical sensors.
+### Phase 9 — Advanced maneuvers & analysis 🔶 (in progress — 9A/9B-core/9C/9D done; see [phase-9-plan.md](./phase-9-plan.md), Decision 27)
+Sliced 9A/9B/9C/9D. Rides the Phase 4–8 architecture (sampled-trajectory `analysis/` computers,
+additive `scenario-relative` fields — `VERSION` stays `"1"`, forward-additive `ScenarioBody`
+schema **v6**, single audited `ScenarioService`). Backend 178 tests green; frontend type-check +
+build green; verified on the dev stack. Resolves **R16**; introduces the first **seeded RNG**
+(determinism held — per-sample seed + ordered collect).
+- ✅ **9A — Flight-ready rendezvous** — moves the two-impulse Lambert template (Phase 5C) from an
+  open-loop two-body *sketch* to a converged plan: a **differential corrector**
+  (`RendezvousCorrector`) against the real propagators (fixes the R16 model-mismatch miss), an
+  **arrival × revolution ΔV search** (`RendezvousSearchService`), and a **phasing-orbit planner**.
+- ✅ **9B core — CW close-range templates** — NMC ellipse + V-bar/R-bar hold (`CwTargeting` +
+  `ManeuverTemplateService.nmc`/`hold`). ⬜ *Deferred:* glideslope, closed-loop station-keeping,
+  finite-burn maneuvers (thrust, Isp, duration) — the `CwTargeting`/schema-v6 seams are in place.
+- ✅ **9C — Monte Carlo + covariance** — dispersion on initial state + maneuver execution +
+  covariance ellipsoids in the relative frame (`MonteCarloService`, UC-6).
+- ✅ **9D — Link budget / SNR overlays** for RF and optical sensors (`LinkBudgetComputer`,
+  schema-v6 `LinkBudget` on a sensor). ⬜ *Deferred:* optical detector NEP/QE detail.
 
 ### Phase 10 — Enterprise hardening
 - Real OIDC/SAML integration + RBAC roles activated.

@@ -12,6 +12,7 @@ import ScenarioPanel from './scenario/ScenarioPanel';
 import ManeuverPanel from './scenario/ManeuverPanel';
 import SensorPanel from './scenario/SensorPanel';
 import EnvironmentPanel from './scenario/EnvironmentPanel';
+import MonteCarloPanel from './scenario/MonteCarloPanel';
 import { useStore } from './store/useStore';
 import { startClockEngine } from './store/clockEngine';
 import './App.css';
@@ -136,6 +137,7 @@ export default function App() {
       {scenarioActive && <ManeuverPanel />}
       {scenarioActive && <SensorPanel />}
       {scenarioActive && <EnvironmentPanel />}
+      {scenarioActive && <MonteCarloPanel />}
       <StatsOverlay />
       {scenarioActive && (
         <button

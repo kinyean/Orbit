@@ -609,12 +609,78 @@ cone); Sun occlusion / sun-keep-out (Phase 8); GPU-depth occlusion of the drawn 
 
 ---
 
-## Phase 9 onwards
+## Phase 9 — Advanced maneuvers & analysis
 
-Acceptance criteria for Phases 9–11 will be drafted when the respective
+> Sliced **9A / 9B / 9C / 9D** (see [phase-9-plan.md](./phase-9-plan.md), Decision 27).
+>
+> **In progress — 9A / 9B-core / 9C / 9D done; backend 178 tests green + frontend
+> type-check/build green** (2026-06-29). New `analysis/` computers (`RendezvousSearchService`,
+> `MonteCarloService`, `LinkBudgetComputer`) + `scenario/RendezvousCorrector` + `prop/CwTargeting`
+> on the Phase-7/8 sampled-trajectory pattern; `ScenarioBody` schema **v6** (optional `LinkBudget`
+> on a sensor); additive `scenario-relative` `linkBudgets`; new rendezvous-search / phasing / nmc /
+> hold / monte-carlo / set-link-budget REST. Resolves **R16**; first **seeded RNG** (determinism
+> held, **R21**). **Remaining:** finite burns (US-MAN-11), glideslope (US-MAN-09), closed-loop
+> station-keeping (US-MAN-10).
+
+**9A — flight-ready rendezvous (US-MAN-06; closes R16)** ✅
+- [x] Two-impulse rendezvous defaults to a **differential corrector** (`RendezvousCorrector`,
+      damped Gauss-Newton/LM + backtracking line search + domain-exit fallback + ΔV/iter caps)
+      against the real propagators; corrected miss <1 m where the raw two-body plan missed by km
+      (`RendezvousCorrectorTests`). Byte-identical rerun (R11). Non-convergence → open-loop seed +
+      audit-summary warning (not a 422).
+- [x] Arrival × revolution Lambert ΔV **search** (`RendezvousSearchService` — serial chief-grid +
+      parallel cells); `POST /maneuvers/rendezvous/search` (`RendezvousSearchServiceTests`).
+- [x] **Phasing** co-elliptic template (`ManeuverTemplateService.phasing`, window-guarded);
+      `POST /maneuvers/phasing`. `RendezvousRequest` gained `corrected`/`nRev`.
+
+**9B core — CW close-range templates (US-MAN-07/08)** ✅ *(US-MAN-09/10/11 deferred)*
+- [x] `prop/CwTargeting` — analytic CW STM blocks matching `CwPropagation.advance` +
+      `twoImpulse(r0,v0,rT,vT,n,dt)` (null at the integer-rev singularity); `CwTargetingTest`
+      (lands-on-target, NMC closed loop, integer-rev null).
+- [x] **NMC ellipse** (`ManeuverTemplateService.nmc`, `vy=−2nx`); `POST /maneuvers/nmc`.
+- [x] **V-bar / R-bar hold** (`ManeuverTemplateService.hold`, CW two-impulse to a hold point, zero
+      arrival velocity); `POST /maneuvers/hold`. `relativeStateLvlh` (rotating-LVLH relative state, R15).
+- [ ] Glideslope (US-MAN-09) — deferred (discretize into `CwTargeting.twoImpulse` legs).
+- [ ] Closed-loop station-keeping (US-MAN-10) — deferred (drift-detect + corrective `CwTargeting` burns).
+- [ ] Finite-burn maneuvers (US-MAN-11) — deferred (schema-v6 finite fields + Orekit
+      `ConstantThrustManeuver` branch in `PropagationService.buildManeuvered`).
+
+**9C — Monte Carlo + covariance (US-MC-01/02, UC-6)** ✅
+- [x] `POST /scenarios/{id}/monte-carlo` (`MonteCarloService`): per-sample Gaussian perturbation of
+      the deputy ECI seed (pos/vel) + maneuver ΔV (magnitude + pointing tilt), default 100 / cap 500,
+      bounded `ForkJoinPool` (≤6). **Bit-identical on the same seed, pool-independent** (per-sample
+      `SplittableRandom(mix(seed,i))`, fixed draw order, index-ordered collect — `MonteCarloServiceTests`;
+      §5.4.1, R11, R21). Zero-uncertainty → nominal; recovers input σ.
+- [x] Per-epoch covariance ellipsoids (Hipparchus `EigenDecompositionSymmetric` → ordered,
+      sign-canonicalized, right-handed → three.js quaternion via `FrameService.matrixToQuaternionXyzw`);
+      3σ shells + cloud rendered (`proximity/montecarlo.ts`, `MonteCarloPanel.tsx`).
+
+**9D — link budget / SNR (US-EVT-05, UC-4)** ✅
+- [x] `ScenarioBody` schema **v6** — optional `LinkBudget` (`kind`, `eirpDbw`, `gOverTdbK`,
+      `frequencyGhz`, `bandwidthHz`, `thresholdDb`) on a `Sensor`, forward-additive (null on v1–v5;
+      re-stamped on save; no DB migration). Authored via the audited `setLinkBudget`.
+- [x] `analysis/LinkBudgetComputer` on the sampled trajectory — Friis
+      `SNR(r)=EIRP+G/T−Lfs(r)+228.6−10log10(B)`, ~6 dB per range-doubling, deterministic;
+      `LinkBudgetComputerTests` (inverse-square drop, threshold crossing). Streamed additively as
+      `linkBudgets` (strided to a bounded point count); `SensorPanel` fields + `Timeline` SNR band.
+- [ ] Optical detector NEP/QE model — deferred (the Friis form with optical-band params is v1).
+
+**Invariants** ✅
+- [x] `scenario-relative` additions (`linkBudgets`) are optional trailing fields; `VERSION` stays
+      `"1"` (R12). New REST regenerates the client (`gen:api`); `linkBudgets` stays WebSocket-only.
+      Determinism (R11) holds — Monte Carlo introduces the first **seeded** RNG but stays
+      bit-identical (per-sample seed + ordered collect, **R21**); the corrector/search/templates are
+      pure-deterministic. Frame discipline (R15): rendezvous/CW relative states route through
+      `FrameService` (`relativeStateLvlh`), MC cloud expressed chief-LVLH.
+
+---
+
+## Phase 10 onwards
+
+Acceptance criteria for Phases 10–11 will be drafted when the respective
 phase begins, informed by what we learned in earlier phases. The
-[user-stories outline](./user-stories.md#phase-9--advanced-maneuvers--analysis-outline)
-seeds each phase; the SRS clauses they map to are the verification source.
+[user-stories outline](./user-stories.md) seeds each phase; the SRS clauses
+they map to are the verification source.
 
 ---
 

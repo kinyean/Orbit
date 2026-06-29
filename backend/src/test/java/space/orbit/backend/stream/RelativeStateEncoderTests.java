@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import space.orbit.backend.analysis.LinkBudgetSeries;
 import space.orbit.backend.scenario.ScenarioBody;
 
 /**
@@ -34,7 +35,7 @@ class RelativeStateEncoderTests {
     void envelopeCarriesContractMetadata() throws Exception {
         String json = encoder.encodeRelative(
                 Instant.parse("2026-06-02T01:00:00Z"), 30, 25544, null, List.of(), List.of(deputyWithVelocity()), true,
-                "cw", 5000.0, 0.0006703, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of());
+                "cw", 5000.0, 0.0006703, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of(), List.of());
         JsonNode root = mapper.readTree(json);
 
         assertThat(root.get("contractVersion").asText()).isEqualTo(StreamContract.VERSION);
@@ -58,7 +59,7 @@ class RelativeStateEncoderTests {
     void deputyHasClampedDegreeAndRoundedSamples() throws Exception {
         String json = encoder.encodeRelative(
                 Instant.parse("2026-06-02T01:00:00Z"), 30, 25544, null, List.of(), List.of(deputyWithVelocity()), true,
-                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of());
+                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of(), List.of());
         JsonNode dep = mapper.readTree(json).get("deputies").get(0);
 
         assertThat(dep.get("noradId").asInt()).isEqualTo(25545);
@@ -83,7 +84,7 @@ class RelativeStateEncoderTests {
         var dep = new RelativeSamples(25545, "DEPUTY-1", 1, s, null, 0.0);
         String json = encoder.encodeRelative(
                 Instant.parse("2026-06-02T01:00:00Z"), 30, 25544, null, List.of(), List.of(dep), false,
-                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of());
+                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of(), List.of());
         JsonNode deputy = mapper.readTree(json).get("deputies").get(0);
         assertThat(deputy.has("tcaEpoch")).isFalse();
         assertThat(deputy.has("tcaDistanceM")).isFalse();
@@ -96,7 +97,7 @@ class RelativeStateEncoderTests {
         var deputy = new RelativeSamples(25545, "DEPUTY-1", 3, s, null, 0.0);
         String json = encoder.encodeRelative(
                 Instant.parse("2026-06-02T01:00:00Z"), 30, 25544, null, List.of(), List.of(deputy), false,
-                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of());
+                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of(), List.of());
         JsonNode root = mapper.readTree(json);
         assertThat(root.get("includeVelocity").asBoolean()).isFalse();
         assertThat(root.get("stride").asInt()).isEqualTo(4);
@@ -118,7 +119,7 @@ class RelativeStateEncoderTests {
 
         String json = encoder.encodeRelative(
                 Instant.parse("2026-06-02T01:00:00Z"), 30, 25544, chiefAtt, List.of(chiefSensor),
-                List.of(dep), true, "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of());
+                List.of(dep), true, "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of(), List.of());
         JsonNode root = mapper.readTree(json);
 
         // Chief block (Phase 7): attitude + sensors so its FOV renders.
@@ -147,7 +148,7 @@ class RelativeStateEncoderTests {
         var dep = new RelativeSamples(25545, "DEPUTY-1", 1, s, null, 0.0); // 6-arg: no att/sensors
         String json = encoder.encodeRelative(
                 Instant.parse("2026-06-02T01:00:00Z"), 30, 25544, null, List.of(), List.of(dep), false,
-                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of());
+                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of(), List.of());
         JsonNode root = mapper.readTree(json);
         JsonNode d0 = root.get("deputies").get(0);
         assertThat(d0.has("att")).isFalse();
@@ -164,7 +165,7 @@ class RelativeStateEncoderTests {
                 "acquisition", 25544, "cx", 25545, Instant.parse("2026-06-02T01:05:00Z"), 1500.0);
         String json = encoder.encodeRelative(
                 Instant.parse("2026-06-02T01:00:00Z"), 30, 25544, null, List.of(), List.of(dep), false,
-                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(ev), null, null, List.of(), List.of(), List.of());
+                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(ev), null, null, List.of(), List.of(), List.of(), List.of());
         JsonNode events = mapper.readTree(json).get("events");
         assertThat(events.isArray()).isTrue();
         assertThat(events.get(0).get("type").asText()).isEqualTo("acquisition");
@@ -186,7 +187,7 @@ class RelativeStateEncoderTests {
                 "umbra-ingress", 25545, Instant.parse("2026-06-02T01:10:00Z"));
         String json = encoder.encodeRelative(
                 Instant.parse("2026-06-02T01:00:00Z"), 30, 25544, null, List.of(), List.of(dep), false,
-                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), sun, moon, List.of(ecl), List.of(), List.of());
+                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), sun, moon, List.of(ecl), List.of(), List.of(), List.of());
         JsonNode root = mapper.readTree(json);
 
         // Sun/Moon direction arrays (stride 4); components rounded to 1e-6.
@@ -218,7 +219,7 @@ class RelativeStateEncoderTests {
         String json = encoder.encodeRelative(
                 Instant.parse("2026-06-02T01:00:00Z"), 30, 25544, null, List.of(), List.of(dep), false,
                 "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), null, null, List.of(),
-                List.of(conj), List.of(viol));
+                List.of(conj), List.of(viol), List.of());
         JsonNode root = mapper.readTree(json);
 
         JsonNode c0 = root.get("conjunctions").get(0);
@@ -242,7 +243,7 @@ class RelativeStateEncoderTests {
         var dep = new RelativeSamples(25545, "DEPUTY-1", 1, s, null, 0.0);
         String json = encoder.encodeRelative(
                 Instant.parse("2026-06-02T01:00:00Z"), 30, 25544, null, List.of(), List.of(dep), false,
-                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of());
+                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of(), List.of());
         JsonNode root = mapper.readTree(json);
         assertThat(root.has("sunVector")).isFalse();
         assertThat(root.has("moonVector")).isFalse();
@@ -255,8 +256,26 @@ class RelativeStateEncoderTests {
         var dep = new RelativeSamples(1, "X", 5, s, null, 0.0);
         String json = encoder.encodeRelative(
                 Instant.parse("2026-06-02T01:00:00Z"), 30, 99, null, List.of(), List.of(dep), false,
-                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of());
+                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of(), List.of());
         // interpolationDegree is min(5, requested); the requested degree here is 5 → 5.
         assertThat(mapper.readTree(json).get("deputies").get(0).get("interpolationDegree").asInt()).isEqualTo(5);
+    }
+
+    @Test
+    void carriesLinkBudgetSeries() throws Exception {
+        double[] s = {0, 1, 2, 3, 30, 4, 5, 6};
+        var dep = new RelativeSamples(1, "X", 5, s, null, 0.0);
+        var lb = new LinkBudgetSeries(25544, "s1", 1, "rf", 10.0, new double[] {0, 18.4, 300, 12.1});
+        String json = encoder.encodeRelative(
+                Instant.parse("2026-06-02T01:00:00Z"), 30, 25544, null, List.of(), List.of(dep), false,
+                "sgp4", 0.0, 0.0, 6_771_000.0, List.of(), null, null, List.of(), List.of(), List.of(), List.of(lb));
+        JsonNode root = mapper.readTree(json);
+        assertThat(root.get("contractVersion").asText()).isEqualTo("1");
+        JsonNode l0 = root.get("linkBudgets").get(0);
+        assertThat(l0.get("hostId").asInt()).isEqualTo(25544);
+        assertThat(l0.get("sensorId").asText()).isEqualTo("s1");
+        assertThat(l0.get("targetId").asInt()).isEqualTo(1);
+        assertThat(l0.get("thresholdDb").asDouble()).isEqualTo(10.0);
+        assertThat(l0.get("series").get(1).asDouble()).isEqualTo(18.4);
     }
 }

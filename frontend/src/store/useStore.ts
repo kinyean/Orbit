@@ -10,6 +10,30 @@ type ScenarioBodyT = components['schemas']['ScenarioBody'];
 /** Catalog conjunction screening result (Phase 8, US-EVT-02 / UC-7). */
 export type ScreeningResult = components['schemas']['ScreeningResult'];
 export type ConjunctionResult = components['schemas']['ConjunctionResult'];
+/** Rendezvous arrival×rev ΔV search (Phase 9A, US-MAN-03). */
+export type RendezvousSearchResult = components['schemas']['RendezvousSearchResult'];
+export type DvCell = components['schemas']['DvCell'];
+/** Monte Carlo dispersion result (Phase 9C, UC-6, US-MC-01/02). */
+export type MonteCarloResult = components['schemas']['MonteCarloResult'];
+export type EllipsoidSample = components['schemas']['EllipsoidSample'];
+/** RF/optical link-budget inputs (Phase 9D, US-EVT-05). */
+export interface LinkBudgetParams {
+  kind: string;
+  eirpDbw: number;
+  gOverTdbK: number;
+  frequencyGhz: number;
+  bandwidthHz: number;
+  thresholdDb: number;
+}
+/** Dispersion inputs (1-σ initial-state uncertainty + maneuver execution error). */
+export interface MonteCarloParams {
+  sampleCount: number;
+  seed: number;
+  posSigmaM: number;
+  velSigmaMs: number;
+  dvMagFrac: number;
+  dvPointingDeg: number;
+}
 
 /** The scenario currently loaded for playback (Phase 4): its id, name, and body. */
 export interface LoadedScenario {
@@ -123,6 +147,12 @@ export interface State {
   // live-window edge) — fine for composition.
   showCatalogInScenario: boolean;
 
+  // Monte Carlo dispersion (Phase 9C, UC-6). Static once computed → lives in Zustand
+  // (unlike the per-frame stream); the proximity view reads it to draw the cloud +
+  // ellipsoids. `visible` toggles the overlay.
+  monteCarlo: MonteCarloResult | null;
+  monteCarloVisible: boolean;
+
   // Clock control (frontend owns playback — Decision 11)
   setCurrentTime: (t: Date) => void;
   togglePlay: () => void;
@@ -174,7 +204,21 @@ export interface State {
   // Maneuver templates (Phase 5C, US-MAN-02/03). Compute ΔV server-side, insert,
   // and reload (re-propagate). Return an error message on failure (else null).
   applyHohmann: (deputyNoradId: number, targetAltitudeKm: number) => Promise<string | null>;
-  applyRendezvous: (deputyNoradId: number, arrivalEpoch: string) => Promise<string | null>;
+  // Flight-ready rendezvous (Phase 9A, US-MAN-03): `corrected` (default true) closes the
+  // loop against the real propagators (R16); `nRev` (from the search) fixes the rev count.
+  applyRendezvous: (
+    deputyNoradId: number, arrivalEpoch: string, corrected?: boolean, nRev?: number,
+  ) => Promise<string | null>;
+  // Arrival×rev ΔV search (Phase 9A): one-shot REST analysis → a sorted ΔV map, or an error.
+  searchRendezvous: (deputyNoradId: number) => Promise<RendezvousSearchResult | string>;
+  // Phasing-orbit rendezvous (Phase 9A, US-MAN-06): close the phase gap over N revs.
+  applyPhasing: (deputyNoradId: number, phasingRevs: number) => Promise<string | null>;
+  // Close-range CW templates (Phase 9B, US-MAN-07/08/09/10). Compute ΔV server-side, insert,
+  // reload. NMC = a bounded relative orbit; hold = park at a V-bar/R-bar point.
+  applyNmc: (deputyNoradId: number) => Promise<string | null>;
+  applyHold: (
+    deputyNoradId: number, axis: 'vbar' | 'rbar', distanceM: number, arrivalEpoch: string,
+  ) => Promise<string | null>;
 
   // Sensors & attitude (Phase 7, US-SENSE-01 / US-PROX-01). Edit → new version +
   // audit (backend) → reload so the stream re-emits FOV/attitude/events. Return an
@@ -182,6 +226,8 @@ export interface State {
   addSensor: (req: SensorRequest) => Promise<string | null>;
   removeSensor: (sensorId: string) => Promise<string | null>;
   setAttitude: (noradId: number, mode: 'lvlh' | 'fixed', quaternion?: number[]) => Promise<string | null>;
+  // Sensor link budget (Phase 9D, US-EVT-05). Set → SNR series stream; reload re-propagates.
+  setLinkBudget: (sensorId: string, params: LinkBudgetParams) => Promise<string | null>;
 
   // Constraints & conjunctions (Phase 8, US-EVT-02 / US-EVT-03). Same audited-edit
   // + reload pattern as sensors. Return an error message on failure (else null).
@@ -191,6 +237,11 @@ export interface State {
   // Catalog conjunction screening (Phase 8, US-EVT-02 / UC-7). One-shot REST
   // analysis → a sorted result, or an error message string.
   screenCatalog: (thresholdKm: number) => Promise<ScreeningResult | string>;
+  // Monte Carlo dispersion (Phase 9C, UC-6, US-MC-01/02). One-shot REST analysis held in
+  // Zustand; returns an error message string on failure (else null).
+  runMonteCarlo: (deputyNoradId: number, params: MonteCarloParams) => Promise<string | null>;
+  setMonteCarloVisible: (visible: boolean) => void;
+  clearMonteCarlo: () => void;
 }
 
 /** Add-constraint request shape (mirrors the backend ConstraintRequest DTO). */
@@ -305,6 +356,8 @@ export const useStore = create<State>((set, get) => ({
   proximityFocus: null,
   cameraResetNonce: 0,
   showCatalogInScenario: false,
+  monteCarlo: null,
+  monteCarloVisible: true,
 
   setCurrentTime: (t) => set({ currentTime: t }),
   togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),
@@ -582,12 +635,59 @@ export const useStore = create<State>((set, get) => ({
     return null;
   },
 
-  applyRendezvous: async (deputyNoradId, arrivalEpoch) => {
+  applyRendezvous: async (deputyNoradId, arrivalEpoch, corrected = true, nRev) => {
     const id = get().loadedScenario?.id;
     if (!id) return 'No scenario loaded';
     const { error } = await api.POST('/scenarios/{id}/maneuvers/rendezvous', {
       params: { path: { id } },
-      body: { deputyNoradId, arrivalEpoch },
+      body: { deputyNoradId, arrivalEpoch, corrected, nRev },
+    });
+    if (error) return errorMessage(error);
+    await get().loadScenario(id);
+    return null;
+  },
+
+  searchRendezvous: async (deputyNoradId) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { data, error } = await api.POST('/scenarios/{id}/maneuvers/rendezvous/search', {
+      params: { path: { id } },
+      body: { deputyNoradId },
+    });
+    if (error || !data) return errorMessage(error);
+    return data; // does NOT reload — a one-shot read-only ΔV map
+  },
+
+  applyPhasing: async (deputyNoradId, phasingRevs) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { error } = await api.POST('/scenarios/{id}/maneuvers/phasing', {
+      params: { path: { id } },
+      body: { deputyNoradId, phasingRevs },
+    });
+    if (error) return errorMessage(error);
+    await get().loadScenario(id);
+    return null;
+  },
+
+  applyNmc: async (deputyNoradId) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { error } = await api.POST('/scenarios/{id}/maneuvers/nmc', {
+      params: { path: { id } },
+      body: { deputyNoradId },
+    });
+    if (error) return errorMessage(error);
+    await get().loadScenario(id);
+    return null;
+  },
+
+  applyHold: async (deputyNoradId, axis, distanceM, arrivalEpoch) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { error } = await api.POST('/scenarios/{id}/maneuvers/hold', {
+      params: { path: { id } },
+      body: { deputyNoradId, axis, distanceM, arrivalEpoch },
     });
     if (error) return errorMessage(error);
     await get().loadScenario(id);
@@ -652,6 +752,18 @@ export const useStore = create<State>((set, get) => ({
     return null;
   },
 
+  setLinkBudget: async (sensorId, params) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { error } = await api.PUT('/scenarios/{id}/sensors/{sensorId}/link-budget', {
+      params: { path: { id, sensorId } },
+      body: params,
+    });
+    if (error) return errorMessage(error);
+    await get().loadScenario(id); // re-propagate: the SNR series re-emits
+    return null;
+  },
+
   setMissDistance: async (thresholdM) => {
     const id = get().loadedScenario?.id;
     if (!id) return 'No scenario loaded';
@@ -673,6 +785,20 @@ export const useStore = create<State>((set, get) => ({
     if (error || !data) return errorMessage(error);
     return data; // does NOT reload the scenario — a one-shot read-only analysis
   },
+
+  runMonteCarlo: async (deputyNoradId, params) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { data, error } = await api.POST('/scenarios/{id}/monte-carlo', {
+      params: { path: { id } },
+      body: { deputyNoradId, ...params },
+    });
+    if (error || !data) return errorMessage(error);
+    set({ monteCarlo: data, monteCarloVisible: true }); // static result → lives in Zustand
+    return null;
+  },
+  setMonteCarloVisible: (visible) => set({ monteCarloVisible: visible }),
+  clearMonteCarlo: () => set({ monteCarlo: null }),
 }));
 
 /** Pull a human message out of the generated client's error payload (422 etc.). */

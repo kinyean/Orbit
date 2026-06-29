@@ -1,7 +1,17 @@
 import { useState, useSyncExternalStore, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { useStore } from '../store/useStore';
+import { useStore, type RendezvousSearchResult, type DvCell } from '../store/useStore';
 import { getRelativeData, getRelativeVersion, subscribeRelative } from '../stream/relativeBuffer';
 import { useCollapsed, usePanelSize, usePanelPosition } from '../lib/usePanelChrome';
+
+/** Compact ΔV formatter — m/s, switching to km/s past 1000 (a garbage transfer tell). */
+function fmtDv(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(2)} km/s` : `${n.toFixed(1)} m/s`;
+}
+
+/** Pull a readable message out of a thrown value (so failures are never silent). */
+function msgOf(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
 
 const CW_MAX_SEPARATION_M = 10_000; // CW linearization validity (~10 km)
 const CW_MAX_ECCENTRICITY = 0.01; // CW assumes a near-circular chief
@@ -45,6 +55,10 @@ export default function ManeuverPanel() {
   const removeManeuver = useStore((s) => s.removeManeuver);
   const applyHohmann = useStore((s) => s.applyHohmann);
   const applyRendezvous = useStore((s) => s.applyRendezvous);
+  const searchRendezvous = useStore((s) => s.searchRendezvous);
+  const applyPhasing = useStore((s) => s.applyPhasing);
+  const applyNmc = useStore((s) => s.applyNmc);
+  const applyHold = useStore((s) => s.applyHold);
   // React to relative-buffer changes (carries the CW validity hint).
   useSyncExternalStore(subscribeRelative, getRelativeVersion);
 
@@ -55,6 +69,13 @@ export default function ManeuverPanel() {
   const [c, setC] = useState('0');
   const [targetAlt, setTargetAlt] = useState('');
   const [arrival, setArrival] = useState('');
+  const [phasingRevs, setPhasingRevs] = useState('');
+  const [holdAxis, setHoldAxis] = useState<'vbar' | 'rbar'>('vbar');
+  const [holdDist, setHoldDist] = useState('');
+  const [holdArrival, setHoldArrival] = useState('');
+  const [searchResult, setSearchResult] = useState<RendezvousSearchResult | null>(null);
+  const [selectedCell, setSelectedCell] = useState<DvCell | null>(null);
+  const [searching, setSearching] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   // Draggable position (defaults beside the scenario panel so it doesn't cover it),
   // persisted + viewport-clamped so a refresh keeps it on-screen.
@@ -121,7 +142,8 @@ export default function ManeuverPanel() {
   }
 
   async function onHohmann() {
-    if (selected == null || !targetAlt) return;
+    if (selected == null) { setMsg('Select a deputy first.'); return; }
+    if (!targetAlt) { setMsg('Enter a target altitude (km).'); return; }
     const alt = Number(targetAlt) || 0;
     // Instant feedback (the backend enforces this too): the field is an absolute
     // altitude above the surface, not a change — a low value just deorbits.
@@ -129,18 +151,92 @@ export default function ManeuverPanel() {
       setMsg(`Target is an absolute altitude (km above the surface), not a change — must be ≥ ${MIN_ALT_KM} km, else it re-enters.`);
       return;
     }
-    setMsg(null);
-    const err = await applyHohmann(selected, alt);
-    setMsg(err ?? `Hohmann inserted → ${targetAlt} km`);
+    setMsg('Computing Hohmann…');
+    try {
+      const err = await applyHohmann(selected, alt);
+      setMsg(err ?? `Hohmann inserted → ${targetAlt} km`);
+    } catch (e) {
+      setMsg(`Hohmann failed: ${msgOf(e)}`);
+    }
   }
 
   async function onRendezvous() {
-    if (selected == null || !arrival) return;
+    if (selected == null) { setMsg('Select a deputy first.'); return; }
+    if (!arrival) { setMsg('Enter an arrival time (or click Find and pick a row).'); return; }
     const d = new Date(`${arrival}:00Z`);
-    if (Number.isNaN(d.getTime())) return;
-    setMsg(null);
-    const err = await applyRendezvous(selected, d.toISOString());
-    setMsg(err ?? 'Lambert rendezvous inserted');
+    if (Number.isNaN(d.getTime())) { setMsg('Arrival time is invalid.'); return; }
+    setMsg('Correcting against the real propagators…');
+    try {
+      // corrected=true (default) closes R16; nRev from the chosen search cell if any.
+      const err = await applyRendezvous(selected, d.toISOString(), true, selectedCell?.nRev);
+      setMsg(err ?? 'Corrected rendezvous inserted — flies to the chief on the real model');
+      if (!err) { setSearchResult(null); setSelectedCell(null); }
+    } catch (e) {
+      setMsg(`Rendezvous failed: ${msgOf(e)}`);
+    }
+  }
+
+  async function onSearch() {
+    if (selected == null) { setMsg('Select a deputy first.'); return; }
+    setSearching(true);
+    setMsg('Searching transfers…');
+    try {
+      const res = await searchRendezvous(selected);
+      if (typeof res === 'string') { setMsg(res); return; }
+      setSearchResult(res);
+      setMsg(!res.cells || res.cells.length === 0
+        ? 'No feasible transfer in the window.'
+        : `Found ${res.cells.length} transfers — pick a row, then Insert.`);
+    } catch (e) {
+      setMsg(`Search failed: ${msgOf(e)}`);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function onPickCell(cell: DvCell) {
+    setSelectedCell(cell);
+    if (cell.arrivalEpoch) setArrival(toInput(cell.arrivalEpoch));
+  }
+
+  async function onPhasing() {
+    if (selected == null) { setMsg('Select a deputy first.'); return; }
+    if (!phasingRevs) { setMsg('Enter a number of revolutions (e.g. 3).'); return; }
+    const n = Math.round(Number(phasingRevs));
+    if (!(n >= 1)) { setMsg('Phasing needs at least 1 revolution.'); return; }
+    setMsg('Computing phasing…');
+    try {
+      const err = await applyPhasing(selected, n);
+      setMsg(err ?? `Phasing inserted (${n} rev${n === 1 ? '' : 's'})`);
+    } catch (e) {
+      setMsg(`Phasing failed: ${msgOf(e)}`);
+    }
+  }
+
+  async function onNmc() {
+    if (selected == null) { setMsg('Select a deputy first.'); return; }
+    setMsg('Computing NMC…');
+    try {
+      const err = await applyNmc(selected);
+      setMsg(err ?? 'NMC inserted — bounded relative orbit');
+    } catch (e) {
+      setMsg(`NMC failed: ${msgOf(e)}`);
+    }
+  }
+
+  async function onHold() {
+    if (selected == null) { setMsg('Select a deputy first.'); return; }
+    if (!holdDist) { setMsg('Enter a hold distance in metres (e.g. 500 ahead/above, −500 behind/below).'); return; }
+    if (!holdArrival) { setMsg('Enter a hold arrival time (within the scenario window).'); return; }
+    const d = new Date(`${holdArrival}:00Z`);
+    if (Number.isNaN(d.getTime())) { setMsg('Hold arrival time is invalid.'); return; }
+    setMsg('Computing hold…');
+    try {
+      const err = await applyHold(selected, holdAxis, Number(holdDist) || 0, d.toISOString());
+      setMsg(err ?? `${holdAxis.toUpperCase()} hold inserted at ${holdDist} m`);
+    } catch (e) {
+      setMsg(`Hold failed: ${msgOf(e)}`);
+    }
   }
 
   return (
@@ -257,7 +353,7 @@ export default function ManeuverPanel() {
               onChange={(e) => setTargetAlt(e.target.value)}
             />
           </label>
-          <button type="button" onClick={() => void onHohmann()} disabled={!targetAlt}>
+          <button type="button" onClick={() => void onHohmann()}>
             Insert
           </button>
         </div>
@@ -272,14 +368,115 @@ export default function ManeuverPanel() {
               onChange={(e) => setArrival(e.target.value)}
             />
           </label>
-          <button type="button" onClick={() => void onRendezvous()} disabled={!arrival}>
+          <button type="button" onClick={() => void onSearch()} disabled={searching} title="Sweep arrival × revolution count for the cheapest transfer">
+            {searching ? '…' : 'Find'}
+          </button>
+          <button type="button" onClick={() => void onRendezvous()}>
             Insert
           </button>
         </div>
+
+        {searchResult && searchResult.cells && searchResult.cells.length > 0 && (
+          <div className="mvr-search">
+            <div className="mvr-add-title">
+              ΔV map — cheapest first {selectedCell ? '(row selected)' : '(click a row)'}
+            </div>
+            <table className="mvr-search-table" style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ textAlign: 'left', opacity: 0.7 }}>
+                  <th>arrival</th><th>rev</th><th style={{ textAlign: 'right' }}>total Δv</th>
+                </tr>
+              </thead>
+              <tbody>
+                {searchResult.cells.slice(0, 10).map((cell, i) => {
+                  const isSel = selectedCell != null
+                    && cell.arrivalEpoch === selectedCell.arrivalEpoch && cell.nRev === selectedCell.nRev;
+                  return (
+                    <tr
+                      key={`${cell.arrivalEpoch}-${cell.nRev ?? i}`}
+                      onClick={() => onPickCell(cell)}
+                      style={{ cursor: 'pointer', background: isSel ? 'rgba(56,189,248,0.18)' : undefined }}
+                    >
+                      <td>{cell.arrivalEpoch?.slice(11, 16) ?? '—'}</td>
+                      <td>{cell.nRev ?? 0}</td>
+                      <td style={{ textAlign: 'right', color: (cell.totalDvMs ?? 0) >= DV_WARN_M_S ? '#f87171' : undefined }}>
+                        {fmtDv(cell.totalDvMs ?? 0)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div className="mvr-note">
+              Two-body costs (cheap selector). Pick one, then Insert runs the differential
+              corrector against the real propagators so the deputy actually arrives.
+            </div>
+          </div>
+        )}
+
+        <div className="mvr-template-row">
+          <label>
+            Phasing → revolutions
+            <input
+              type="number"
+              step="1"
+              min={1}
+              placeholder="e.g. 3"
+              value={phasingRevs}
+              onChange={(e) => setPhasingRevs(e.target.value)}
+            />
+          </label>
+          <button type="button" onClick={() => void onPhasing()}>
+            Insert
+          </button>
+        </div>
+
+        <div className="mvr-add-title" style={{ marginTop: 6 }}>Close-range (CW)</div>
+        <div className="mvr-template-row">
+          <label>
+            NMC → bounded relative orbit
+            <span className="mvr-note" style={{ marginTop: 0 }}>one in-track burn, no parameters</span>
+          </label>
+          <button type="button" onClick={() => void onNmc()} title="One in-track burn onto a bounded relative orbit">
+            Insert
+          </button>
+        </div>
+        <div className="mvr-template-row">
+          <label>
+            Hold → axis
+            <select value={holdAxis} onChange={(e) => setHoldAxis(e.target.value as 'vbar' | 'rbar')} aria-label="Hold axis">
+              <option value="vbar">V-bar (in-track)</option>
+              <option value="rbar">R-bar (radial)</option>
+            </select>
+          </label>
+          <label>
+            distance (m)
+            <input type="number" step="any" placeholder="±500" value={holdDist} onChange={(e) => setHoldDist(e.target.value)} />
+          </label>
+        </div>
+        <div className="mvr-template-row">
+          <label>
+            Hold → arrive (park there)
+            <input
+              type="datetime-local"
+              value={holdArrival}
+              min={minInput}
+              max={maxInput}
+              onChange={(e) => setHoldArrival(e.target.value)}
+              aria-label="Hold arrival"
+            />
+          </label>
+          <button type="button" onClick={() => void onHold()}>
+            Insert
+          </button>
+        </div>
+
         <div className="mvr-note">
-          Altitude is absolute (height above the surface, not a change). Rendezvous
-          departs at the scenario start and arrives at your time — keep it within the
-          window, between orbits that are actually near each other.
+          Altitude is absolute (height above the surface, not a change). Rendezvous departs
+          at the scenario start; the corrected transfer is closed-loop against the real
+          model. Phasing walks the along-track gap down over N revolutions (a two-body sketch).
+          NMC / hold are CW close-range templates (valid within ~10 km of the chief); signed
+          hold distance places the point ahead/behind (V-bar) or above/below (R-bar).
         </div>
         {msg && <div className="mvr-msg">{msg}</div>}
       </div>

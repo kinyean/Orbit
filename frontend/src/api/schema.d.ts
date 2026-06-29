@@ -20,6 +20,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/scenarios/{id}/sensors/{sensorId}/link-budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["setLinkBudget"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/scenarios/{id}/miss-distance": {
         parameters: {
             query?: never;
@@ -100,6 +116,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/scenarios/{id}/monte-carlo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["monteCarlo"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/scenarios/{id}/maneuvers": {
         parameters: {
             query?: never;
@@ -126,6 +158,70 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["rendezvous"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scenarios/{id}/maneuvers/rendezvous/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["searchRendezvous"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scenarios/{id}/maneuvers/phasing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["phasing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scenarios/{id}/maneuvers/nmc": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["nmc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scenarios/{id}/maneuvers/hold": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["hold"];
         delete?: never;
         options?: never;
         head?: never;
@@ -318,6 +414,19 @@ export interface components {
             tle?: components["schemas"]["Tle"];
             datasetId?: string;
         };
+        LinkBudget: {
+            kind?: string;
+            /** Format: double */
+            eirpDbw?: number;
+            /** Format: double */
+            gOverTdbK?: number;
+            /** Format: double */
+            frequencyGhz?: number;
+            /** Format: double */
+            bandwidthHz?: number;
+            /** Format: double */
+            thresholdDb?: number;
+        };
         Maneuver: {
             id?: string;
             kind?: string;
@@ -372,6 +481,7 @@ export interface components {
             /** Format: double */
             maxRangeM?: number;
             mount?: components["schemas"]["Mount"];
+            linkBudget?: components["schemas"]["LinkBudget"];
         };
         TimeRange: {
             start?: string;
@@ -381,6 +491,19 @@ export interface components {
             line1?: string;
             line2?: string;
             epoch?: string;
+        };
+        LinkBudgetRequest: {
+            kind?: string;
+            /** Format: double */
+            eirpDbw?: number;
+            /** Format: double */
+            gOverTdbK?: number;
+            /** Format: double */
+            frequencyGhz?: number;
+            /** Format: double */
+            bandwidthHz?: number;
+            /** Format: double */
+            thresholdDb?: number;
         };
         MissDistanceRequest: {
             /** Format: double */
@@ -438,6 +561,52 @@ export interface components {
             candidateCount?: number;
             conjunctions?: components["schemas"]["ConjunctionResult"][];
         };
+        MonteCarloRequest: {
+            /** Format: int32 */
+            deputyNoradId?: number;
+            /** Format: int32 */
+            sampleCount?: number;
+            /** Format: int64 */
+            seed?: number;
+            /** Format: double */
+            posSigmaM?: number;
+            /** Format: double */
+            velSigmaMs?: number;
+            /** Format: double */
+            dvMagFrac?: number;
+            /** Format: double */
+            dvPointingDeg?: number;
+        };
+        EllipsoidSample: {
+            /** Format: double */
+            tSeconds?: number;
+            center?: number[];
+            semiAxes1Sigma?: number[];
+            semiAxes3Sigma?: number[];
+            quaternion?: number[];
+        };
+        MonteCarloResult: {
+            /** Format: int32 */
+            deputyNoradId?: number;
+            name?: string;
+            /** Format: int64 */
+            seed?: number;
+            /** Format: int32 */
+            sampleCount?: number;
+            /** Format: int32 */
+            returnedTracks?: number;
+            ranAt?: string;
+            /** Format: int64 */
+            epochMs?: number;
+            /** Format: int32 */
+            stepSeconds?: number;
+            /** Format: int32 */
+            cloudStride?: number;
+            tracks?: number[][];
+            ellipsoids?: components["schemas"]["EllipsoidSample"][];
+            /** Format: int32 */
+            corridorBreaches?: number;
+        };
         ManeuverRequest: {
             /** Format: int32 */
             deputyNoradId?: number;
@@ -453,6 +622,54 @@ export interface components {
         RendezvousRequest: {
             /** Format: int32 */
             deputyNoradId?: number;
+            arrivalEpoch: string;
+            corrected?: boolean;
+            /** Format: int32 */
+            nRev?: number;
+        };
+        RendezvousSearchRequest: {
+            /** Format: int32 */
+            deputyNoradId?: number;
+        };
+        DvCell: {
+            arrivalEpoch?: string;
+            /** Format: int32 */
+            nRev?: number;
+            /** Format: double */
+            dv1Ms?: number;
+            /** Format: double */
+            dv2Ms?: number;
+            /** Format: double */
+            totalDvMs?: number;
+        };
+        RendezvousSearchResult: {
+            /** Format: int32 */
+            deputyNoradId?: number;
+            windowStart?: string;
+            windowEnd?: string;
+            /** Format: int32 */
+            arrivalCount?: number;
+            /** Format: int32 */
+            revCount?: number;
+            cells?: components["schemas"]["DvCell"][];
+            cheapest?: components["schemas"]["DvCell"];
+        };
+        PhasingRequest: {
+            /** Format: int32 */
+            deputyNoradId?: number;
+            /** Format: int32 */
+            phasingRevs?: number;
+        };
+        NmcRequest: {
+            /** Format: int32 */
+            deputyNoradId?: number;
+        };
+        HoldRequest: {
+            /** Format: int32 */
+            deputyNoradId?: number;
+            axis: string;
+            /** Format: double */
+            distanceM?: number;
             arrivalEpoch: string;
         };
         HohmannRequest: {
@@ -579,6 +796,33 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    setLinkBudget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sensorId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LinkBudgetRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScenarioResponse"];
+                };
             };
         };
     };
@@ -728,6 +972,32 @@ export interface operations {
             };
         };
     };
+    monteCarlo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MonteCarloRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["MonteCarloResult"];
+                };
+            };
+        };
+    };
     addManeuver: {
         parameters: {
             query?: never;
@@ -766,6 +1036,110 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["RendezvousRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScenarioResponse"];
+                };
+            };
+        };
+    };
+    searchRendezvous: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RendezvousSearchRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["RendezvousSearchResult"];
+                };
+            };
+        };
+    };
+    phasing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PhasingRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScenarioResponse"];
+                };
+            };
+        };
+    };
+    nmc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NmcRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScenarioResponse"];
+                };
+            };
+        };
+    };
+    hold: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HoldRequest"];
             };
         };
         responses: {

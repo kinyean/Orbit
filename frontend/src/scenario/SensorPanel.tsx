@@ -89,12 +89,19 @@ export default function SensorPanel() {
   const addSensor = useStore((s) => s.addSensor);
   const removeSensor = useStore((s) => s.removeSensor);
   const setAttitude = useStore((s) => s.setAttitude);
+  const setLinkBudget = useStore((s) => s.setLinkBudget);
 
   const [hostId, setHostId] = useState<number | null>(null);
   const [presetIdx, setPresetIdx] = useState(1); // wide imager default (UC-4)
   const [form, setForm] = useState<SensorForm>(() => presetToForm(PRESETS[1]));
   const [boresightIdx, setBoresightIdx] = useState(0);
   const [msg, setMsg] = useState<string | null>(null);
+  // Link-budget sub-form (Phase 9D): pick a sensor + RF/optical params → SNR series.
+  const [linkSensorId, setLinkSensorId] = useState<string | null>(null);
+  const [link, setLink] = useState({
+    kind: 'rf', eirpDbw: '20', gOverTdbK: '5', frequencyGhz: '2.2', bandwidthHz: '1e6', thresholdDb: '10',
+  });
+  const [linkMsg, setLinkMsg] = useState<string | null>(null);
   const { pos, setPos, commitPos } = usePanelPosition('sensors', { x: 248, y: 560 });
   const { collapsed, toggle } = useCollapsed('sensors');
   const panelRef = usePanelSize<HTMLElement>('sensors', collapsed);
@@ -182,7 +189,30 @@ export default function SensorPanel() {
     setMsg(err ?? `Added ${form.name} to ${selectedHost}`);
   }
 
+  async function onSetLink(sid: string | null) {
+    if (!sid) return;
+    setLinkMsg(null);
+    const err = await setLinkBudget(sid, {
+      kind: link.kind,
+      eirpDbw: Number(link.eirpDbw) || 0,
+      gOverTdbK: Number(link.gOverTdbK) || 0,
+      frequencyGhz: Number(link.frequencyGhz) || 0,
+      bandwidthHz: Number(link.bandwidthHz) || 0,
+      thresholdDb: Number(link.thresholdDb) || 0,
+    });
+    setLinkMsg(err ?? 'Link budget set — SNR band on the timeline');
+  }
+
   const formErr = formError();
+  // All sensors across crafts (for the link-budget selector); a ✓ marks ones with a budget.
+  const allSensors = crafts.flatMap((c) =>
+    (c.sensors ?? []).filter((s) => s.id).map((s) => ({
+      id: s.id as string,
+      label: `${c.name ?? `NORAD ${c.noradId}`} — ${s.name}`,
+      hasLink: !!s.linkBudget,
+    })),
+  );
+  const selectedLinkSensor = linkSensorId ?? allSensors[0]?.id ?? null;
 
   return (
     <aside ref={panelRef} className={`maneuver-panel${collapsed ? ' is-collapsed' : ''}`} style={{ left: pos.x, top: pos.y }}>
@@ -348,6 +378,45 @@ export default function SensorPanel() {
             <div className="mvr-note">FOV volumes + acquisition events appear in the proximity view.</div>
             {msg && <div className="mvr-msg">{msg}</div>}
           </form>
+
+          {allSensors.length > 0 && (
+            <div className="mvr-add">
+              <div className="mvr-add-title">Link budget (SNR)</div>
+              <select
+                value={selectedLinkSensor ?? ''}
+                onChange={(e) => setLinkSensorId(e.target.value)}
+                aria-label="Sensor"
+              >
+                {allSensors.map((s) => (
+                  <option key={s.id} value={s.id}>{s.label}{s.hasLink ? ' ✓' : ''}</option>
+                ))}
+              </select>
+              <div className="mvr-ric">
+                <label>
+                  kind
+                  <select value={link.kind} onChange={(e) => setLink({ ...link, kind: e.target.value })}>
+                    <option value="rf">rf</option>
+                    <option value="optical">optical</option>
+                  </select>
+                </label>
+                <label>EIRP dBW<input type="number" step="any" value={link.eirpDbw} onChange={(e) => setLink({ ...link, eirpDbw: e.target.value })} /></label>
+                <label>G/T dB/K<input type="number" step="any" value={link.gOverTdbK} onChange={(e) => setLink({ ...link, gOverTdbK: e.target.value })} /></label>
+              </div>
+              <div className="mvr-ric">
+                <label>freq GHz<input type="number" step="any" value={link.frequencyGhz} onChange={(e) => setLink({ ...link, frequencyGhz: e.target.value })} /></label>
+                <label>BW Hz<input type="number" step="any" value={link.bandwidthHz} onChange={(e) => setLink({ ...link, bandwidthHz: e.target.value })} /></label>
+                <label>thr dB<input type="number" step="any" value={link.thresholdDb} onChange={(e) => setLink({ ...link, thresholdDb: e.target.value })} /></label>
+              </div>
+              <button type="button" onClick={() => void onSetLink(selectedLinkSensor)} disabled={!selectedLinkSensor}>
+                Set link budget
+              </button>
+              <div className="mvr-note">
+                SNR(r) = EIRP + G/T − free-space loss + 228.6 − 10·log₁₀B. Drawn as a timeline
+                band (red below the threshold).
+              </div>
+              {linkMsg && <div className="mvr-msg">{linkMsg}</div>}
+            </div>
+          )}
         </>
       )}
     </aside>

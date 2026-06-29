@@ -293,7 +293,17 @@ without a frame field.
 
 ---
 
-## R16 — Rendezvous template is an open-loop two-body sketch (Medium impact, High misuse-likelihood)
+## R16 — Rendezvous template is an open-loop two-body sketch (Medium impact — RESOLVED, Phase 9A)
+
+**Status (Phase 9A ✅, Decision 27) — RESOLVED.** The two-impulse rendezvous now defaults to a
+**differential corrector** (`scenario/RendezvousCorrector`) that iterates the two burns against the
+**real** propagators (numerical deputy + SGP4/numerical chief) — damped Gauss-Newton (LM) +
+backtracking line search + domain-exit fallback + ΔV/iteration caps — so the executed trajectory
+actually closes (proven by `RendezvousCorrectorTests`: corrected miss <1 m vs raw km; byte-identical
+rerun). An arrival × revolution ΔV **search** (`RendezvousSearchService`) replaces trial-and-error
+branch picking. Non-convergence falls back to the open-loop seed + an audit-summary warning (not a
+hard 422 — keep the trigger note below). The original open-loop description is retained for the
+record:
 
 **Description.** The two-impulse rendezvous (US-MAN-03) solves the transfer with
 Orekit's `IodLambert` in a **two-body** model, but the scenario then *executes*
@@ -419,6 +429,31 @@ flip `MeasuredAttitude.SCALAR_LAST`/`CONJUGATE` (one line). The body-axis triad 
 
 **Trigger.** A measured craft's body axes / FOV pointing disagreeing with its velocity/sensor geometry
 in the proximity view (then flip a convention constant and re-check).
+
+---
+
+## R21 — Seeded-RNG determinism surface (Monte Carlo) (High impact for reproducibility, Low likelihood — mitigated, Phase 9C)
+
+**Description.** Phase 9C's Monte Carlo (`analysis/MonteCarloService`, UC-6) is the **first**
+randomness in the system, and §5.4.1 / R11 require bit-identical reruns. Naive sources of
+non-determinism: a single shared RNG consumed by parallel samples, a parallel collect whose order
+depends on thread scheduling, an unbounded parallel pool, or eigenvectors whose sign/order is
+arbitrary — any of which makes the cloud + covariance ellipsoids differ run-to-run despite a fixed seed.
+
+**Mitigation.**
+- **Per-sample** `SplittableRandom` seeded from `mix(configuredSeed, i)` (SplitMix64) — never a
+  shared RNG; sample `i` is reproducible regardless of how many run concurrently.
+- A **fixed intra-sample draw order** (pos xyz → vel xyz → per-maneuver mag/tilt/azimuth) and an
+  **index-ordered collect** (the result is pool-independent).
+- A **bounded** `ForkJoinPool` (`MC_PARALLELISM ≤ 6`) — also caps peak memory (an unbounded
+  common-pool run crashed the test JVM).
+- **Canonicalized eigenvectors** (sorted desc, dominant-component-positive sign, right-handed) so
+  the ellipsoid quaternion is deterministic.
+- Proven by `MonteCarloServiceTests` (same-seed byte-identical = the §5.4.1 + order-independence proof).
+
+**Trigger.** The reproducibility test failing on a Monte Carlo run; a covariance ellipsoid flickering
+orientation between identical-seed reruns. (See also R18 — each MC sample is a full numerical
+propagation, so sample counts trade against latency; default 100, cap 500.)
 
 ---
 

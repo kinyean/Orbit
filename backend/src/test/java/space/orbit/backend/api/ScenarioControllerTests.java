@@ -5,6 +5,7 @@ import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -19,6 +20,11 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import space.orbit.backend.analysis.DvCell;
+import space.orbit.backend.analysis.MonteCarloResult;
+import space.orbit.backend.analysis.MonteCarloService;
+import space.orbit.backend.analysis.RendezvousSearchResult;
+import space.orbit.backend.analysis.RendezvousSearchService;
 import space.orbit.backend.analysis.ScreeningService;
 import space.orbit.backend.scenario.DuplicateScenarioNameException;
 import space.orbit.backend.scenario.ManeuverTemplateService;
@@ -49,6 +55,12 @@ class ScenarioControllerTests {
 
     @MockitoBean
     private ScreeningService screening;
+
+    @MockitoBean
+    private RendezvousSearchService rendezvousSearch;
+
+    @MockitoBean
+    private MonteCarloService monteCarlo;
 
     private static final String VALID_BODY = """
             {"name":"Rendezvous","fidelity":"sgp4",
@@ -142,6 +154,87 @@ class ScenarioControllerTests {
         String body = "{\"deputyNoradId\":33591,\"targetAltitudeKm\":600.0}";
         mvc.perform(post("/scenarios/{id}/maneuvers/hohmann", id)
                         .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void rendezvousCorrectedReturnsUpdatedScenario() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(templates.rendezvous(any(), Mockito.anyInt(), any(), Mockito.anyBoolean(), any()))
+                .thenReturn(sampleResponse());
+        String body = "{\"deputyNoradId\":33591,\"arrivalEpoch\":\"2024-06-01T01:00:00Z\",\"corrected\":true}";
+        mvc.perform(post("/scenarios/{id}/maneuvers/rendezvous", id)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void rendezvousSearchReturnsDvMap() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(rendezvousSearch.search(any(), Mockito.anyInt())).thenReturn(
+                new RendezvousSearchResult(33591, "2024-06-01T00:00:00Z", "2024-06-02T00:00:00Z", 10, 7,
+                        List.of(new DvCell("2024-06-01T01:30:00Z", 1, 12.0, 8.0, 20.0)),
+                        new DvCell("2024-06-01T01:30:00Z", 1, 12.0, 8.0, 20.0)));
+        mvc.perform(post("/scenarios/{id}/maneuvers/rendezvous/search", id)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"deputyNoradId\":33591}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.cheapest.nRev").value(1))
+                .andExpect(jsonPath("$.cells[0].totalDvMs").value(20.0));
+    }
+
+    @Test
+    void phasingReturnsUpdatedScenario() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(templates.phasing(any(), Mockito.anyInt(), Mockito.anyInt())).thenReturn(sampleResponse());
+        mvc.perform(post("/scenarios/{id}/maneuvers/phasing", id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"deputyNoradId\":33591,\"phasingRevs\":5}"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void nmcReturnsUpdatedScenario() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(templates.nmc(any(), Mockito.anyInt())).thenReturn(sampleResponse());
+        mvc.perform(post("/scenarios/{id}/maneuvers/nmc", id)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"deputyNoradId\":33591}"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void holdReturnsUpdatedScenario() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(templates.hold(any(), Mockito.anyInt(), any(), Mockito.anyDouble(), any()))
+                .thenReturn(sampleResponse());
+        mvc.perform(post("/scenarios/{id}/maneuvers/hold", id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"deputyNoradId\":33591,\"axis\":\"vbar\",\"distanceM\":1000.0,"
+                                + "\"arrivalEpoch\":\"2024-06-01T01:00:00Z\"}"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void monteCarloReturnsResult() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(monteCarlo.analyze(any(), Mockito.anyInt(), any())).thenReturn(
+                new MonteCarloResult(33591, "DEP", 42L, 200, 150, "2026-06-25T00:00:00Z", 0L, 30, 2,
+                        List.of(new double[] {0, 0, 0}), List.of(), 0));
+        mvc.perform(post("/scenarios/{id}/monte-carlo", id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"deputyNoradId\":33591,\"sampleCount\":200,\"seed\":42,\"posSigmaM\":100,"
+                                + "\"velSigmaMs\":0.1,\"dvMagFrac\":0.01,\"dvPointingDeg\":0.5}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.seed").value(42));
+    }
+
+    @Test
+    void setLinkBudgetReturnsUpdatedScenario() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(service.setLinkBudget(any(), any(), any())).thenReturn(sampleResponse());
+        mvc.perform(put("/scenarios/{id}/sensors/{sensorId}/link-budget", id, "s1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"rf\",\"eirpDbw\":20,\"gOverTdbK\":5,\"frequencyGhz\":2.2,"
+                                + "\"bandwidthHz\":1000000,\"thresholdDb\":10}"))
                 .andExpect(status().isOk());
     }
 

@@ -93,6 +93,17 @@ export interface ViolationEvent {
   limitDeg: number;
 }
 
+/** A sensor↔target link-budget SNR series (Phase 9D, US-EVT-05). `series` is a flat
+ *  [t0(sec from epoch), snr0(dB), ...] — the timeline draws it (red below threshold). */
+export interface LinkBudgetSeriesData {
+  hostId: number;
+  sensorId: string;
+  targetId: number;
+  kind: string;
+  thresholdDb: number;
+  series: Float64Array;
+}
+
 export interface RelativeFrameData {
   epochMs: number; // Date.parse(envelope.epoch) — the t=0 reference
   stepSeconds: number;
@@ -122,6 +133,8 @@ export interface RelativeFrameData {
   // empty when absent / none.
   conjunctions: ConjunctionEvent[];
   violations: ViolationEvent[];
+  // Link-budget SNR series per sensor↔target pair (Phase 9D); empty when absent.
+  linkBudgets: LinkBudgetSeriesData[];
 }
 
 let current: RelativeFrameData | null = null;
@@ -505,7 +518,30 @@ export function parseRelativeMessage(msg: ScenarioRelativeMessage): RelativeFram
     eclipses: parseEclipses(msg.eclipses),
     conjunctions: parseConjunctions(msg.conjunctions),
     violations: parseViolations(msg.violations),
+    linkBudgets: parseLinkBudgets(msg.linkBudgets),
   };
+}
+
+/** Parse the optional top-level `linkBudgets` array (Phase 9D); empty when absent. */
+function parseLinkBudgets(raw: unknown): LinkBudgetSeriesData[] {
+  if (!Array.isArray(raw)) return [];
+  const out: LinkBudgetSeriesData[] = [];
+  for (const item of raw) {
+    const l = item as {
+      hostId?: unknown; sensorId?: unknown; targetId?: unknown;
+      kind?: unknown; thresholdDb?: unknown; series?: unknown;
+    };
+    if (typeof l.hostId !== 'number' || typeof l.targetId !== 'number' || !Array.isArray(l.series)) continue;
+    out.push({
+      hostId: l.hostId,
+      sensorId: typeof l.sensorId === 'string' ? l.sensorId : '',
+      targetId: l.targetId,
+      kind: typeof l.kind === 'string' ? l.kind : 'rf',
+      thresholdDb: num(l.thresholdDb, 0),
+      series: Float64Array.from(l.series as number[]),
+    });
+  }
+  return out;
 }
 
 /** Parse the optional top-level `conjunctions` array (Phase 8); empty when absent. */

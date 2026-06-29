@@ -21,8 +21,10 @@ import org.orekit.utils.Constants;
 import org.orekit.utils.PVCoordinates;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Service;
+import space.orbit.backend.prop.CwTargeting;
 import space.orbit.backend.prop.Fidelity;
 import space.orbit.backend.prop.FrameService;
+import space.orbit.backend.prop.Impulse;
 import space.orbit.backend.prop.PropagationService;
 
 /**
@@ -44,6 +46,7 @@ public class ManeuverTemplateService {
     private final ScenarioService scenarioService;
     private final PropagationService propagationService;
     private final FrameService frames;
+    private final RendezvousCorrector corrector;
 
     /** Below this the orbit is deep in the atmosphere and re-enters within hours — a
      *  Hohmann target there just deorbits the deputy. Guards the common "I meant to
@@ -54,10 +57,12 @@ public class ManeuverTemplateService {
 
     public ManeuverTemplateService(ScenarioService scenarioService,
                                    PropagationService propagationService,
-                                   FrameService frames) {
+                                   FrameService frames,
+                                   RendezvousCorrector corrector) {
         this.scenarioService = scenarioService;
         this.propagationService = propagationService;
         this.frames = frames;
+        this.corrector = corrector;
     }
 
     @PostConstruct
@@ -106,12 +111,23 @@ public class ManeuverTemplateService {
     }
 
     /**
-     * Two-impulse Lambert rendezvous (US-MAN-03): depart the deputy at the scenario
-     * start, arrive at the chief's position at {@code arrivalEpoch}. The transfer is
-     * solved with Orekit's {@link IodLambert}; the two ΔV are expressed in the burn
-     * state's own RIC.
+     * Two-impulse rendezvous (US-MAN-03; Phase 9A flight-ready, closes R16): depart the
+     * deputy at the scenario start, arrive at the chief's position at {@code arrivalEpoch}.
+     * A two-body Lambert transfer ({@link IodLambert}) is the <em>seed</em>; when
+     * {@code corrected} it is then closed-looped against the real propagators by
+     * {@link RendezvousCorrector} so the deputy actually arrives (the open-loop seed
+     * misses by the SGP4-vs-numerical model difference — tens of km). The two ΔV are
+     * expressed in the burn state's own RIC.
+     *
+     * @param corrected run the differential corrector against the real propagators
+     *                  (recommended default); on non-convergence it falls back to the
+     *                  open-loop seed and labels the audit summary.
+     * @param nRev      solve Lambert for exactly this revolution count (from the
+     *                  arrival×rev search); {@code null} searches all feasible counts
+     *                  and keeps the cheapest (the historical behavior).
      */
-    public ScenarioResponse rendezvous(UUID id, int deputyNoradId, String arrivalEpoch) {
+    public ScenarioResponse rendezvous(UUID id, int deputyNoradId, String arrivalEpoch,
+                                       boolean corrected, Integer nRev) {
         ScenarioBody body = scenarioService.get(id).body();
         ScenarioBody.Role deputy = deputyRole(body, deputyNoradId);
         if (body.chief() == null) {
@@ -128,26 +144,29 @@ public class ManeuverTemplateService {
         }
 
         TLE depTle = tleOf(deputy);
+        TLE chiefTle = tleOf(body.chief());
         Propagator depProp = propagationService.propagatorFor(depTle, Fidelity.SGP4);
-        Propagator chiefProp = propagationService.propagatorFor(tleOf(body.chief()), Fidelity.SGP4);
+        Propagator chiefProp = propagationService.propagatorFor(chiefTle, Fidelity.SGP4);
         PVCoordinates dep1 = depProp.getPVCoordinates(t1, eci);
         PVCoordinates chief2 = chiefProp.getPVCoordinates(t2, eci);
 
-        // Solve Lambert across every feasible revolution count and keep the cheapest.
-        // A fixed nRev=0 is degenerate once the arrival is ≥1 orbit out: the target has
-        // wrapped back near its start, so a zero-rev path between two near-coincident
-        // points must nearly cancel the ~7.5 km/s orbital velocity (tens of km/s of Δv).
-        // The natural transfer is the matching multi-rev solution (e.g. "just go around
-        // once"), which a fixed nRev=0 never tries.
+        // Solve Lambert for the requested revolution count, or across every feasible
+        // count keeping the cheapest. A fixed nRev=0 is degenerate once the arrival is
+        // ≥1 orbit out: the target has wrapped back near its start, so a zero-rev path
+        // between two near-coincident points must nearly cancel the ~7.5 km/s orbital
+        // velocity (tens of km/s of Δv). The natural transfer is the matching multi-rev
+        // solution, which a fixed nRev=0 never tries.
         double period = 2.0 * Math.PI / depTle.getMeanMotion();
         int maxRev = (int) Math.floor(t2.durationFrom(t1) / period);
+        int loRev = nRev != null ? Math.max(0, nRev) : 0;
+        int hiRev = nRev != null ? Math.max(0, nRev) : maxRev;
         IodLambert lambert = new IodLambert(Constants.WGS84_EARTH_MU);
         Vector3D vDepart = null;
         Vector3D vArrive = null;
         double bestTotal = Double.POSITIVE_INFINITY;
-        for (int nRev = 0; nRev <= maxRev; nRev++) {
+        for (int rev = loRev; rev <= hiRev; rev++) {
             try {
-                Orbit transfer = lambert.estimate(eci, true, nRev, dep1.getPosition(), t1, chief2.getPosition(), t2);
+                Orbit transfer = lambert.estimate(eci, true, rev, dep1.getPosition(), t1, chief2.getPosition(), t2);
                 if (transfer == null) {
                     continue;
                 }
@@ -174,16 +193,215 @@ public class ManeuverTemplateService {
         Vector3D dv2Eci = chief2.getVelocity().subtract(vArrive);
         double[] ric1 = toRic(dv1Eci, dep1.getPosition(), dep1.getVelocity(), t1);
         double[] ric2 = toRic(dv2Eci, chief2.getPosition(), vArrive, t2);
+        Impulse depart = new Impulse(t1, ric1[0], ric1[1], ric1[2]);
+        Impulse arrive = new Impulse(t2, ric2[0], ric2[1], ric2[2]);
+
+        String summary;
+        if (corrected) {
+            // Close the loop against the SAME propagators the scenario flies (the
+            // deputy is always numerical once it has a burn; the chief on the scenario
+            // fidelity, CW→SGP4). R16: the open-loop seed misses; this hits.
+            RendezvousCorrector.Correction c = corrector.correct(
+                    depTle, chiefTle, chiefStreamFidelity(body.fidelity()), t1, t2, depart, arrive);
+            depart = c.depart();
+            arrive = c.arrive();
+            double total = norm(depart) + norm(arrive);
+            summary = c.converged()
+                    ? String.format("Corrected rendezvous (Δv total %.2f m/s, arrival miss %.2f m)",
+                            total, c.missM())
+                    : String.format("Rendezvous (Δv total %.2f m/s) — %s", total, c.note());
+        } else {
+            summary = String.format("Lambert rendezvous (Δv total %.2f m/s)",
+                    dv1Eci.getNorm() + dv2Eci.getNorm());
+        }
 
         List<ManeuverDraft> drafts = List.of(
-                new ManeuverDraft(deputyNoradId, startInstant.toString(), "ric", ric1[0], ric1[1], ric1[2]),
-                new ManeuverDraft(deputyNoradId, arrInstant.toString(), "ric", ric2[0], ric2[1], ric2[2]));
-        double total = dv1Eci.getNorm() + dv2Eci.getNorm();
-        return scenarioService.addManeuvers(id, drafts,
-                String.format("Lambert rendezvous (Δv total %.2f m/s)", total));
+                new ManeuverDraft(deputyNoradId, startInstant.toString(), "ric", depart.r(), depart.i(), depart.c()),
+                new ManeuverDraft(deputyNoradId, arrInstant.toString(), "ric", arrive.r(), arrive.i(), arrive.c()));
+        return scenarioService.addManeuvers(id, drafts, summary);
+    }
+
+    /**
+     * Phasing-orbit rendezvous (US-MAN-06, the realistic co-elliptic walk-down): close
+     * the along-track phase gap to the chief over {@code phasingRevs} revolutions by
+     * dropping the deputy onto a phasing orbit (slightly different period), then return
+     * it to the chief's orbit. Two equal-and-opposite in-track burns.
+     *
+     * <p>This is an open-loop <em>two-body sketch</em> (like the original Lambert
+     * template before 9A's corrector): the phasing geometry is computed in two-body and
+     * frozen. A fully closed-loop multi-burn phasing solve is a follow-up; the cheap,
+     * honest value here is the realistic geometry + ΔV magnitude.
+     */
+    public ScenarioResponse phasing(UUID id, int deputyNoradId, int phasingRevs) {
+        if (phasingRevs < 1) {
+            throw new ScenarioValidationException("phasing requires at least 1 revolution");
+        }
+        ScenarioBody body = scenarioService.get(id).body();
+        ScenarioBody.Role deputy = deputyRole(body, deputyNoradId);
+        if (body.chief() == null) {
+            throw new ScenarioValidationException("phasing requires a chief");
+        }
+
+        Frame eci = frames.eci();
+        Instant startInstant = parseInstant(body.timeRange().start());
+        AbsoluteDate t1 = new AbsoluteDate(startInstant, utc);
+
+        TLE depTle = tleOf(deputy);
+        TLE chiefTle = tleOf(body.chief());
+        PVCoordinates dep1 = propagationService.propagatorFor(depTle, Fidelity.SGP4).getPVCoordinates(t1, eci);
+        PVCoordinates chief1 = propagationService.propagatorFor(chiefTle, Fidelity.SGP4).getPVCoordinates(t1, eci);
+
+        double mu = Constants.WGS84_EARTH_MU;
+        // Signed along-track phase from the deputy to the chief about the orbit normal
+        // (chief-ahead positive ⇒ deputy must catch up ⇒ shorter phasing period).
+        Vector3D rd = dep1.getPosition();
+        Vector3D h = rd.crossProduct(dep1.getVelocity());
+        double phi = Math.atan2(
+                rd.crossProduct(chief1.getPosition()).dotProduct(h.normalize()),
+                rd.dotProduct(chief1.getPosition()));
+
+        double tChief = 2.0 * Math.PI / chiefTle.getMeanMotion();
+        double tPhase = tChief * (1.0 - phi / (2.0 * Math.PI * phasingRevs));
+        if (!(tPhase > 0)) {
+            throw new ScenarioValidationException("phasing geometry is degenerate — try more revolutions");
+        }
+        double aPhase = Math.cbrt(mu * Math.pow(tPhase / (2.0 * Math.PI), 2.0));
+        double r1 = rd.getNorm();
+        double otherApsis = 2.0 * aPhase - r1; // the burn point r1 is one apsis of the phasing orbit
+        if (Math.min(r1, otherApsis) < Constants.WGS84_EARTH_EQUATORIAL_RADIUS + MIN_TARGET_ALTITUDE_KM * 1000.0) {
+            throw new ScenarioValidationException(String.format(
+                    "phasing orbit would drop below %.0f km — use more revolutions", MIN_TARGET_ALTITUDE_KM));
+        }
+        double v1 = dep1.getVelocity().getNorm();
+        double vPhase = Math.sqrt(mu * (2.0 / r1 - 1.0 / aPhase));
+        double dv = vPhase - v1; // tangential ≈ in-track for a near-circular orbit
+
+        Instant returnInstant = startInstant.plusMillis(Math.round(phasingRevs * tPhase * 1000.0));
+        // The return burn lands N phasing-orbits later; that must fit the scenario window
+        // (the audited path rejects out-of-window epochs — give a clearer reason here).
+        Instant end = parseInstant(body.timeRange().end());
+        if (returnInstant.isAfter(end)) {
+            throw new ScenarioValidationException(String.format(
+                    "phasing over %d revolutions returns at %s, past the scenario window — extend the"
+                            + " window or use fewer revolutions", phasingRevs, returnInstant));
+        }
+        List<ManeuverDraft> drafts = List.of(
+                new ManeuverDraft(deputyNoradId, startInstant.toString(), "ric", 0.0, dv, 0.0),
+                new ManeuverDraft(deputyNoradId, returnInstant.toString(), "ric", 0.0, -dv, 0.0));
+        String summary = String.format(
+                "Phasing rendezvous (%d rev%s, Δv 2×%.2f m/s, return %s)",
+                phasingRevs, phasingRevs == 1 ? "" : "s", Math.abs(dv), returnInstant);
+        return scenarioService.addManeuvers(id, drafts, summary);
+    }
+
+    /**
+     * Natural-Motion-Circumnavigation insertion (US-MAN-09): a single in-track burn that
+     * cancels the deputy's along-track drift (sets {@code vy = −2 n x}, the CW bounded-orbit
+     * condition), putting it on a closed relative ellipse that circles the chief with no
+     * further thrust. Computed from the deputy's current relative state in the chief LVLH.
+     */
+    public ScenarioResponse nmc(UUID id, int deputyNoradId) {
+        ScenarioBody body = scenarioService.get(id).body();
+        ScenarioBody.Role deputy = deputyRole(body, deputyNoradId);
+        if (body.chief() == null) {
+            throw new ScenarioValidationException("NMC requires a chief");
+        }
+        Instant startInstant = parseInstant(body.timeRange().start());
+        AbsoluteDate t1 = new AbsoluteDate(startInstant, utc);
+        TLE chiefTle = tleOf(body.chief());
+        Propagator chiefProp = propagationService.propagatorFor(chiefTle, Fidelity.SGP4);
+        Propagator depProp = propagationService.propagatorFor(tleOf(deputy), Fidelity.SGP4);
+        double n = chiefTle.getMeanMotion();
+        double[] s = relativeStateLvlh(chiefProp, depProp, t1);
+        double dvy = (-2.0 * n * s[0]) - s[4]; // bring vy to the no-drift value
+        List<ManeuverDraft> drafts = List.of(
+                new ManeuverDraft(deputyNoradId, startInstant.toString(), "ric", 0.0, dvy, 0.0));
+        return scenarioService.addManeuvers(id, drafts, String.format(
+                "NMC insertion (Δv %.2f m/s in-track → bounded relative orbit)", Math.abs(dvy)));
+    }
+
+    /**
+     * V-bar / R-bar hold (US-MAN-07/08; point station-keeping): a CW two-impulse transfer
+     * that brings the deputy to rest at a hold point on the chief's in-track (V-bar) or
+     * radial (R-bar) axis, {@code distanceM} from the chief, arriving at {@code arrivalEpoch}.
+     * The departure burn puts it on the transfer; the arrival burn nulls the relative
+     * velocity so it parks there (US-MAN-10).
+     *
+     * @param axis {@code "vbar"} (in-track) or {@code "rbar"} (radial); a signed
+     *             {@code distanceM} places the point ahead/behind or above/below.
+     */
+    public ScenarioResponse hold(UUID id, int deputyNoradId, String axis, double distanceM, String arrivalEpoch) {
+        ScenarioBody body = scenarioService.get(id).body();
+        ScenarioBody.Role deputy = deputyRole(body, deputyNoradId);
+        if (body.chief() == null) {
+            throw new ScenarioValidationException("a hold requires a chief");
+        }
+        Instant startInstant = parseInstant(body.timeRange().start());
+        Instant arrInstant = parseInstant(arrivalEpoch);
+        AbsoluteDate t1 = new AbsoluteDate(startInstant, utc);
+        AbsoluteDate t2 = new AbsoluteDate(arrInstant, utc);
+        double dt = t2.durationFrom(t1);
+        if (dt <= 0) {
+            throw new ScenarioValidationException("arrival epoch must be after the scenario start");
+        }
+        String axisNorm = axis == null ? "vbar" : axis.trim().toLowerCase();
+        double[] rT = switch (axisNorm) {
+            case "rbar" -> new double[] {distanceM, 0.0, 0.0}; // radial
+            case "vbar" -> new double[] {0.0, distanceM, 0.0}; // in-track
+            default -> throw new ScenarioValidationException("hold axis must be 'vbar' or 'rbar'");
+        };
+        TLE chiefTle = tleOf(body.chief());
+        Propagator chiefProp = propagationService.propagatorFor(chiefTle, Fidelity.SGP4);
+        Propagator depProp = propagationService.propagatorFor(tleOf(deputy), Fidelity.SGP4);
+        double n = chiefTle.getMeanMotion();
+        double[] s = relativeStateLvlh(chiefProp, depProp, t1);
+        double[] dv = CwTargeting.twoImpulse(
+                new double[] {s[0], s[1], s[2]}, new double[] {s[3], s[4], s[5]},
+                rT, new double[] {0.0, 0.0, 0.0}, n, dt);
+        if (dv == null) {
+            throw new ScenarioValidationException(
+                    "the transfer time is near an integer number of orbits (CW-singular) — pick a different arrival");
+        }
+        List<ManeuverDraft> drafts = List.of(
+                new ManeuverDraft(deputyNoradId, startInstant.toString(), "ric", dv[0], dv[1], dv[2]),
+                new ManeuverDraft(deputyNoradId, arrInstant.toString(), "ric", dv[3], dv[4], dv[5]));
+        double total = Math.sqrt(dv[0] * dv[0] + dv[1] * dv[1] + dv[2] * dv[2])
+                + Math.sqrt(dv[3] * dv[3] + dv[4] * dv[4] + dv[5] * dv[5]);
+        return scenarioService.addManeuvers(id, drafts, String.format(
+                "%s hold @ %.0f m (CW two-impulse, Δv total %.2f m/s)",
+                axisNorm.toUpperCase(), distanceM, total));
+    }
+
+    /** The fidelity the scenario flies the chief with (CW models the deputy relatively,
+     *  so its chief is on SGP4); used so the corrector matches what the stream executes. */
+    private static Fidelity chiefStreamFidelity(String fidelity) {
+        Fidelity f = Fidelity.fromString(fidelity);
+        return f == Fidelity.CW ? Fidelity.SGP4 : f;
+    }
+
+    private static double norm(Impulse imp) {
+        return Math.sqrt(imp.r() * imp.r() + imp.i() * imp.i() + imp.c() * imp.c());
     }
 
     // --- helpers --------------------------------------------------------------
+
+    /**
+     * The deputy's relative state in the chief's <em>rotating</em> LVLH frame at {@code t}:
+     * {@code [x,y,z,vx,vy,vz]} (radial/in-track/cross, m and m/s). Routes through the
+     * canonical {@link FrameService#lvlh} transform so the relative velocity carries the
+     * frame rotation (R15 — never the single-epoch helper). These axes match
+     * {@link CwTargeting} (radial/in-track/cross).
+     */
+    private double[] relativeStateLvlh(Propagator chiefProp, Propagator depProp, AbsoluteDate t) {
+        Frame eci = frames.eci();
+        Frame lvlh = frames.lvlh(chiefProp);
+        PVCoordinates rel = eci.getTransformTo(lvlh, t)
+                .transformPVCoordinates(depProp.getPVCoordinates(t, eci));
+        return new double[] {
+            rel.getPosition().getX(), rel.getPosition().getY(), rel.getPosition().getZ(),
+            rel.getVelocity().getX(), rel.getVelocity().getY(), rel.getVelocity().getZ(),
+        };
+    }
 
     /**
      * Project an ECI ΔV onto the RIC axes of a burn state (r=radial, i=in-track,

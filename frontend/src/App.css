@@ -1631,8 +1631,10 @@
   color: #94a3b8;
 }
 
-.mvr-template-row input {
+.mvr-template-row input,
+.mvr-template-row select {
   width: 100%;
+  min-width: 0;
   box-sizing: border-box;
   background: rgba(15, 19, 32, 0.9);
   border: 1px solid rgba(71, 85, 105, 0.4);
@@ -1640,6 +1642,12 @@
   color: #e2e8f0;
   padding: 4px 6px;
   font-size: 12px;
+}
+
+/* Let flex children shrink below their intrinsic width so wide controls
+   (datetime-local, long <select> options) never overflow the 250px panel. */
+.mvr-template-row label {
+  min-width: 0;
 }
 
 .mvr-template-row button {
@@ -1658,8 +1666,14 @@
 }
 
 .mvr-msg {
-  font-size: 10px;
-  color: #94a3b8;
+  font-size: 11px;
+  color: #cbd5e1;
+  margin-top: 6px;
+  padding: 5px 8px;
+  background: rgba(56, 189, 248, 0.1);
+  border-left: 2px solid rgba(56, 189, 248, 0.6);
+  border-radius: 4px;
+  word-break: break-word; /* long backend error messages wrap inside the 250px panel */
 }
 
 /* Hide the native number-input spinner "scrollers" in the floating panels — they

@@ -58,12 +58,20 @@ class ManeuverTemplateServiceTests {
         return new ScenarioBody(2, "sgp4", new ScenarioBody.TimeRange(start, end), chief, List.of(deputy));
     }
 
+    /** A close formation (~few km in-track) so CW templates are in their valid regime. */
+    private static ScenarioBody closeBody(String start, String end) {
+        ScenarioBody.Role chief = role("chief", leoTle(25544, "ISS (ZARYA)", 0.0), "ISS (ZARYA)");
+        ScenarioBody.Role deputy = role("deputy", leoTle(25545, "DEPUTY-1", 0.03), "DEPUTY-1");
+        return new ScenarioBody(2, "sgp4", new ScenarioBody.TimeRange(start, end), chief, List.of(deputy));
+    }
+
     private static ManeuverTemplateService service(ScenarioService scenarioService) {
         FrameService frames = new FrameService();
         frames.init();
         PropagationService prop = new PropagationService(
                 new SatellitePropagator(frames), new NumericalPropagation(frames), frames);
-        ManeuverTemplateService svc = new ManeuverTemplateService(scenarioService, prop, frames);
+        ManeuverTemplateService svc = new ManeuverTemplateService(
+                scenarioService, prop, frames, new RendezvousCorrector(prop, frames));
         svc.init();
         return svc;
     }
@@ -125,7 +133,8 @@ class ManeuverTemplateServiceTests {
         when(scenarioService.addManeuvers(eq(ID), any(), any())).thenReturn(
                 new ScenarioResponse(ID.toString(), "S", "o", "2024-06-01T00:00:00Z", 2, 2, b));
 
-        service(scenarioService).rendezvous(ID, 25545, arrival);
+        // Pure Lambert seed path (no corrector) — fast, behavior unchanged from Phase 5C.
+        service(scenarioService).rendezvous(ID, 25545, arrival, false, null);
 
         ArgumentCaptor<List<ManeuverDraft>> cap = captureDrafts(scenarioService);
         org.mockito.Mockito.verify(scenarioService).addManeuvers(eq(ID), cap.capture(), any());
@@ -136,5 +145,50 @@ class ManeuverTemplateServiceTests {
         }
         assertThat(drafts.get(0).epoch()).isEqualTo(start);
         assertThat(Instant.parse(drafts.get(1).epoch())).isEqualTo(Instant.parse(arrival));
+    }
+
+    @Test
+    void nmcInsertsOneInTrackDriftCancelBurn() {
+        ScenarioService scenarioService = mock(ScenarioService.class);
+        ScenarioBody b = closeBody("2024-06-01T12:00:00Z", "2024-06-01T16:00:00Z");
+        when(scenarioService.get(any())).thenReturn(
+                new ScenarioResponse(ID.toString(), "S", "o", "2024-06-01T00:00:00Z", 1, 1, b));
+        when(scenarioService.addManeuvers(eq(ID), any(), any())).thenReturn(
+                new ScenarioResponse(ID.toString(), "S", "o", "2024-06-01T00:00:00Z", 2, 2, b));
+
+        service(scenarioService).nmc(ID, 25545);
+
+        ArgumentCaptor<List<ManeuverDraft>> cap = captureDrafts(scenarioService);
+        org.mockito.Mockito.verify(scenarioService).addManeuvers(eq(ID), cap.capture(), any());
+        List<ManeuverDraft> drafts = cap.getValue();
+        assertThat(drafts).hasSize(1);
+        // The NMC drift-cancel burn is purely in-track.
+        assertThat(drafts.get(0).r()).isZero();
+        assertThat(drafts.get(0).c()).isZero();
+        assertThat(Math.abs(drafts.get(0).i())).isGreaterThan(0.0);
+    }
+
+    @Test
+    void holdInsertsTwoBurnsAtStartAndArrival() {
+        ScenarioService scenarioService = mock(ScenarioService.class);
+        String start = "2024-06-01T12:00:00Z";
+        String arrival = "2024-06-01T12:23:00Z"; // ~1380 s, ~quarter period (CW-nonsingular)
+        ScenarioBody b = closeBody(start, "2024-06-01T16:00:00Z");
+        when(scenarioService.get(any())).thenReturn(
+                new ScenarioResponse(ID.toString(), "S", "o", "2024-06-01T00:00:00Z", 1, 1, b));
+        when(scenarioService.addManeuvers(eq(ID), any(), any())).thenReturn(
+                new ScenarioResponse(ID.toString(), "S", "o", "2024-06-01T00:00:00Z", 2, 2, b));
+
+        service(scenarioService).hold(ID, 25545, "vbar", 1000.0, arrival);
+
+        ArgumentCaptor<List<ManeuverDraft>> cap = captureDrafts(scenarioService);
+        org.mockito.Mockito.verify(scenarioService).addManeuvers(eq(ID), cap.capture(), any());
+        List<ManeuverDraft> drafts = cap.getValue();
+        assertThat(drafts).hasSize(2);
+        assertThat(drafts.get(0).epoch()).isEqualTo(start);
+        assertThat(Instant.parse(drafts.get(1).epoch())).isEqualTo(Instant.parse(arrival));
+        for (ManeuverDraft d : drafts) {
+            assertThat(Double.isFinite(d.r()) && Double.isFinite(d.i()) && Double.isFinite(d.c())).isTrue();
+        }
     }
 }

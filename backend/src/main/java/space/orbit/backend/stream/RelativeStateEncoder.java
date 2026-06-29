@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 import space.orbit.backend.analysis.ConjunctionEvent;
 import space.orbit.backend.analysis.ConstraintViolationEvent;
 import space.orbit.backend.analysis.EclipseEvent;
+import space.orbit.backend.analysis.LinkBudgetSeries;
 import space.orbit.backend.analysis.SensorEvent;
 import space.orbit.backend.scenario.ScenarioBody;
 
@@ -70,7 +71,8 @@ public class RelativeStateEncoder {
                                  String fidelity, double maxSeparationM, double chiefEccentricity,
                                  double chiefRadiusM, List<SensorEvent> events,
                                  double[] sunVector, double[] moonVector, List<EclipseEvent> eclipses,
-                                 List<ConjunctionEvent> conjunctions, List<ConstraintViolationEvent> violations) {
+                                 List<ConjunctionEvent> conjunctions, List<ConstraintViolationEvent> violations,
+                                 List<LinkBudgetSeries> linkBudgets) {
         int stride = includeVelocity ? 7 : 4;
         StringWriter writer = new StringWriter(1 << 14);
         try (JsonGenerator g = JSON.createGenerator(writer)) {
@@ -119,6 +121,8 @@ public class RelativeStateEncoder {
             // Conjunctions + constraint violations (Phase 8, US-EVT-02/03) — additive.
             writeConjunctions(g, conjunctions);
             writeViolations(g, violations);
+            // Link-budget SNR series (Phase 9D, US-EVT-05) — additive, omitted when empty.
+            writeLinkBudgets(g, linkBudgets);
 
             g.writeEndObject();
         } catch (IOException e) {
@@ -315,6 +319,33 @@ public class RelativeStateEncoder {
             g.writeStringField("epoch", v.epoch().toString());
             g.writeNumberField("valueDeg", Math.round(v.valueDeg() * 100.0) / 100.0);
             g.writeNumberField("limitDeg", Math.round(v.limitDeg() * 100.0) / 100.0);
+            g.writeEndObject();
+        }
+        g.writeEndArray();
+    }
+
+    /** Link-budget SNR series per sensor↔target pair (Phase 9D, US-EVT-05). Each {@code
+     *  series} is a flat {@code [t,snr, …]} (whole seconds, 0.1 dB). Omitted when empty. */
+    private void writeLinkBudgets(JsonGenerator g, List<LinkBudgetSeries> linkBudgets) throws IOException {
+        if (linkBudgets == null || linkBudgets.isEmpty()) {
+            return;
+        }
+        g.writeArrayFieldStart("linkBudgets");
+        for (LinkBudgetSeries lb : linkBudgets) {
+            g.writeStartObject();
+            g.writeNumberField("hostId", lb.hostNoradId());
+            g.writeStringField("sensorId", lb.sensorId());
+            g.writeNumberField("targetId", lb.targetNoradId());
+            g.writeStringField("kind", lb.kind() != null ? lb.kind() : "rf");
+            g.writeNumberField("thresholdDb", Math.round(lb.thresholdDb() * 10.0) / 10.0);
+            g.writeArrayFieldStart("series");
+            double[] s = lb.series();
+            for (int i = 0; i + 1 < s.length; i += 2) {
+                g.writeNumber(Math.round(s[i]));                       // t (whole seconds)
+                double snr = s[i + 1];
+                g.writeNumber(Double.isFinite(snr) ? Math.round(snr * 10.0) / 10.0 : -999.0); // dB (0.1)
+            }
+            g.writeEndArray();
             g.writeEndObject();
         }
         g.writeEndArray();

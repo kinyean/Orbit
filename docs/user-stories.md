@@ -484,14 +484,52 @@ be expanded as we approach them.
 - US-EVT-04 ✅ — Timeline event annotations (eclipse bands, conjunction ticks, violation marks)
   + `EnvironmentPanel`.
 
-# Phase 9 — Advanced maneuvers & analysis *(outline)*
+# Phase 9 — Advanced maneuvers & analysis 🔶 (in progress — Decision 27, [phase-9-plan.md](./phase-9-plan.md))
 
-- US-MAN-06 through 10 — Maneuver templates: glideslope, V-bar hold, R-bar
-  hold, NMC ellipse, station-keeping.
-- US-MAN-11 — Finite-burn maneuvers (thrust, Isp, duration).
-- US-MC-01 — Monte Carlo dispersion on initial state + maneuver error.
-- US-MC-02 — Covariance ellipsoids in the relative frame.
-- US-EVT-05 — Link budget / SNR overlays for RF and optical sensors.
+### US-MAN-06 — As Maya, I want a converged two-impulse rendezvous (not an open-loop sketch), so the deputy actually arrives at the chief. ✅ (9A)
+*Acceptance:* the two-impulse rendezvous defaults to a **differential corrector**
+(`RendezvousCorrector`) against the real propagators (numerical deputy + SGP4/numerical chief);
+corrected miss collapses to <1 m where the raw two-body plan missed by km (`RendezvousCorrectorTests`);
+byte-identical rerun; non-convergence falls back to the open-loop seed + an audit-summary warning.
+An arrival × revolution ΔV **search** (`POST /maneuvers/rendezvous/search`) surfaces the cheapest
+feasible transfer; a **phasing** template (`POST /maneuvers/phasing`) sketches the co-elliptic approach.
+*Maps to:* [UC-1](./use-cases.md); SRS §3.5.3; **resolves R16**.
+
+### US-MAN-07 — As Maya, I want an NMC-ellipse template, so I can drop a deputy onto a passively-safe natural circumnavigation. ✅ (9B)
+*Acceptance:* `POST /maneuvers/nmc` inserts the in-track drift-cancel burn (`vy = −2·n·x`) so the
+deputy traces a closed natural-motion ellipse in LVLH (`CwTargeting` + `ManeuverTemplateService.nmc`,
+`CwTargetingTest` closed-loop). *Maps to:* SRS §3.5.3.
+
+### US-MAN-08 — As Maya, I want V-bar / R-bar hold templates, so I can park a deputy at a hold point. ✅ (9B)
+*Acceptance:* `POST /maneuvers/hold` computes a CW two-impulse transfer to a V-bar/R-bar point at a
+given distance + arrival epoch, with zero arrival velocity (`ManeuverTemplateService.hold`).
+*Maps to:* SRS §3.5.3; RPO approach geometries.
+
+### US-MAN-09 — Glideslope template. ⬜ *(deferred — discretize a constant-closing-rate approach into `CwTargeting.twoImpulse` legs; the primitive is in place)*
+
+### US-MAN-10 — Closed-loop station-keeping. ⬜ *(deferred — propagate the relative orbit, detect drift past tolerance, emit corrective `CwTargeting` burns on an interval)*
+
+### US-MAN-11 — Finite-burn maneuvers (thrust, Isp, duration). ⬜ *(deferred — `Maneuver`/`Impulse` schema-v6 finite fields + Orekit `ConstantThrustManeuver` branch in `PropagationService.buildManeuvered`; the schema-v6 seam is ready)*
+
+### US-MC-01 — As Frank, I want Monte Carlo dispersion on initial state + maneuver execution error, so I can quantify trajectory uncertainty. ✅ (9C)
+*Acceptance:* `POST /scenarios/{id}/monte-carlo` perturbs the deputy ECI seed (Gaussian pos/vel) +
+maneuver ΔV (magnitude + pointing tilt) over a seeded sample set (default 100, cap 500), returns the
+chief-LVLH cloud. **Bit-identical on the same seed, independent of pool scheduling** (per-sample
+`SplittableRandom(mix(seed,i))`, ordered collect — `MonteCarloServiceTests`); zero-uncertainty →
+nominal; recovers the input σ. *Maps to:* [UC-6](./use-cases.md); SRS §3.12.4, §5.4.1; **R21**.
+
+### US-MC-02 — As Frank, I want covariance ellipsoids in the relative frame, so I can check the 3σ envelope against the corridor. ✅ (9C)
+*Acceptance:* per-epoch covariance ellipsoids (Hipparchus `EigenDecompositionSymmetric` →
+canonicalized → three.js quaternion via `FrameService.matrixToQuaternionXyzw`) rendered as 3σ shells
+in the proximity view (`proximity/montecarlo.ts`, `MonteCarloPanel.tsx`). *Maps to:* [UC-6](./use-cases.md);
+SRS §3.12.5.
+
+### US-EVT-05 — As Gita, I want link-budget / SNR overlays for RF and optical sensors, so I can see when a link is viable. ✅ (9D)
+*Acceptance:* a sensor carries an optional `LinkBudget` (`ScenarioBody` schema v6); `LinkBudgetComputer`
+computes per (sensor↔target) SNR over the sampled trajectory (Friis, ~6 dB per range-doubling,
+`LinkBudgetComputerTests`); streamed additively (`linkBudgets`); `SensorPanel` fields + `Timeline` SNR
+band (red below threshold). *Maps to:* [UC-4](./use-cases.md); SRS §3.6. *(Optical detector NEP/QE
+detail deferred.)*
 
 # Phase 10 — Enterprise hardening *(outline)*
 

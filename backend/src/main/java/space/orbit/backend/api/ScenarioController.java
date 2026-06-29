@@ -17,10 +17,15 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import space.orbit.backend.analysis.MonteCarloResult;
+import space.orbit.backend.analysis.MonteCarloService;
+import space.orbit.backend.analysis.RendezvousSearchResult;
+import space.orbit.backend.analysis.RendezvousSearchService;
 import space.orbit.backend.analysis.ScreeningResult;
 import space.orbit.backend.analysis.ScreeningService;
 import space.orbit.backend.scenario.AttitudeDraft;
 import space.orbit.backend.scenario.ConstraintDraft;
+import space.orbit.backend.scenario.LinkBudgetDraft;
 import space.orbit.backend.scenario.ManeuverDraft;
 import space.orbit.backend.scenario.ManeuverTemplateService;
 import space.orbit.backend.scenario.ScenarioDraft;
@@ -50,12 +55,17 @@ public class ScenarioController {
     private final ScenarioService service;
     private final ManeuverTemplateService templates;
     private final ScreeningService screening;
+    private final RendezvousSearchService rendezvousSearch;
+    private final MonteCarloService monteCarlo;
 
     public ScenarioController(ScenarioService service, ManeuverTemplateService templates,
-                              ScreeningService screening) {
+                              ScreeningService screening, RendezvousSearchService rendezvousSearch,
+                              MonteCarloService monteCarlo) {
         this.service = service;
         this.templates = templates;
         this.screening = screening;
+        this.rendezvousSearch = rendezvousSearch;
+        this.monteCarlo = monteCarlo;
     }
 
     @PostMapping
@@ -124,7 +134,40 @@ public class ScenarioController {
 
     @PostMapping("/{id}/maneuvers/rendezvous")
     public ScenarioResponse rendezvous(@PathVariable UUID id, @Valid @RequestBody RendezvousRequest req) {
-        return templates.rendezvous(id, req.deputyNoradId(), req.arrivalEpoch());
+        boolean corrected = req.corrected() == null || req.corrected();
+        return templates.rendezvous(id, req.deputyNoradId(), req.arrivalEpoch(), corrected, req.nRev());
+    }
+
+    /**
+     * Arrival-time × revolution ΔV search (Phase 9A, US-MAN-03). One-shot analysis (not
+     * the stream) → a sorted ΔV map the UI shows as a heatmap; picking a cell feeds the
+     * corrected {@code rendezvous} endpoint with its {@code nRev}.
+     */
+    @PostMapping("/{id}/maneuvers/rendezvous/search")
+    public RendezvousSearchResult searchRendezvous(@PathVariable UUID id,
+                                                   @Valid @RequestBody RendezvousSearchRequest req) {
+        return rendezvousSearch.search(id, req.deputyNoradId());
+    }
+
+    /** Phasing-orbit rendezvous template (Phase 9A, US-MAN-06): close the along-track
+     *  phase gap over {@code phasingRevs} revolutions with two in-track burns. */
+    @PostMapping("/{id}/maneuvers/phasing")
+    public ScenarioResponse phasing(@PathVariable UUID id, @Valid @RequestBody PhasingRequest req) {
+        return templates.phasing(id, req.deputyNoradId(), req.phasingRevs());
+    }
+
+    // --- close-range CW templates (Phase 9B, US-MAN-07..10) ------------------
+
+    /** NMC insertion (Phase 9B, US-MAN-09): one in-track burn onto a bounded relative orbit. */
+    @PostMapping("/{id}/maneuvers/nmc")
+    public ScenarioResponse nmc(@PathVariable UUID id, @Valid @RequestBody NmcRequest req) {
+        return templates.nmc(id, req.deputyNoradId());
+    }
+
+    /** V-bar / R-bar hold (Phase 9B, US-MAN-07/08/10): CW two-impulse transfer to a hold point. */
+    @PostMapping("/{id}/maneuvers/hold")
+    public ScenarioResponse hold(@PathVariable UUID id, @Valid @RequestBody HoldRequest req) {
+        return templates.hold(id, req.deputyNoradId(), req.axis(), req.distanceM(), req.arrivalEpoch());
     }
 
     // --- sensors & attitude (Phase 7, US-SENSE-01 / US-PROX-01) --------------
@@ -140,6 +183,14 @@ public class ScenarioController {
     @DeleteMapping("/{id}/sensors/{sensorId}")
     public ScenarioResponse removeSensor(@PathVariable UUID id, @PathVariable String sensorId) {
         return service.removeSensor(id, sensorId);
+    }
+
+    /** Set a sensor's RF/optical link budget (Phase 9D, US-EVT-05) → SNR series stream. */
+    @PutMapping("/{id}/sensors/{sensorId}/link-budget")
+    public ScenarioResponse setLinkBudget(@PathVariable UUID id, @PathVariable String sensorId,
+                                          @Valid @RequestBody LinkBudgetRequest req) {
+        return service.setLinkBudget(id, sensorId, new LinkBudgetDraft(
+                req.kind(), req.eirpDbw(), req.gOverTdbK(), req.frequencyGhz(), req.bandwidthHz(), req.thresholdDb()));
     }
 
     @PutMapping("/{id}/attitude")
@@ -175,6 +226,18 @@ public class ScenarioController {
     public ScreeningResult screen(@PathVariable UUID id,
                                   @RequestParam(name = "thresholdKm", defaultValue = "5.0") double thresholdKm) {
         return screening.screen(id, thresholdKm);
+    }
+
+    /**
+     * Monte Carlo dispersion + covariance for a deputy (Phase 9C, UC-6, US-MC-01/02). A
+     * one-shot analysis (not the stream): runs {@code sampleCount} seeded samples → a
+     * trajectory cloud + per-epoch covariance ellipsoids. Reproducible given the seed.
+     */
+    @PostMapping("/{id}/monte-carlo")
+    public MonteCarloResult monteCarlo(@PathVariable UUID id, @Valid @RequestBody MonteCarloRequest req) {
+        return monteCarlo.analyze(id, req.deputyNoradId(), new MonteCarloService.Params(
+                req.sampleCount(), req.seed(), req.posSigmaM(), req.velSigmaMs(),
+                req.dvMagFrac(), req.dvPointingDeg()));
     }
 
     private static ScenarioDraft toDraft(ScenarioRequest req) {
@@ -234,9 +297,57 @@ public class ScenarioController {
             @Positive double targetAltitudeKm) {
     }
 
-    /** Lambert rendezvous payload (Phase 5C, US-MAN-03): chief-arrival epoch (ISO-8601 UTC). */
+    /**
+     * Rendezvous payload (Phase 5C / 9A, US-MAN-03): chief-arrival epoch (ISO-8601 UTC).
+     * {@code corrected} (default true) runs the differential corrector against the real
+     * propagators (R16); {@code nRev} (optional, from the arrival×rev search) fixes the
+     * transfer revolution count instead of searching all feasible counts.
+     */
     public record RendezvousRequest(
             @Positive int deputyNoradId,
+            @NotBlank String arrivalEpoch,
+            Boolean corrected,
+            Integer nRev) {
+    }
+
+    /** Rendezvous arrival×rev search payload (Phase 9A): the deputy to search for. */
+    public record RendezvousSearchRequest(@Positive int deputyNoradId) {
+    }
+
+    /** Phasing-orbit template payload (Phase 9A, US-MAN-06): revolutions to phase over. */
+    public record PhasingRequest(
+            @Positive int deputyNoradId,
+            @Positive int phasingRevs) {
+    }
+
+    /** NMC insertion payload (Phase 9B, US-MAN-09): the deputy to put on a bounded orbit. */
+    public record NmcRequest(@Positive int deputyNoradId) {
+    }
+
+    /**
+     * Monte Carlo dispersion payload (Phase 9C, UC-6). {@code sampleCount} 0 → default;
+     * {@code seed} makes the run reproducible; the σ are 1-σ initial-state uncertainty
+     * (position m, velocity m/s) and maneuver execution error (ΔV fraction, pointing °).
+     */
+    public record MonteCarloRequest(
+            @Positive int deputyNoradId,
+            int sampleCount,
+            long seed,
+            double posSigmaM,
+            double velSigmaMs,
+            double dvMagFrac,
+            double dvPointingDeg) {
+    }
+
+    /**
+     * V-bar/R-bar hold payload (Phase 9B, US-MAN-07/08/10). {@code axis} ∈ {vbar, rbar};
+     * signed {@code distanceM} places the hold point ahead/behind or above/below the chief;
+     * {@code arrivalEpoch} is when the deputy parks there (ISO-8601 UTC).
+     */
+    public record HoldRequest(
+            @Positive int deputyNoradId,
+            @NotBlank String axis,
+            double distanceM,
             @NotBlank String arrivalEpoch) {
     }
 
@@ -260,6 +371,19 @@ public class ScenarioController {
             double boresightY,
             double boresightZ,
             double clockDeg) {
+    }
+
+    /**
+     * Link-budget payload (Phase 9D, US-EVT-05). {@code kind} ∈ {rf, optical}; a concise
+     * Friis model (EIRP + G/T − free-space loss + Boltzmann − 10·log10 B). Semantics → 422.
+     */
+    public record LinkBudgetRequest(
+            String kind,
+            double eirpDbw,
+            double gOverTdbK,
+            @Positive double frequencyGhz,
+            @Positive double bandwidthHz,
+            double thresholdDb) {
     }
 
     /** Set-attitude payload (Phase 7). {@code mode} ∈ {lvlh, fixed}; {@code quaternion} = [x,y,z,w] for fixed. */

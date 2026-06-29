@@ -50,6 +50,9 @@ considered**, **Consequences**.
 **Environment & events**
 25. [Sun/Moon + lighting, eclipse, conjunctions, constraints (Phase 8)](#25-sunmoon--lighting-eclipse-conjunctions-constraints-phase-8)
 
+**Maneuvers & analysis**
+27. [Advanced maneuvers & analysis: corrector, CW templates, Monte Carlo, link budget (Phase 9)](#27-advanced-maneuvers--analysis-corrector-cw-templates-monte-carlo-link-budget-phase-9)
+
 **Cross-cutting / enterprise**
 16. [Enterprise posture: professional-grade from the start](#16-enterprise-posture-professional-grade-from-the-start)
 17. [Deployment: containerized, cloud + on-prem](#17-deployment-containerized-cloud--on-prem)
@@ -1365,6 +1368,89 @@ toggleable **body-axis triad** (the model is too symmetric and a far craft is ju
 attitude was effectively invisible without it) and a "measured" legend label. Verified on the dev
 stack (re-import → chief `attitude.mode=measured`; the relative frame carries the chief's varying
 measured `att`).
+
+---
+
+## 27. Advanced maneuvers & analysis: corrector, CW templates, Monte Carlo, link budget (Phase 9)
+
+**Context.** Phase 9 (roadmap §9; SRS §3.5 / §3.12.4–5 / §3.6; US-MAN-06..11, US-MC-01/02,
+US-EVT-05; UC-6) deepens the *analysis* layer on top of the Phase 4–8 streaming/scenario
+architecture. Four threads came due: (9A) the Phase-5C two-impulse rendezvous was an
+open-loop two-body **sketch** that missed by the model difference (R16); (9B) Maya's
+close-range maneuver templates (NMC, V-bar/R-bar hold) had no implementation; (9C) Frank's
+Monte Carlo dispersion + covariance (UC-6) needed seeded RNG — the **first** randomness in
+a system whose reproducibility bar is bit-identical reruns (R11, §5.4.1); (9D) Gita's link
+budget / SNR (US-EVT-05) needed a per-sensor model on the rendered trajectory.
+
+**Decision.** Ride the established patterns exactly — `analysis/` computers on the
+**already-sampled** trajectory (no re-propagation; Decision 24), additive `scenario-relative`
+fields (`VERSION` stays `"1"`, R12), a forward-additive `ScenarioBody` schema bump (no DB
+migration), all scenario edits through the single audited `ScenarioService`. Sliced 9A/9B/9C/9D.
+
+- **9A — flight-ready rendezvous (closes R16).** A `RendezvousCorrector` (a **differential
+  corrector** against the real propagators — numerical deputy + SGP4/numerical chief) replaces
+  the open-loop Lambert plan: damped Gauss-Newton (Levenberg-Marquardt `JᵀJ+λI`) + backtracking
+  line search, domain-exit (`OrekitException`) fallback, and ΔV/iteration caps. The two-impulse
+  rendezvous defaults to `corrected=true`; non-convergence **falls back to the open-loop seed +
+  a warning in the audit summary** (not a hard 422). A `RendezvousSearchService` provides an
+  **arrival × revolution** two-body Lambert ΔV grid (a serial chief-grid precompute + pure
+  parallel cells) so a cheap/feasible transfer isn't trial-and-error. A `phasing(dep, revs)`
+  template (two-body in-track sketch, window-guarded) covers the realistic co-elliptic approach.
+- **9B — CW close-range templates (core).** `prop/CwTargeting` adds analytic CW STM blocks
+  (matching `CwPropagation.advance`) + `twoImpulse(r0,v0,rT,vT,n,dt)` (null at the integer-rev
+  singularity). On it: `nmc(dep)` (in-track drift-cancel `vy = −2·n·x` → a closed natural-motion
+  ellipse) and `hold(dep, axis, distanceM, arrival)` (CW two-impulse to a V-bar/R-bar hold point,
+  zero arrival velocity). **Deferred within 9B:** finite burns (US-MAN-11), glideslope,
+  closed-loop station-keeping — the `CwTargeting` primitive is in place for the latter two.
+- **9C — Monte Carlo + covariance (UC-6).** `analysis/MonteCarloService` perturbs the deputy's
+  ECI seed (Gaussian pos/vel) + maneuver ΔV (magnitude + pointing tilt), propagates each sample,
+  expresses it chief-LVLH, and aggregates the cloud + per-epoch covariance ellipsoids (Hipparchus
+  `EigenDecompositionSymmetric` → ordered, sign-canonicalized, right-handed → a three.js
+  quaternion via the extracted `FrameService.matrixToQuaternionXyzw`). Determinism is **preserved
+  despite RNG** (R11): a **per-sample** `SplittableRandom` seeded from `mix(configuredSeed, i)`
+  (SplitMix64), a **fixed intra-sample draw order**, an **index-ordered collect**, and
+  canonicalized eigenvectors — so a run is byte-identical and **independent of thread/pool
+  scheduling**. Default 100 samples (cap 500); the propagation pool is **bounded to ≤6** to cap
+  peak memory (an unbounded common-pool run crashed the test JVM; each sample is a full numerical
+  propagation, R18).
+- **9D — link budget / SNR (US-EVT-05).** `ScenarioBody` schema **v6** adds an optional
+  `LinkBudget` sub-record on a `Sensor` (forward-additive; v1–v5 bodies deserialize with a null
+  budget; re-stamped on save; no migration). `analysis/LinkBudgetComputer` runs on the sampled
+  trajectory (like `SensorEventComputer`): per (link-budget sensor ↔ target) sample, a concise
+  Friis model `SNR(r) = EIRP + G/T − Lfs(r) + 228.6 − 10·log10(B)` with `Lfs = 20·log10(4π r f/c)`
+  (SNR drops ~6 dB per range-doubling). Streamed additively (`linkBudgets` series, strided to a
+  bounded point count). Authored via the audited `setLinkBudget` path.
+
+**Why.** The sampled-trajectory `analysis/` pattern (Decision 24) already gives
+consistency-by-construction with the rendered scene and is cheap — Monte Carlo and link budget are
+the same shape. A differential corrector against the *real* propagators is the only honest fix for
+R16 (a two-body plan executed under full perturbations must close the loop). Per-sample seeding +
+ordered collect is what lets Monte Carlo introduce RNG without surrendering reproducibility. Schema
+v6 forward-additivity matches every prior bump (v2→v3→v4→v5).
+
+**Alternatives considered.** *Keep the open-loop Lambert rendezvous + a ΔV warning* (rejected — R16
+is a correctness gap for an RPO tool; the corrector is the proper fix). *A shared RNG across MC
+samples / the unbounded common ForkJoinPool* (rejected — non-deterministic collect order and a JVM
+memory blow-up; per-sample seed + bounded pool fixes both). *Hard 422 on corrector non-convergence*
+(rejected — the open-loop seed + audit warning is more useful than a dead end). *Orekit
+`ConstantThrustManeuver` for finite burns now* (deferred — a cross-cutting prop-layer change not
+rushed at session end; the schema-v6 seam is ready). *Detector-specific optical NEP/QE link model*
+(deferred — the Friis form with optical-band parameters is the v1; the `kind` field leaves room).
+
+**Consequences.** New `analysis/` classes: `RendezvousSearchService`/`DvCell`/
+`RendezvousSearchResult`, `MonteCarloService`/`MonteCarloResult`/`EllipsoidSample`,
+`LinkBudgetComputer`/`LinkBudgetSeries`; new `scenario/RendezvousCorrector` + `LinkBudgetDraft`;
+new `prop/CwTargeting`. `ManeuverTemplateService` grows `rendezvous(corrected,nRev)` / `phasing` /
+`nmc` / `hold` / `relativeStateLvlh`; `PropagationService` extracts `buildManeuvered` +
+`propagatorFor(seed, impulses)`; `FrameService` extracts public `matrixToQuaternionXyzw`. New REST:
+`POST /maneuvers/rendezvous/search`, `/maneuvers/phasing`, `/maneuvers/nmc`, `/maneuvers/hold`,
+`/scenarios/{id}/monte-carlo`, + `setLinkBudget` (`gen:api` regenerated; stream `linkBudgets` stays
+WebSocket-only). `ScenarioBody` schema v6. Frontend: `ManeuverPanel` (ΔV-map table + corrected
+insert + phasing + close-range NMC/hold), new `MonteCarloPanel` + `proximity/montecarlo.ts` (cloud
++ 3σ ellipsoid shells), `SensorPanel` link-budget fields, `Timeline` SNR band, `relativeBuffer`
+parsing. **This resolves R16** (differential corrector) and introduces the **first seeded RNG**
+(determinism held per above). Backend test count **152 → 172+**. **Deferred (build next):** finite
+burns (US-MAN-11), glideslope, closed-loop station-keeping; optical NEP/QE detail.
 
 ---
 

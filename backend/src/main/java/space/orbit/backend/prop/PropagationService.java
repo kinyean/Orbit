@@ -96,8 +96,21 @@ public class PropagationService {
         }
         TLEPropagator sgp4 = satellitePropagator.build(tle);
         StateVector seed = satellitePropagator.eciState(sgp4, tle.getDate());
-        NumericalPropagator propagator = numericalPropagation.build(seed, PropagationSettings.DEFAULT);
+        return buildManeuvered(seed, impulses);
+    }
 
+    /**
+     * Build a maneuvered numerical propagator directly from an ECI seed state (Phase 9C):
+     * the seam Monte Carlo dispersion uses to perturb the deputy's initial state. Same
+     * engine + impulse attachment as the TLE path — always numerical.
+     */
+    public Propagator propagatorFor(StateVector seed, List<Impulse> impulses) {
+        return buildManeuvered(seed, impulses == null ? List.of() : impulses);
+    }
+
+    /** Numerical propagator from a seed + sorted RIC impulses (the shared core). */
+    private NumericalPropagator buildManeuvered(StateVector seed, List<Impulse> impulses) {
+        NumericalPropagator propagator = numericalPropagation.build(seed, PropagationSettings.DEFAULT);
         LofOffset ricAttitude = new LofOffset(frames.eci(), LOFType.QSW); // satellite frame = RIC
         impulses.stream().sorted(IMPULSE_ORDER).forEach(imp -> {
             DateDetector trigger = new DateDetector(imp.epoch())

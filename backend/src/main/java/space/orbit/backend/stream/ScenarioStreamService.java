@@ -34,6 +34,8 @@ import space.orbit.backend.analysis.EclipseEventComputer;
 import space.orbit.backend.analysis.SampledCraft;
 import space.orbit.backend.analysis.SampledGeocentricCraft;
 import space.orbit.backend.analysis.SensorEvent;
+import space.orbit.backend.analysis.LinkBudgetComputer;
+import space.orbit.backend.analysis.LinkBudgetSeries;
 import space.orbit.backend.analysis.SensorEventComputer;
 import space.orbit.backend.io.MeasuredEphemeris;
 import space.orbit.backend.prop.CwPropagation;
@@ -78,6 +80,7 @@ public class ScenarioStreamService {
     private EclipseEventComputer eclipseEvents;
     private ConjunctionEventComputer conjunctionEvents;
     private ConstraintChecker constraintChecker;
+    private LinkBudgetComputer linkBudgetComputer;
 
     /** Default intra-scenario conjunction threshold (m) when the body sets none (Phase 8). */
     private static final double DEFAULT_MISS_THRESHOLD_M = 5000.0;
@@ -105,6 +108,7 @@ public class ScenarioStreamService {
         eclipseEvents = new EclipseEventComputer(); // pure: works on the sampled trajectory (Phase 8)
         conjunctionEvents = new ConjunctionEventComputer(); // pure (Phase 8)
         constraintChecker = new ConstraintChecker(); // pure (Phase 8)
+        linkBudgetComputer = new LinkBudgetComputer(); // pure (Phase 9D)
     }
 
     /**
@@ -412,11 +416,15 @@ public class ScenarioStreamService {
         List<ConstraintViolationEvent> violations = constraints.isEmpty()
                 ? List.of()
                 : constraintChecker.compute(craftsLvlh, sunVector, constraints, firstT, step, steps, epoch, durationSec);
+        // Link-budget SNR series (Phase 9D, US-EVT-05) — only when a sensor carries one.
+        List<LinkBudgetSeries> linkBudgets = anyLinkBudget(craftsLvlh)
+                ? linkBudgetComputer.compute(craftsLvlh, firstT, step, steps)
+                : List.of();
 
         return relativeEncoder.encodeRelative(epoch, step, chief.role().noradId(),
                 chiefAttitude, chief.role().sensors(), deputies, withVel,
                 fidelity, maxSeparation, chiefEccentricity, chiefRadiusM, events,
-                sunVector, moonVector, eclipses, conjunctions, violations);
+                sunVector, moonVector, eclipses, conjunctions, violations, linkBudgets);
     }
 
     /** True when any craft in the scene carries a sensor (gates sensor-event computation). */
@@ -424,6 +432,21 @@ public class ScenarioStreamService {
         for (SampledCraft c : crafts) {
             if (c.sensors() != null && !c.sensors().isEmpty()) {
                 return true;
+            }
+        }
+        return false;
+    }
+
+    /** True when any sensor carries a link budget (gates link-budget computation, Phase 9D). */
+    private static boolean anyLinkBudget(List<SampledCraft> crafts) {
+        for (SampledCraft c : crafts) {
+            if (c.sensors() == null) {
+                continue;
+            }
+            for (ScenarioBody.Sensor s : c.sensors()) {
+                if (s.linkBudget() != null) {
+                    return true;
+                }
             }
         }
         return false;

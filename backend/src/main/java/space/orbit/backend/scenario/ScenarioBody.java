@@ -36,12 +36,12 @@ public record ScenarioBody(
         Double missDistanceThresholdM) {
 
     /**
-     * The current body schema version (v5: per-role {@link Constraint} list + a
-     * top-level conjunction {@code missDistanceThresholdM}). Forward-additive: v1–v4
-     * bodies deserialize with empty constraint lists + a null threshold, and
+     * The current body schema version (v6: an optional {@link LinkBudget} on a
+     * {@link Sensor}, Phase 9D). Forward-additive: v1–v5 bodies deserialize with a null
+     * link budget (and v1–v4 with empty constraint lists + a null threshold), and
      * {@link ScenarioService} re-stamps on the next save. No DB migration needed.
      */
-    public static final int CURRENT_SCHEMA_VERSION = 5;
+    public static final int CURRENT_SCHEMA_VERSION = 6;
 
     /**
      * Convenience for the pre-v5 5-arg shape (no explicit conjunction threshold —
@@ -150,7 +150,30 @@ public record ScenarioBody(
      * deferred (the records leave room — see Decision 24).
      */
     public record Sensor(String id, String kind, String name, Fov fov,
-                         double minRangeM, double maxRangeM, Mount mount) {}
+                         double minRangeM, double maxRangeM, Mount mount, LinkBudget linkBudget) {
+
+        /** Convenience for the pre-v6 7-arg shape (no link budget). */
+        public Sensor(String id, String kind, String name, Fov fov,
+                      double minRangeM, double maxRangeM, Mount mount) {
+            this(id, kind, name, fov, minRangeM, maxRangeM, mount, null);
+        }
+
+        /** Immutable copy with a replaced link budget (Phase 9D). */
+        public Sensor withLinkBudget(LinkBudget next) {
+            return new Sensor(id, kind, name, fov, minRangeM, maxRangeM, mount, next);
+        }
+    }
+
+    /**
+     * RF/optical link budget on a sensor (Phase 9D, US-EVT-05). A concise satellite-link
+     * model: {@code SNR(r) = eirpDbw + gOverTdbK − Lfs(r) + 228.6 − 10·log10(bandwidthHz)},
+     * where {@code Lfs = 20·log10(4π r f / c)} is free-space path loss (so SNR drops ~6 dB
+     * per range-doubling). {@code thresholdDb} is the detection floor (the red band in the
+     * timeline). {@code kind ∈ {rf, optical}} — optical uses the same Friis form with
+     * optical-band parameters (detector-specific NEP/QE models are a follow-up).
+     */
+    public record LinkBudget(String kind, double eirpDbw, double gOverTdbK,
+                             double frequencyGhz, double bandwidthHz, double thresholdDb) {}
 
     /**
      * FOV geometry. {@code type = "cone"} uses {@code halfAngleDeg} (circular);

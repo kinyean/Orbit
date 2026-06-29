@@ -184,7 +184,7 @@ class ScenarioServiceTests {
         ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
         verify(versions).saveAndFlush(vCap.capture());
         assertThat(vCap.getValue().getVersionNo()).isEqualTo(2);
-        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":5").contains("delta_v");
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":6").contains("delta_v");
         assertThat(s.getLatestVersionId()).isEqualTo(vCap.getValue().getId());
         verify(auditLog, times(1)).save(any());
 
@@ -203,9 +203,9 @@ class ScenarioServiceTests {
 
         ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
         verify(versions).saveAndFlush(vCap.capture());
-        // The v1 body deserialized (null maneuvers/sensors → empty), then re-stamped to v5.
-        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":5").contains("delta_v");
-        assertThat(resp.body().schemaVersion()).isEqualTo(5);
+        // The v1 body deserialized (null maneuvers/sensors → empty), then re-stamped to v6.
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":6").contains("delta_v");
+        assertThat(resp.body().schemaVersion()).isEqualTo(6);
         assertThat(resp.body().chief().noradId()).isEqualTo(25544);
         assertThat(resp.body().deputies().get(0).maneuvers()).hasSize(1);
     }
@@ -287,7 +287,7 @@ class ScenarioServiceTests {
         ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
         verify(versions).saveAndFlush(vCap.capture());
         assertThat(vCap.getValue().getVersionNo()).isEqualTo(2);
-        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":5").contains("Imager");
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":6").contains("Imager");
         assertThat(s.getLatestVersionId()).isEqualTo(vCap.getValue().getId());
         verify(auditLog, times(1)).save(any());
         assertThat(resp.body().chief().sensors()).hasSize(1);
@@ -407,7 +407,7 @@ class ScenarioServiceTests {
 
         ArgumentCaptor<ScenarioVersion> vCap = ArgumentCaptor.forClass(ScenarioVersion.class);
         verify(versions).saveAndFlush(vCap.capture());
-        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":5").contains("approach-corridor");
+        assertThat(vCap.getValue().getBody()).contains("\"schemaVersion\":6").contains("approach-corridor");
         assertThat(s.getLatestVersionId()).isEqualTo(vCap.getValue().getId());
         verify(auditLog, times(1)).save(any());
         assertThat(resp.body().chief().constraints()).hasSize(1);

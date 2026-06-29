@@ -406,6 +406,49 @@ public class ScenarioService {
         return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
     }
 
+    /** Set (or clear, with a null draft) a sensor's link budget (Phase 9D, US-EVT-05). New
+     *  version + audit; the sensor is found on whichever role carries it. */
+    @Transactional
+    public ScenarioResponse setLinkBudget(UUID id, String sensorId, LinkBudgetDraft draft) {
+        User author = userService.currentUser();
+        Scenario scenario = activeScenario(id, author);
+        ScenarioBody body = parse(latestVersion(scenario).getBody());
+
+        ScenarioBody.LinkBudget lb = draft == null ? null : validateLinkBudget(draft);
+        boolean[] found = {false};
+        ScenarioBody updated = mapAllRoles(body, r -> {
+            if (r.sensors().stream().noneMatch(s -> s.id().equals(sensorId))) {
+                return r;
+            }
+            found[0] = true;
+            return r.withSensors(r.sensors().stream()
+                    .map(s -> s.id().equals(sensorId) ? s.withLinkBudget(lb) : s).toList());
+        });
+        if (!found[0]) {
+            throw new ScenarioValidationException("No sensor " + sensorId + " in this scenario");
+        }
+
+        int nextNo = saveVersion(scenario, updated, author, "LINK_BUDGET_SET",
+                (lb == null ? "Cleared" : "Set") + " link budget on sensor " + sensorId);
+        return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    /** Validate + build a {@link ScenarioBody.LinkBudget} (semantics → 422). */
+    private static ScenarioBody.LinkBudget validateLinkBudget(LinkBudgetDraft d) {
+        String kind = d.kind() == null || d.kind().isBlank() ? "rf" : d.kind().trim().toLowerCase();
+        if (!kind.equals("rf") && !kind.equals("optical")) {
+            throw new ScenarioValidationException("link budget kind must be 'rf' or 'optical'");
+        }
+        if (!(d.frequencyGhz() > 0)) {
+            throw new ScenarioValidationException("link budget frequency must be a positive number of GHz");
+        }
+        if (!(d.bandwidthHz() > 0)) {
+            throw new ScenarioValidationException("link budget bandwidth must be a positive number of Hz");
+        }
+        return new ScenarioBody.LinkBudget(kind, d.eirpDbw(), d.gOverTdbK(),
+                d.frequencyGhz(), d.bandwidthHz(), d.thresholdDb());
+    }
+
     /** Set a host's attitude profile ({@code lvlh} or {@code fixed}). New version + audit. */
     @Transactional
     public ScenarioResponse setAttitude(UUID id, AttitudeDraft draft) {

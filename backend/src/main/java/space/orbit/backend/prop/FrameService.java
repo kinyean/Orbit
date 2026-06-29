@@ -271,9 +271,24 @@ public class FrameService {
         }
         z = z.normalize();
         Vector3D x = Vector3D.crossProduct(y, z); // +X = +Y × +Z (right-handed)
-        double m00 = x.getX(), m01 = y.getX(), m02 = z.getX();
-        double m10 = x.getY(), m11 = y.getY(), m12 = z.getY();
-        double m20 = x.getZ(), m21 = y.getZ(), m22 = z.getZ();
+        return matrixToQuaternionXyzw(new double[][] {
+            {x.getX(), y.getX(), z.getX()},
+            {x.getY(), y.getY(), z.getY()},
+            {x.getZ(), y.getZ(), z.getZ()},
+        });
+    }
+
+    /**
+     * Convert a right-handed rotation matrix (columns = basis axes, {@code r[row][col]})
+     * to a {@code (x,y,z,w)} quaternion via the standard three.js trace formula. The one
+     * pinned three.js convention — shared by modeled attitude ({@link #basisQuaternion})
+     * and the Phase-9C covariance-ellipsoid orientation, so both match the streamed
+     * quaternions the client SLERPs/applies.
+     */
+    public static double[] matrixToQuaternionXyzw(double[][] r) {
+        double m00 = r[0][0], m01 = r[0][1], m02 = r[0][2];
+        double m10 = r[1][0], m11 = r[1][1], m12 = r[1][2];
+        double m20 = r[2][0], m21 = r[2][1], m22 = r[2][2];
         double trace = m00 + m11 + m22;
         double qx, qy, qz, qw;
         if (trace > 0) {
