@@ -138,7 +138,7 @@ class RendezvousCorrectorTests {
 
         RendezvousCorrector corrector = new RendezvousCorrector(prop, frames);
         RendezvousCorrector.Correction c = corrector.correct(
-                deputy, chief, Fidelity.SGP4, t1, t2, seed[0], seed[1]);
+                deputy, prop.propagatorFor(chief, Fidelity.SGP4), t1, t2, seed[0], seed[1]);
 
         assertThat(c.converged()).as("corrector converges for a co-orbital catch-up").isTrue();
         assertThat(c.missM()).as("converged arrival miss").isLessThan(RendezvousCorrector.CONVERGE_MISS_M);
@@ -162,8 +162,8 @@ class RendezvousCorrectorTests {
         Impulse[] seed = lambertSeed(prop, frames, deputy, chief, t1, t2);
 
         RendezvousCorrector corrector = new RendezvousCorrector(prop, frames);
-        RendezvousCorrector.Correction a = corrector.correct(deputy, chief, Fidelity.SGP4, t1, t2, seed[0], seed[1]);
-        RendezvousCorrector.Correction b = corrector.correct(deputy, chief, Fidelity.SGP4, t1, t2, seed[0], seed[1]);
+        RendezvousCorrector.Correction a = corrector.correct(deputy, prop.propagatorFor(chief, Fidelity.SGP4), t1, t2, seed[0], seed[1]);
+        RendezvousCorrector.Correction b = corrector.correct(deputy, prop.propagatorFor(chief, Fidelity.SGP4), t1, t2, seed[0], seed[1]);
 
         assertThat(Double.doubleToLongBits(a.depart().r())).isEqualTo(Double.doubleToLongBits(b.depart().r()));
         assertThat(Double.doubleToLongBits(a.depart().i())).isEqualTo(Double.doubleToLongBits(b.depart().i()));
@@ -184,7 +184,7 @@ class RendezvousCorrectorTests {
         Impulse[] seed = lambertSeed(prop, frames, deputy, chief, t1, t2);
 
         RendezvousCorrector corrector = new RendezvousCorrector(prop, frames);
-        RendezvousCorrector.Correction c = corrector.correct(deputy, chief, Fidelity.SGP4, t1, t2, seed[0], seed[1]);
+        RendezvousCorrector.Correction c = corrector.correct(deputy, prop.propagatorFor(chief, Fidelity.SGP4), t1, t2, seed[0], seed[1]);
 
         // On a pathological geometry it must not silently store a garbage burn: either it
         // converged within the ΔV cap, or it fell back to the seed with a note.
@@ -194,5 +194,40 @@ class RendezvousCorrectorTests {
             assertThat(c.depart().i()).isEqualTo(seed[0].i());
             assertThat(c.depart().c()).isEqualTo(seed[0].c());
         }
+    }
+
+    /**
+     * A ΔV-dominated (e.g. cross-plane) rendezvous is refused immediately, not ground through
+     * the iteration budget. Regression for the observed 16 s hang on a cross-plane pair: the
+     * seed ΔV (here 3.1 km/s) exceeds {@link RendezvousCorrector#MAX_SEED_DV_MS}, so the
+     * corrector returns the open-loop seed with a clear note before running a single
+     * (expensive) numerical propagation.
+     */
+    @Test
+    void deltaVDominatedSeedIsRefusedImmediately() {
+        FrameService frames = frames();
+        PropagationService prop = prop(frames);
+        TLE chief = leoTle(25544, "CHIEF", 0.0);
+        TLE deputy = leoTle(25545, "DEPUTY", 0.0);
+        AbsoluteDate t1 = new AbsoluteDate("2024-06-01T12:00:00.000", TimeScalesFactory.getUTC());
+        AbsoluteDate t2 = t1.shiftedBy(3000.0);
+        // 200 m/s in-track + 2900 m/s cross-track ≈ 3.1 km/s — a cross-plane plan, well past the cap.
+        Impulse bigDepart = new Impulse(t1, 0.0, 200.0, 0.0);
+        Impulse bigArrive = new Impulse(t2, 0.0, 0.0, 2900.0);
+
+        RendezvousCorrector corrector = new RendezvousCorrector(prop, frames);
+        long startNanos = System.nanoTime();
+        RendezvousCorrector.Correction c =
+                corrector.correct(deputy, prop.propagatorFor(chief, Fidelity.SGP4), t1, t2, bigDepart, bigArrive);
+        long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+
+        assertThat(c.converged()).as("can't converge a cross-plane plan").isFalse();
+        assertThat(c.iterations()).as("bailed before the Newton loop").isZero();
+        assertThat(c.note()).contains("ΔV-dominated");
+        // The open-loop seed is returned unchanged (honest, just flagged).
+        assertThat(c.depart().i()).isEqualTo(200.0);
+        assertThat(c.arrive().c()).isEqualTo(2900.0);
+        // And it did so without grinding through any numerical propagation (≪ the time fuse).
+        assertThat(elapsedMs).as("refused without propagating").isLessThan(RendezvousCorrector.RUNTIME_CAP_MS);
     }
 }

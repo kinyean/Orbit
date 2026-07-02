@@ -17,6 +17,8 @@ import space.orbit.backend.prop.OrekitTestData;
 import space.orbit.backend.prop.PropagationService;
 import space.orbit.backend.prop.SatellitePropagator;
 import space.orbit.backend.prop.TleFactory;
+import space.orbit.backend.scenario.ChiefStateResolver;
+import space.orbit.backend.scenario.MeasuredDatasetRepository;
 import space.orbit.backend.scenario.ScenarioBody;
 import space.orbit.backend.scenario.ScenarioResponse;
 import space.orbit.backend.scenario.ScenarioService;
@@ -76,7 +78,11 @@ class RendezvousSearchServiceTests {
         ScenarioService scenarioService = mock(ScenarioService.class);
         when(scenarioService.get(any())).thenReturn(new ScenarioResponse(
                 ID.toString(), "S", UUID.randomUUID().toString(), null, 1, 1, body()));
-        RendezvousSearchService svc = new RendezvousSearchService(scenarioService, prop, frames);
+        ChiefStateResolver chiefResolver = new ChiefStateResolver(
+                prop, frames, mock(MeasuredDatasetRepository.class));
+        chiefResolver.init();
+        RendezvousSearchService svc =
+                new RendezvousSearchService(scenarioService, prop, frames, chiefResolver);
         svc.init();
         return svc;
     }

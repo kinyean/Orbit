@@ -26,6 +26,7 @@ import org.springframework.stereotype.Service;
 import space.orbit.backend.prop.Fidelity;
 import space.orbit.backend.prop.FrameService;
 import space.orbit.backend.prop.PropagationService;
+import space.orbit.backend.scenario.ChiefStateResolver;
 import space.orbit.backend.scenario.ScenarioBody;
 import space.orbit.backend.scenario.ScenarioService;
 import space.orbit.backend.scenario.ScenarioValidationException;
@@ -55,14 +56,17 @@ public class RendezvousSearchService {
     private final ScenarioService scenarioService;
     private final PropagationService propagationService;
     private final FrameService frames;
+    private final ChiefStateResolver chiefResolver;
 
     private TimeScale utc;
 
     public RendezvousSearchService(ScenarioService scenarioService,
-                                   PropagationService propagationService, FrameService frames) {
+                                   PropagationService propagationService, FrameService frames,
+                                   ChiefStateResolver chiefResolver) {
         this.scenarioService = scenarioService;
         this.propagationService = propagationService;
         this.frames = frames;
+        this.chiefResolver = chiefResolver;
     }
 
     @PostConstruct
@@ -89,9 +93,10 @@ public class RendezvousSearchService {
         AbsoluteDate t1 = new AbsoluteDate(start, utc);
 
         TLE depTle = rebuildTle(deputy);
-        TLE chiefTle = rebuildTle(body.chief());
+        // The chief may be a measured ephemeris (e.g. TELEOS-2) — resolve its state provider
+        // either way; the deputy must be TLE-backed (it's the one we maneuver).
         Propagator depProp = propagationService.propagatorFor(depTle, Fidelity.SGP4);
-        Propagator chiefProp = propagationService.propagatorFor(chiefTle, Fidelity.SGP4);
+        Propagator chiefProp = chiefResolver.resolve(body.chief(), Fidelity.SGP4).provider();
         PVCoordinates dep1 = depProp.getPVCoordinates(t1, eci);
         Vector3D depPos = dep1.getPosition();
         Vector3D depVel = dep1.getVelocity();

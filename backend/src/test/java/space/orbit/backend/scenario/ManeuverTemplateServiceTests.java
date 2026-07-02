@@ -13,6 +13,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Mockito;
 import org.orekit.propagation.analytical.tle.TLE;
 import space.orbit.backend.io.GpRecord;
 import space.orbit.backend.prop.FrameService;
@@ -70,8 +71,11 @@ class ManeuverTemplateServiceTests {
         frames.init();
         PropagationService prop = new PropagationService(
                 new SatellitePropagator(frames), new NumericalPropagation(frames), frames);
+        ChiefStateResolver chiefResolver = new ChiefStateResolver(
+                prop, frames, Mockito.mock(MeasuredDatasetRepository.class));
+        chiefResolver.init();
         ManeuverTemplateService svc = new ManeuverTemplateService(
-                scenarioService, prop, frames, new RendezvousCorrector(prop, frames));
+                scenarioService, prop, frames, new RendezvousCorrector(prop, frames), chiefResolver);
         svc.init();
         return svc;
     }

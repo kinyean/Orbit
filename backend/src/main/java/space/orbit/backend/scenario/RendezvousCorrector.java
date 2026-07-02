@@ -69,8 +69,19 @@ public class RendezvousCorrector {
     /** Reject a corrected total ΔV beyond this — far past a real burn (mirrors the
      *  panel's >5 km/s guard; orbital speed at LEO ≈ 7.5 km/s). */
     static final double MAX_TOTAL_DV_MS = 5000.0;
+    /** Skip correction (return the open-loop seed immediately) when the seed ΔV is already
+     *  this large. The corrector exists to close the <em>model-mismatch</em> gap (tens of km
+     *  → &lt;1 m) on a <em>feasible</em> transfer; a seed this big means the geometry is
+     *  ΔV-dominated (a cross-plane rendezvous / wrong regime), where correction can't
+     *  converge anyway and only burns ~16 s of numerical propagation before falling back.
+     *  Catching it here makes the request return in milliseconds with a clear note instead.
+     *  Well below {@link #MAX_TOTAL_DV_MS} (the post-convergence cap) — a real proximity
+     *  rendezvous is tens-to-hundreds of m/s, not kilometres. */
+    static final double MAX_SEED_DV_MS = 2000.0;
     /** Wall-clock safety fuse for pathological inputs (long arcs). NOT a determinism
-     *  knob — a normal co-orbital solve converges in a few iterations well under it. */
+     *  knob — a normal co-orbital solve converges in a few iterations well under it.
+     *  Checked at the top of each Newton iteration AND inside the backtracking line search,
+     *  so a single iteration's ≤9 numerical propagations can't run the cap 2× over. */
     static final long RUNTIME_CAP_MS = 8000;
 
     private final PropagationService propagationService;
@@ -90,18 +101,30 @@ public class RendezvousCorrector {
     /**
      * Correct a two-impulse transfer against the real propagators.
      *
-     * @param deputyTle     the maneuvering deputy (always flown numerically once it has a burn)
-     * @param chiefTle      the rendezvous target (the LVLH origin)
-     * @param chiefFidelity the fidelity the scenario flies the chief with (CW → SGP4)
-     * @param departEpoch   the first burn epoch (scenario start)
-     * @param arriveEpoch   the rendezvous epoch
-     * @param seedDepart    the two-body Lambert departure ΔV (deputy RIC) — the Newton seed
-     * @param seedArrive    the two-body Lambert arrival ΔV — returned unchanged on fall-back
+     * @param deputyTle   the maneuvering deputy (always flown numerically once it has a burn)
+     * @param chiefProp   the rendezvous target's state provider (the LVLH origin), built at
+     *                    the scenario's chief fidelity — or a measured tabulated ephemeris
+     * @param departEpoch the first burn epoch (scenario start)
+     * @param arriveEpoch the rendezvous epoch
+     * @param seedDepart  the two-body Lambert departure ΔV (deputy RIC) — the Newton seed
+     * @param seedArrive  the two-body Lambert arrival ΔV — returned unchanged on fall-back
      */
-    public Correction correct(TLE deputyTle, TLE chiefTle, Fidelity chiefFidelity,
+    public Correction correct(TLE deputyTle, Propagator chiefProp,
                               AbsoluteDate departEpoch, AbsoluteDate arriveEpoch,
                               Impulse seedDepart, Impulse seedArrive) {
-        Propagator chiefProp = propagationService.propagatorFor(chiefTle, chiefFidelity);
+        // Fast refusal for a ΔV-dominated (e.g. cross-plane) geometry: the open-loop seed is
+        // already huge, so correcting it can't converge and would just grind through the full
+        // iteration budget before falling back. Return the seed now with a clear note (R16:
+        // still honest — it's the open-loop transfer, flagged as not a feasible rendezvous).
+        double seedTotalDv = norm(seedDepart.r(), seedDepart.i(), seedDepart.c())
+                + norm(seedArrive.r(), seedArrive.i(), seedArrive.c());
+        if (seedTotalDv > MAX_SEED_DV_MS) {
+            return fallback(seedDepart, seedArrive, Double.POSITIVE_INFINITY, 0, String.format(
+                    "rendezvous is ΔV-dominated (open-loop seed %.0f m/s — e.g. a cross-plane "
+                            + "transfer); differential correction skipped, using the open-loop "
+                            + "two-body transfer (not a feasible proximity rendezvous)", seedTotalDv));
+        }
+
         StateVector chiefArr = propagationService.sample(chiefProp, arriveEpoch);
         Vector3D chiefPos = chiefArr.position();
         Vector3D chiefVel = chiefArr.velocity();
@@ -118,7 +141,7 @@ public class RendezvousCorrector {
         long startNanos = System.nanoTime();
         int iter = 0;
         while (miss.getNorm() >= CONVERGE_MISS_M && iter < MAX_ITERS) {
-            if ((System.nanoTime() - startNanos) / 1_000_000L > RUNTIME_CAP_MS) {
+            if (overBudget(startNanos)) {
                 return fallback(seedDepart, seedArrive, seedMissNorm, iter,
                         "differential corrector exceeded its time budget — using the open-loop "
                                 + "two-body transfer (rendezvous is approximate)");
@@ -159,6 +182,14 @@ public class RendezvousCorrector {
             Vector3D trialMiss = miss;
             boolean improved = false;
             for (int bt = 0; bt < MAX_BACKTRACK; bt++) {
+                // The fuse must cover the line search too: a single iteration runs up to
+                // MAX_BACKTRACK numerical propagations, so checking only at the top of the
+                // Newton loop let a run overrun the cap ~2× (≈16 s observed).
+                if (overBudget(startNanos)) {
+                    return fallback(seedDepart, seedArrive, seedMissNorm, iter,
+                            "differential corrector exceeded its time budget — using the open-loop "
+                                    + "two-body transfer (rendezvous is approximate)");
+                }
                 double[] candidate = {x[0] + stepScale * dx.getEntry(0),
                         x[1] + stepScale * dx.getEntry(1), x[2] + stepScale * dx.getEntry(2)};
                 Vector3D candidateMiss = arrivalMiss(deputyTle, departEpoch, arriveEpoch, candidate, chiefPos);
@@ -244,6 +275,12 @@ public class RendezvousCorrector {
             j[2][k] = (fk.getZ() - miss0.getZ()) / FD_STEP_MS;
         }
         return new Array2DRowRealMatrix(j, false);
+    }
+
+    /** Wall-clock fuse check (see {@link #RUNTIME_CAP_MS}) — evaluated around every batch
+     *  of numerical propagations so the cap is an actual bound, not a per-iteration check. */
+    private static boolean overBudget(long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000L > RUNTIME_CAP_MS;
     }
 
     private static Correction fallback(Impulse seedDepart, Impulse seedArrive,

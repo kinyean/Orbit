@@ -11,7 +11,6 @@ import org.hipparchus.geometry.euclidean.threed.Vector3D;
 import org.orekit.errors.OrekitException;
 import org.orekit.frames.Frame;
 import org.orekit.frames.Transform;
-import org.orekit.orbits.CartesianOrbit;
 import org.orekit.orbits.KeplerianOrbit;
 import org.orekit.propagation.Propagator;
 import org.orekit.propagation.SpacecraftState;
@@ -20,7 +19,6 @@ import org.orekit.propagation.analytical.tle.TLE;
 import org.orekit.time.AbsoluteDate;
 import org.orekit.time.TimeScale;
 import org.orekit.time.TimeScalesFactory;
-import org.orekit.utils.Constants;
 import org.orekit.utils.PVCoordinates;
 import org.orekit.utils.PVCoordinatesProvider;
 import org.springframework.context.annotation.DependsOn;
@@ -48,6 +46,7 @@ import space.orbit.backend.prop.QuaternionSamples;
 import space.orbit.backend.scenario.MeasuredDataset;
 import space.orbit.backend.scenario.MeasuredDatasetCodec;
 import space.orbit.backend.scenario.MeasuredDatasetRepository;
+import space.orbit.backend.scenario.MeasuredEphemerisFactory;
 import space.orbit.backend.scenario.ScenarioBody;
 import space.orbit.backend.scenario.ScenarioService;
 
@@ -670,16 +669,6 @@ public class ScenarioStreamService {
     }
 
     /**
-     * Interpolation points for the tabulated measured ephemeris. Each sample carries
-     * velocity, so TWO points give a cubic Hermite per segment — accurate for dense
-     * (~5 min) LEO ephemeris and, crucially, STABLE. More points raise the polynomial
-     * degree (4 pts ⇒ degree-7) which, over ~20° of arc per step, overshoots wildly
-     * between nodes (Runge oscillation → positions blowing up to ~1e11 km even though
-     * the nodes are exact). Keep this at 2.
-     */
-    private static final int EPHEMERIS_INTERP_POINTS = 2;
-
-    /**
      * Prepare a role backed by a stored measured ephemeris (Decision: measured-data
      * ingestion): decode the dataset's samples into Orekit {@link SpacecraftState}s
      * (EME2000) and serve them through a tabulated {@link Ephemeris} — a
@@ -707,19 +696,13 @@ public class ScenarioStreamService {
             throw new ScenarioStreamUnprocessableException(
                     "measured dataset " + datasetId + " has too few states");
         }
-        Frame eci = frames.eci();
-        double mu = Constants.WGS84_EARTH_MU;
-        List<SpacecraftState> states = new ArrayList<>(samples.size());
-        for (MeasuredEphemeris.Sample s : samples) {
-            AbsoluteDate date = new AbsoluteDate(Instant.ofEpochMilli(s.epochMillis()), utc);
-            PVCoordinates pv = new PVCoordinates(
-                    new Vector3D(s.px(), s.py(), s.pz()), new Vector3D(s.vx(), s.vy(), s.vz()));
-            states.add(new SpacecraftState(new CartesianOrbit(pv, eci, date, mu)));
-        }
-        Ephemeris ephemeris = new Ephemeris(states, Math.min(EPHEMERIS_INTERP_POINTS, states.size()));
-        KeplerianOrbit k0 = new KeplerianOrbit(states.get(0).getOrbit());
+        // Build the tabulated ephemeris via the shared factory so the interpolation-degree
+        // invariant (INTERP_POINTS = 2, R19) lives in ONE place — the maneuver templates and
+        // rendezvous search resolve a measured chief through the same factory.
+        MeasuredEphemerisFactory.Built built = MeasuredEphemerisFactory.build(samples, frames.eci(), utc);
+        KeplerianOrbit k0 = built.firstOrbit();
         double periodSeconds = Math.max(60.0, k0.getKeplerianPeriod());
-        return new PreparedRole(role, ephemeris, periodSeconds, k0.getE(), Math.toDegrees(k0.getI()),
+        return new PreparedRole(role, built.ephemeris(), periodSeconds, k0.getE(), Math.toDegrees(k0.getI()),
                 buildMeasuredAttitude(role, decoded.attitude()));
     }
 

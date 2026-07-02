@@ -1561,3 +1561,59 @@ Explicitly not decided yet; each has a tracked reason.
   space). Flat non-physical lighting until the Phase 8 Sun vector.
 - **Two-body + J2 quick model.** Not needed — Orekit's fidelity modes cover the
   range.
+- **Composable / chained maneuver templates (multi-phase RPO sequences).** Today every
+  template fires its first burn at the **scenario start** (`timeRange.start`) and — for the
+  CW templates `nmc`/`hold`/`glideslope` — solves from the deputy's **un-maneuvered** SGP4
+  state at that instant (`propagatorFor(tleOf(deputy), SGP4)`, no impulses). `rendezvous`/
+  `hold` expose only the *arrival* epoch, never the departure; `nmc` has no epoch input at
+  all. Only `stationKeep` is stateful (it rebuilds the deputy *with the corrections so far*).
+  Consequence: the templates don't **compose** — you can't click `rendezvous` (arrive 07:08)
+  → `nmc` (fly-around from 07:08) → `glideslope` → dock, because the later templates ignore
+  the earlier burns and snap back to t-start. The natural fix: give `nmc`/`hold`/`glideslope`
+  (and a departure epoch for `rendezvous`/`phasing`) an optional **`startEpoch`**, and have
+  them propagate the deputy **with its existing maneuvers** (`toImpulses`) up to that epoch
+  before solving — mirroring how `stationKeep` already feeds the real propagator back into
+  its loop. That makes a true multi-phase RPO plan (close in → establish a passively-safe
+  NMC circumnavigation → walk down a glideslope → dock) buildable by stacking templates,
+  each starting where the previous one left the deputy. Scoped, additive (a future `US-MAN`
+  story); workaround today is manual **Add Δv** at the chosen epochs. (Precondition already
+  shipped: templates now accept a **measured ephemeris chief**, 2026-06-29 — see Decision 26
+  / measured-data track.)
+- **Generic relative-state targeter → optionally close the loop on the other templates.**
+  Today only the two-impulse **rendezvous** is closed-loop (`RendezvousCorrector`, a Newton
+  targeter against the real propagators — Decision 27, closes R16). `hold`/`phasing`/
+  `glideslope`/`nmc` are **open-loop**: the plan is solved once in a simplified model (two-body
+  Lambert for phasing, linear CW for the close-range ones), the ΔV are frozen, and they execute
+  against the full numerical model with no feedback, so the flown trajectory drifts from the
+  intended one by the model difference. The clean upgrade: **generalize `RendezvousCorrector`**
+  — which currently targets the chief's *ECI position* — into a reusable **relative-state
+  targeter** ("reach LVLH state X at epoch T against the real propagators"); then each template
+  becomes closed-loop simply by expressing its goal that way (`hold` → a hold point at zero
+  relative velocity; each `glideslope` leg → its next waypoint; `phasing` → rejoin the chief's
+  phase). The building blocks already exist: the Newton/plan-correction machinery
+  (`RendezvousCorrector`) and the per-step feedback pattern (`stationKeep`, which rebuilds the
+  deputy's real propagator with corrections-so-far and re-aims).
+
+  **Rationale it's deferred (not a correctness gap, unlike R16).** This is a *planning/sketch*
+  tool — the deliverable is the **ΔV budget + geometry**, which open-loop nails cheaply and
+  instantly; Frank validates the exact closure separately at high fidelity (Monte Carlo / OEM).
+  Only the rendezvous *had* to close the loop, because "actually arrive at the chief" is its
+  literal success criterion (a km-scale miss is a bug). For the others the residual is a known,
+  acceptable approximation — and close-range **CW is already accurate** in its regime (SRS
+  §5.2.3: sub-metre over an hour under ~10 km), so the marginal benefit is modest for
+  `hold`/`glideslope` and larger for `phasing` (two-body error accumulates over many orbits).
+
+  **Tradeoffs / why it's real work, not just the algebra:**
+  - **Latency.** Each correction is several full numerical propagations (cf. the 16 s rendezvous
+    incident, 2026-06-29). A multi-waypoint closed-loop `glideslope` is *many* propagations →
+    it loses the instant-sketch feel that makes these templates pleasant; would likely need a
+    progress/async path or a tighter compute budget.
+  - **Per-template robustness wrapper.** The rendezvous corrector isn't just Newton — it's LM
+    damping + backtracking line search + ΔV/iteration caps + a wall-clock fuse + domain-exit
+    fallback + a seed-ΔV fast-refusal + **determinism (R11, byte-identical reruns)**. Every
+    closed-loop template needs that same hardening and its own tests.
+  - **NMC is a different kind of "closed-loop."** Maintaining a bounded NMC ellipse against
+    J2/drag is *station-keeping* (periodic feedback), not a one-shot plan correction — so
+    "closing the loop" there means the `stationKeep` pattern, not the targeter.
+  Scoped as a follow-up to the composability item above (both make the templates more
+  flight-realistic); a future `US-MAN` story.

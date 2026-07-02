@@ -48,6 +48,7 @@ public class ManeuverTemplateService {
     private final PropagationService propagationService;
     private final FrameService frames;
     private final RendezvousCorrector corrector;
+    private final ChiefStateResolver chiefResolver;
 
     /** Below this the orbit is deep in the atmosphere and re-enters within hours — a
      *  Hohmann target there just deorbits the deputy. Guards the common "I meant to
@@ -59,11 +60,13 @@ public class ManeuverTemplateService {
     public ManeuverTemplateService(ScenarioService scenarioService,
                                    PropagationService propagationService,
                                    FrameService frames,
-                                   RendezvousCorrector corrector) {
+                                   RendezvousCorrector corrector,
+                                   ChiefStateResolver chiefResolver) {
         this.scenarioService = scenarioService;
         this.propagationService = propagationService;
         this.frames = frames;
         this.corrector = corrector;
+        this.chiefResolver = chiefResolver;
     }
 
     @PostConstruct
@@ -145,11 +148,13 @@ public class ManeuverTemplateService {
         }
 
         TLE depTle = tleOf(deputy);
-        TLE chiefTle = tleOf(body.chief());
+        // The chief may be TLE-backed OR a measured ephemeris (e.g. an imported TELEOS-2);
+        // the resolver hands back a state provider either way (the chief is only sampled, never
+        // maneuvered). SGP4 for the cheap Lambert seed.
+        ChiefStateResolver.ChiefState chiefSeed = chiefResolver.resolve(body.chief(), Fidelity.SGP4);
         Propagator depProp = propagationService.propagatorFor(depTle, Fidelity.SGP4);
-        Propagator chiefProp = propagationService.propagatorFor(chiefTle, Fidelity.SGP4);
         PVCoordinates dep1 = depProp.getPVCoordinates(t1, eci);
-        PVCoordinates chief2 = chiefProp.getPVCoordinates(t2, eci);
+        PVCoordinates chief2 = chiefSeed.provider().getPVCoordinates(t2, eci);
 
         // Solve Lambert for the requested revolution count, or across every feasible
         // count keeping the cheapest. A fixed nRev=0 is degenerate once the arrival is
@@ -202,8 +207,13 @@ public class ManeuverTemplateService {
             // Close the loop against the SAME propagators the scenario flies (the
             // deputy is always numerical once it has a burn; the chief on the scenario
             // fidelity, CW→SGP4). R16: the open-loop seed misses; this hits.
+            // The corrector flies the chief at the scenario fidelity (a measured chief reuses
+            // the ephemeris — fidelity is meaningless there, so don't decode the dataset twice).
+            Propagator chiefForCorrector = chiefResolver.isMeasured(body.chief())
+                    ? chiefSeed.provider()
+                    : chiefResolver.resolve(body.chief(), chiefStreamFidelity(body.fidelity())).provider();
             RendezvousCorrector.Correction c = corrector.correct(
-                    depTle, chiefTle, chiefStreamFidelity(body.fidelity()), t1, t2, depart, arrive);
+                    depTle, chiefForCorrector, t1, t2, depart, arrive);
             depart = c.depart();
             arrive = c.arrive();
             double total = norm(depart) + norm(arrive);
@@ -248,9 +258,9 @@ public class ManeuverTemplateService {
         AbsoluteDate t1 = new AbsoluteDate(startInstant, utc);
 
         TLE depTle = tleOf(deputy);
-        TLE chiefTle = tleOf(body.chief());
+        ChiefStateResolver.ChiefState chief = chiefResolver.resolve(body.chief(), Fidelity.SGP4);
         PVCoordinates dep1 = propagationService.propagatorFor(depTle, Fidelity.SGP4).getPVCoordinates(t1, eci);
-        PVCoordinates chief1 = propagationService.propagatorFor(chiefTle, Fidelity.SGP4).getPVCoordinates(t1, eci);
+        PVCoordinates chief1 = chief.provider().getPVCoordinates(t1, eci);
 
         double mu = Constants.WGS84_EARTH_MU;
         // Signed along-track phase from the deputy to the chief about the orbit normal
@@ -261,7 +271,7 @@ public class ManeuverTemplateService {
                 rd.crossProduct(chief1.getPosition()).dotProduct(h.normalize()),
                 rd.dotProduct(chief1.getPosition()));
 
-        double tChief = 2.0 * Math.PI / chiefTle.getMeanMotion();
+        double tChief = 2.0 * Math.PI / chief.meanMotionRadPerSec();
         double tPhase = tChief * (1.0 - phi / (2.0 * Math.PI * phasingRevs));
         if (!(tPhase > 0)) {
             throw new ScenarioValidationException("phasing geometry is degenerate — try more revolutions");
@@ -309,10 +319,10 @@ public class ManeuverTemplateService {
         }
         Instant startInstant = parseInstant(body.timeRange().start());
         AbsoluteDate t1 = new AbsoluteDate(startInstant, utc);
-        TLE chiefTle = tleOf(body.chief());
-        Propagator chiefProp = propagationService.propagatorFor(chiefTle, Fidelity.SGP4);
+        ChiefStateResolver.ChiefState chief = chiefResolver.resolve(body.chief(), Fidelity.SGP4);
+        Propagator chiefProp = chief.provider();
         Propagator depProp = propagationService.propagatorFor(tleOf(deputy), Fidelity.SGP4);
-        double n = chiefTle.getMeanMotion();
+        double n = chief.meanMotionRadPerSec();
         double[] s = relativeStateLvlh(chiefProp, depProp, t1);
         double dvy = (-2.0 * n * s[0]) - s[4]; // bring vy to the no-drift value
         List<ManeuverDraft> drafts = List.of(
@@ -351,10 +361,10 @@ public class ManeuverTemplateService {
             case "vbar" -> new double[] {0.0, distanceM, 0.0}; // in-track
             default -> throw new ScenarioValidationException("hold axis must be 'vbar' or 'rbar'");
         };
-        TLE chiefTle = tleOf(body.chief());
-        Propagator chiefProp = propagationService.propagatorFor(chiefTle, Fidelity.SGP4);
+        ChiefStateResolver.ChiefState chief = chiefResolver.resolve(body.chief(), Fidelity.SGP4);
+        Propagator chiefProp = chief.provider();
         Propagator depProp = propagationService.propagatorFor(tleOf(deputy), Fidelity.SGP4);
-        double n = chiefTle.getMeanMotion();
+        double n = chief.meanMotionRadPerSec();
         double[] s = relativeStateLvlh(chiefProp, depProp, t1);
         double[] dv = CwTargeting.twoImpulse(
                 new double[] {s[0], s[1], s[2]}, new double[] {s[3], s[4], s[5]},
@@ -421,10 +431,10 @@ public class ManeuverTemplateService {
         Instant startInstant = parseInstant(body.timeRange().start());
         Instant endInstant = parseInstant(body.timeRange().end());
         AbsoluteDate t1 = new AbsoluteDate(startInstant, utc);
-        TLE chiefTle = tleOf(body.chief());
-        Propagator chiefProp = propagationService.propagatorFor(chiefTle, Fidelity.SGP4);
+        ChiefStateResolver.ChiefState chief = chiefResolver.resolve(body.chief(), Fidelity.SGP4);
+        Propagator chiefProp = chief.provider();
         Propagator depProp = propagationService.propagatorFor(tleOf(deputy), Fidelity.SGP4);
-        double n = chiefTle.getMeanMotion();
+        double n = chief.meanMotionRadPerSec();
         double[] s = relativeStateLvlh(chiefProp, depProp, t1);
 
         double[] rCur = {s[0], s[1], s[2]};
@@ -523,10 +533,11 @@ public class ManeuverTemplateService {
 
         Instant startInstant = parseInstant(body.timeRange().start());
         Instant endInstant = parseInstant(body.timeRange().end());
-        TLE chiefTle = tleOf(body.chief());
         TLE depTle = tleOf(deputy);
-        Propagator chiefProp = propagationService.propagatorFor(chiefTle, chiefStreamFidelity(body.fidelity()));
-        double n = chiefTle.getMeanMotion();
+        ChiefStateResolver.ChiefState chief =
+                chiefResolver.resolve(body.chief(), chiefStreamFidelity(body.fidelity()));
+        Propagator chiefProp = chief.provider();
+        double n = chief.meanMotionRadPerSec();
 
         List<Impulse> impulses = new ArrayList<>();
         List<ManeuverDraft> drafts = new ArrayList<>();
