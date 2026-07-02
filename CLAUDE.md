@@ -24,12 +24,18 @@ pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
 ## Current phase
-**Phase 9 complete (9A/9B/9C/9D) — advanced maneuvers & analysis.** Backend 187
+**Phase 9 complete (9A/9B/9C/9D) — advanced maneuvers & analysis.** Backend 188
 tests green, frontend type-check + build green. Rides the Phase 4–8 architecture exactly
 (sampled-trajectory `analysis/` computers, additive `scenario-relative` fields with `VERSION`
 still `"1"`, forward-additive `ScenarioBody` schema **v6**, single audited `ScenarioService`).
 **Resolves R16**; introduces the first **seeded RNG** (determinism held — per-sample seed +
-ordered collect). See [phase-9-plan.md](docs/phase-9-plan.md), Decision 27.
+ordered collect). See [phase-9-plan.md](docs/phase-9-plan.md), Decision 27. **Post-9 additive
+change (2026-07-02):** the maneuver templates + `RendezvousSearchService` now plan against a
+**measured-ephemeris chief** (e.g. an imported TELEOS-2 dataset), not just a frozen TLE, via
+`scenario/ChiefStateResolver` + the shared `MeasuredEphemerisFactory`; `RendezvousCorrector.correct`
+now takes a `Propagator` (so a measured chief works) and fast-refuses ΔV-dominated seeds. Deputies
+stay TLE-backed (you don't maneuver the truth). This is the precondition for the deferred
+composable-templates work (decisions.md).
 - **9A — flight-ready rendezvous (closes R16).** `scenario/RendezvousCorrector` — a differential
   corrector (damped Gauss-Newton/LM + backtracking line search, domain-exit fallback, ΔV/iter caps)
   against the **real** propagators; the two-impulse template defaults `corrected=true`,
@@ -68,7 +74,7 @@ ordered collect). See [phase-9-plan.md](docs/phase-9-plan.md), Decision 27.
 
 `gen:api` regenerated (rendezvous-search / phasing / nmc / hold / glideslope / station-keep /
 monte-carlo / set-link-budget / finite-burn fields on the maneuver REST; stream `linkBudgets` stays
-WebSocket-only). Backend **187 tests green**. **Deferred (Decision 27):** optical detector NEP/QE
+WebSocket-only). Backend **188 tests green**. **Deferred (Decision 27):** optical detector NEP/QE
 link detail; the finite-burn ΔV-glyph burn-window animation. **Phase 10 next** — enterprise hardening
 (roadmap §10).
 
