@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import Globe from './components/Globe';
 import ProximityView from './views/ProximityView';
+import ErrorBoundary from './components/ErrorBoundary';
 import RelativeReadout from './components/RelativeReadout';
 import TimeController from './components/TimeController';
 import Timeline from './components/Timeline';
@@ -84,7 +85,9 @@ export default function App() {
           className="viewport globe-pane"
           style={proximityVisible ? { flex: `0 0 ${splitPct}%` } : { flex: '1 1 100%' }}
         >
-          <Globe />
+          <ErrorBoundary label="globe view">
+            <Globe />
+          </ErrorBoundary>
         </div>
         {proximityVisible && (
           <>
@@ -95,7 +98,9 @@ export default function App() {
               onPointerDown={onDividerDown}
             />
             <div className="viewport proximity-pane">
-              <ProximityView />
+              <ErrorBoundary label="proximity view">
+                <ProximityView />
+              </ErrorBoundary>
             </div>
           </>
         )}

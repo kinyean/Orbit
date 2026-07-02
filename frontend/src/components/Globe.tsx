@@ -696,10 +696,17 @@ export default function Globe() {
     if (!scenarioDs) return;
 
     // Don't leave the camera tracking a scenario entity we're about to remove.
+    // Read the ref FRESH and guard against a destroyed viewer: on an error-triggered
+    // unmount the viewer-creation effect's cleanup (viewer.destroy() + ref=null) can run
+    // before this one, and the `trackedEntity` SETTER walks Cesium internals that destroy()
+    // has nulled → a TypeError that cascades and blanks the whole Globe. The `?.` guard
+    // alone didn't catch this (a destroyed viewer is non-null).
     const releaseScenarioTracking = () => {
-      const tracked = viewer?.trackedEntity;
-      if (viewer && tracked && typeof tracked.id === 'string' && tracked.id.startsWith('scn-')) {
-        viewer.trackedEntity = undefined;
+      const v = viewerRef.current;
+      if (!v || v.isDestroyed()) return;
+      const tracked = v.trackedEntity;
+      if (tracked && typeof tracked.id === 'string' && tracked.id.startsWith('scn-')) {
+        v.trackedEntity = undefined;
       }
     };
 
