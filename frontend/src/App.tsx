@@ -14,6 +14,9 @@ import ManeuverPanel from './scenario/ManeuverPanel';
 import SensorPanel from './scenario/SensorPanel';
 import EnvironmentPanel from './scenario/EnvironmentPanel';
 import MonteCarloPanel from './scenario/MonteCarloPanel';
+import AuditLogPanel from './scenario/AuditLogPanel';
+import UserChip from './auth/UserChip';
+import { authMode } from './auth/config';
 import { useStore } from './store/useStore';
 import { startClockEngine } from './store/clockEngine';
 import './App.css';
@@ -121,6 +124,7 @@ export default function App() {
             }}
           />
         </form>
+        {authMode === 'oidc' && <UserChip />}
         <StatusChip />
       </header>
 
@@ -143,6 +147,7 @@ export default function App() {
       {scenarioActive && <SensorPanel />}
       {scenarioActive && <EnvironmentPanel />}
       {scenarioActive && <MonteCarloPanel />}
+      {scenarioActive && <AuditLogPanel />}
       <StatsOverlay />
       {scenarioActive && (
         <button

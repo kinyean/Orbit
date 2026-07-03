@@ -56,6 +56,7 @@ considered**, **Consequences**.
 **Cross-cutting / enterprise**
 16. [Enterprise posture: professional-grade from the start](#16-enterprise-posture-professional-grade-from-the-start)
 17. [Deployment: containerized, cloud + on-prem](#17-deployment-containerized-cloud--on-prem)
+28. [Enterprise hardening: OIDC resource-server, RBAC, audit UI, §5.2 validation, Helm/K8s (Phase 10)](#28-enterprise-hardening-oidc-resource-server--rbac--audit-ui--52-validation--helm-phase-10)
 
 **UX / interaction**
 18. [Global-view camera: click-to-inspect, double-click focus](#18-global-view-camera-click-to-inspect-double-click-focus)
@@ -1468,6 +1469,87 @@ link-budget fields, `Timeline` SNR band, `relativeBuffer` parsing. **This resolv
 (differential corrector) and introduces the **first seeded RNG** (determinism held per above). Backend
 test count **152 → 187**. **Deferred:** optical detector NEP/QE link detail; the finite-burn
 ΔV-glyph burn-window animation.
+
+---
+
+## 28. Enterprise hardening: OIDC resource-server + RBAC + audit UI + §5.2 validation + Helm (Phase 10)
+
+**Context.** Phase 10 (roadmap §10; SRS §5.2 / §5.4 / §5.5 / §6.2; US-AUTH-02/03,
+US-INFRA-05..09) *activates* the cross-cutting seams that Decision 16 built stubbed
+from day one, and makes the system deployable. Four threads: real auth + RBAC
+(the security pipeline was a permit-all dev-user stub); the audit-log/version-history
+UI (the table + one-row-per-mutation writes existed since V1, unexposed); §5.2
+validation + reproducibility proof; and on-prem packaging + TLS.
+
+**Decision.** Sliced 10A/10B/10C; ride the existing seams — additive activation, not
+a rewrite.
+- **10A — Auth: OIDC resource-server + Keycloak, gated by `orbit.auth.mode`.** The
+  backend stays **stateless** and validates OIDC **bearer JWTs** in `oidc` mode
+  (`spring-boot-starter-oauth2-resource-server`); `stub` (the default) keeps the
+  Phase-1 dev-user filter so local dev needs no IdP. Two `@ConditionalOnProperty`
+  `SecurityFilterChain`s (the seam's documented swap — the dev filter dropped its
+  `@Component` so it can't run as a global servlet filter in oidc mode). A
+  `JwtAuthenticationConverter` maps the Keycloak `realm_access.roles` claim →
+  `ROLE_*` authorities and sets the principal name to the `email` claim, so
+  `UserService.currentEmail()` is unchanged; the token's `sub` + roles are synced onto
+  the `users` row. **RBAC:** per-record **ownership** was already enforced in
+  `ScenarioService.activeScenario()` (non-owner → 404, no enumeration); Phase 10 adds
+  coarse **capability** rules (reads = any authenticated user; mutations/analyses =
+  an operator role). **WebSocket auth:** browsers can't set headers on `new
+  WebSocket()`, so the token rides in `?access_token=` and the resource-server's
+  `DefaultBearerTokenResolver.allowUriQueryParameter(true)` authenticates the
+  handshake through the normal chain — the existing `ScenarioHandshakeInterceptor`
+  is unchanged. **Frontend:** `react-oidc-context` auth-code + PKCE, a login gate, a
+  one-place `Authorization: Bearer` openapi-fetch middleware, and `?access_token=` on
+  the streams. A **Keycloak** dev IdP (`docker-compose.oidc.yml` + a seed realm) is
+  self-hosted (real OIDC, no external cloud); prod runs it in-cluster or points at an
+  external IdP.
+- **10B — Governance + trust.** Expose the audit trail + version history
+  (`GET /scenarios/{id}/audit`, `/versions`, owner-gated) + an `AuditLogPanel`;
+  prove **reproducibility** end-to-end (byte-identical `loadAndEncode` reruns across
+  SGP4 / numerical / maneuvered / finite-burn, plus Monte-Carlo same-seed); and add
+  an **Orekit-reference §5.2 validation suite** + `docs/validation-conformance.md`.
+  Posture per R2 / Decision 7: Orekit is upstream-validated, so AIAA 2006-6753
+  accuracy is *inherited* — we validate that we **integrated it correctly** (frames,
+  force model engaged and bounded, byte-identical) with robust physical invariants,
+  entirely offline.
+- **10C — Deployment: a Helm chart for Kubernetes; dev stays Compose.** A prod
+  frontend image (nginx serving the built SPA, auth config injected at **runtime**
+  via `/env.js` so one image is portable). A Helm chart (`deploy/helm/orbit`):
+  Deployments for backend/frontend/Keycloak, a Postgres StatefulSet (external-DB
+  toggle), a templated Keycloak realm ConfigMap, k8s `Secret`s, and split
+  api/web/keycloak `Ingress`es with **cert-manager TLS**, WebSocket timeouts, and the
+  `/api` prefix strip. An offline `docker save` + `helm package` bundle
+  (`scripts/bundle.sh`) for air-gapped installs; `docs/deployment.md` runbook.
+
+**Why.** The seams paid off (Decision 16): auth is a filter-chain swap + role rules,
+not a redesign; ownership + the audit write-path already existed. Bearer JWT +
+stateless matches the SPA/stream architecture (a session-cookie flow would reverse it
+and reintroduce CSRF). Keycloak-in-a-container is genuinely-real OIDC with no
+external-cloud dependency (the box is firewalled). Helm matches the actual deploy
+target (a k8s cluster), so no throwaway Compose-prod path; the ingress + cert-manager
+also solve the browser/backend **issuer-consistency** problem (one public URL) that
+is awkward under Compose.
+
+**Alternatives considered.** *Backend OIDC login with server-side session cookies*
+(rejected — reverses the stateless posture, needs CSRF back; a bigger change than the
+seam anticipates). *SAML2* (deferred — OIDC satisfies the SRS "OIDC/SAML"; addable via
+the same chain). *Prod Docker Compose + Caddy* (rejected once the target was known to
+be k8s — throwaway; Caddy's role is filled by the ingress controller + cert-manager).
+*External AIAA/Vallado golden vectors* (deferred — the Orekit-reference approach is
+offline and matches R2; the external SGP4 set can be a second fixture later). *Baking
+the SPA's OIDC config at build* (rejected — runtime `/env.js` keeps one image portable).
+
+**Consequences.** New backend `security` split + `validation` test package; new
+`AuditEntryResponse`/`ScenarioVersionSummary` + two GET endpoints (client regenerated
+— `gen:api`); new frontend `auth/` module + `AuditLogPanel`. New `docker-compose.oidc.yml`,
+`deploy/keycloak/`, `deploy/helm/orbit/`, `frontend/Dockerfile.prod` (+ nginx/entrypoint),
+`scripts/bundle.sh`, `docs/{validation-conformance,deployment}.md`. New deps:
+`spring-boot-starter-oauth2-resource-server` (backend), `react-oidc-context` +
+`oidc-client-ts` (frontend). Backend tests **187 → 203**. Auth defaults to **stub**, so
+the existing dev loop and all prior tests are unaffected. **Deferred:** SAML2;
+production Keycloak HA; external golden vectors; a prod Compose path. **Phase 11 next**
+(polish & ship).
 
 ---
 

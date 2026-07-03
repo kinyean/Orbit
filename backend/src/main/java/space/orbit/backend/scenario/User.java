@@ -71,8 +71,18 @@ public class User extends AbstractUuidEntity {
         return ssoSubject;
     }
 
+    /** Set the OIDC subject claim (Phase 10) — synced from the token on login. */
+    public void setSsoSubject(String ssoSubject) {
+        this.ssoSubject = ssoSubject;
+    }
+
     public List<String> getRoles() {
         return roles;
+    }
+
+    /** Replace the role set (Phase 10) — synced from the IdP's realm roles on login. */
+    public void setRoles(List<String> roles) {
+        this.roles = roles;
     }
 
     public OffsetDateTime getCreatedAt() {

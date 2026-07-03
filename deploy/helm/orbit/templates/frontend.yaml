@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "orbit.fullname" . }}-frontend
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "orbit.selectorLabels" (dict "root" $ "component" "frontend") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.frontend.port }}
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "orbit.fullname" . }}-frontend
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.frontend.replicas }}
+  selector:
+    matchLabels:
+      {{- include "orbit.selectorLabels" (dict "root" $ "component" "frontend") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orbit.selectorLabels" (dict "root" $ "component" "frontend") | nindent 8 }}
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: frontend
+          image: "{{ .Values.image.registry }}/{{ .Values.image.frontend.repository }}:{{ .Values.image.frontend.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 80
+          # Runtime config → /env.js (entrypoint envsubst). One image, any env.
+          env:
+            - name: ORBIT_AUTH_MODE
+              value: {{ .Values.auth.mode | quote }}
+            - name: ORBIT_OIDC_ISSUER
+              value: {{ .Values.auth.issuerUrl | quote }}
+            - name: ORBIT_OIDC_CLIENT_ID
+              value: {{ .Values.auth.clientId | quote }}
+          readinessProbe:
+            httpGet:
+              path: /index.html
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.frontend.resources | nindent 12 }}

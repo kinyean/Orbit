@@ -24,6 +24,31 @@ pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
 ## Current phase
+**Phase 10 complete (10A/10B/10C) — enterprise hardening.** Backend **203 tests green**,
+frontend type-check green, Helm chart `helm lint` + `helm template` clean. Activates the
+Decision-16 seams **additively** (auth defaults to `stub`, so the prior dev loop + all earlier
+tests are unaffected). See [phase-10-plan.md](docs/phase-10-plan.md), Decision 28.
+- **10A — real auth + RBAC.** OIDC **resource-server** (stateless bearer JWT) gated by
+  `orbit.auth.mode` (`stub` default / `oidc`); `SecurityConfig` two-chain split;
+  `JwtAuthenticationConverter` maps Keycloak `realm_access.roles` → `ROLE_*` (principal =
+  email); `UserService` syncs `sub`+roles. Ownership already enforced (non-owner → 404);
+  capability role rules added. **WebSocket auth** via `?access_token=` (query-param bearer
+  resolver → existing handshake interceptor unchanged). Frontend `auth/` module
+  (`react-oidc-context` PKCE + Bearer middleware + stream token + `UserChip`). Self-hosted
+  **Keycloak** dev overlay (`docker-compose.oidc.yml` + `deploy/keycloak/orbit-realm.json`).
+  New deps: `spring-boot-starter-oauth2-resource-server`, `react-oidc-context`+`oidc-client-ts`.
+- **10B — governance & trust.** Audit-log + version-history REST (`GET /scenarios/{id}/audit`,
+  `/versions`, owner-gated) + `AuditLogPanel`; end-to-end **reproducibility** tests (byte-identical
+  `loadAndEncode` across SGP4/numerical/maneuvered/finite-burn + MC same-seed); **§5.2 validation
+  suite** (`validation/ValidationConformanceTest`) + [validation-conformance.md](docs/validation-conformance.md)
+  (AIAA 2006-6753 inherited from Orekit, R2 — we validate correct integration).
+- **10C — deployment.** Prod frontend image (`frontend/Dockerfile.prod`, nginx + runtime `/env.js`);
+  **Helm chart** [deploy/helm/orbit](deploy/helm/orbit) (backend/frontend/Keycloak Deployments,
+  Postgres StatefulSet, cert-manager **TLS** at split api/web/keycloak Ingresses, k8s **Secrets**,
+  external-DB/IdP + GitOps toggles); offline bundle [scripts/bundle.sh](scripts/bundle.sh);
+  [deployment.md](docs/deployment.md). **Dev stays on Compose.** **Deferred (Decision 28):** SAML2;
+  production Keycloak HA; external golden vectors; a prod Compose path. **Phase 11 next** — polish & ship.
+
 **Phase 9 complete (9A/9B/9C/9D) — advanced maneuvers & analysis.** Backend 188
 tests green, frontend type-check + build green. Rides the Phase 4–8 architecture exactly
 (sampled-trajectory `analysis/` computers, additive `scenario-relative` fields with `VERSION`
@@ -203,10 +228,21 @@ maneuvers) go through the single audited `ScenarioService` path (Decision 16).
 ## Build commands
 
 ### Full stack (Docker Compose)
-- `docker compose up -d --build` — backend + Postgres + frontend (build on first run).
+- `docker compose up -d --build` — backend + Postgres + frontend (build on first run). Auth is
+  **stub** by default (a dev user; no IdP).
+- **OIDC dev** (Phase 10): `docker compose -f docker-compose.yml -f docker-compose.oidc.yml up --build`
+  adds a Keycloak IdP and flips auth to `oidc` (Keycloak on :8082; sign in as `maya/maya`,
+  `frank/frank`, `gita/gita`). See [deployment.md](docs/deployment.md) for the issuer-consistency note.
 - `docker compose down` — stop services (preserves db volume).
 - `docker compose down -v` — stop and wipe db.
 - Backend: http://localhost:8081  ·  Frontend: http://localhost:5174
+
+### Production / on-prem (Kubernetes, Phase 10)
+- Deploy artifact is the Helm chart [deploy/helm/orbit](deploy/helm/orbit) (backend + frontend +
+  Keycloak + Postgres, cert-manager TLS at the ingress, k8s Secrets). Prereqs: an ingress controller
+  + cert-manager. `helm install orbit deploy/helm/orbit -n orbit --create-namespace -f my-values.yaml`.
+- Offline air-gapped bundle: `scripts/bundle.sh <version>` (`docker save` images + `helm package`).
+- Full runbook + toggles (external DB / external IdP / GitOps secrets): [deployment.md](docs/deployment.md).
   (host ports 8080 / 5173 are taken by other services on this shared box).
 - The backend mounts `/mnt/disk_large/shared_folder → /shared_folder:ro` (measured-data
   import root, `orbit.import.allowed-root`). Import a measured CSV:

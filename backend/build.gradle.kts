@@ -22,6 +22,9 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-actuator")
 	implementation("org.springframework.boot:spring-boot-starter-data-jpa")
 	implementation("org.springframework.boot:spring-boot-starter-security")
+	// OAuth2 resource server (Phase 10, US-AUTH-02): validate OIDC bearer JWTs
+	// (issuer-uri from env) when orbit.auth.mode=oidc. Inert in stub mode.
+	implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
 	implementation("org.springframework.boot:spring-boot-starter-web")
 	implementation("org.springframework.boot:spring-boot-starter-websocket")
 	// Bean Validation (Phase 3A): @Valid on scenario request DTOs; constraints

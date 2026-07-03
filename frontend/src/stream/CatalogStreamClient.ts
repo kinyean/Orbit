@@ -5,6 +5,8 @@
 // exponential backoff. Refuses a contract-version mismatch rather than feeding
 // the renderer garbage (R12).
 
+import { withAccessToken } from '../auth/token';
+
 export interface CatalogMessage {
   contractVersion: string;
   type: string;
@@ -89,7 +91,8 @@ export class CatalogStreamClient {
 
   private open(): void {
     this.handlers.onStatus?.('connecting');
-    const ws = new WebSocket(this.url);
+    // Attach the current access token per (re)connect (no-op in stub mode).
+    const ws = new WebSocket(withAccessToken(this.url));
     this.ws = ws;
 
     ws.onopen = () => {

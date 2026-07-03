@@ -308,6 +308,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/scenarios/{id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["versions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/scenarios/{id}/versions/{v}": {
         parameters: {
             query?: never;
@@ -316,6 +332,38 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getVersion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scenarios/{id}/versions/{v}/diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["versionDiff"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scenarios/{id}/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["audit"];
         put?: never;
         post?: never;
         delete?: never;
@@ -771,6 +819,12 @@ export interface components {
             chiefNoradId?: number;
             deputyNoradIds?: number[];
         };
+        ScenarioVersionSummary: {
+            /** Format: int32 */
+            versionNo?: number;
+            authorEmail?: string;
+            createdAt?: string;
+        };
         ScenarioVersionResponse: {
             scenarioId?: string;
             /** Format: int32 */
@@ -778,6 +832,24 @@ export interface components {
             authorId?: string;
             createdAt?: string;
             body?: components["schemas"]["ScenarioBody"];
+        };
+        Change: {
+            op?: string;
+            category?: string;
+            detail?: string;
+        };
+        VersionDiff: {
+            /** Format: int32 */
+            versionNo?: number;
+            /** Format: int32 */
+            fromVersionNo?: number;
+            changes?: components["schemas"]["Change"][];
+        };
+        AuditEntryResponse: {
+            action?: string;
+            actorEmail?: string;
+            timestamp?: string;
+            diffSummary?: string;
         };
         HealthResponse: {
             version?: string;
@@ -1346,6 +1418,28 @@ export interface operations {
             };
         };
     };
+    versions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScenarioVersionSummary"][];
+                };
+            };
+        };
+    };
     getVersion: {
         parameters: {
             query?: never;
@@ -1365,6 +1459,51 @@ export interface operations {
                 };
                 content: {
                     "*/*": components["schemas"]["ScenarioVersionResponse"];
+                };
+            };
+        };
+    };
+    versionDiff: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                v: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["VersionDiff"];
+                };
+            };
+        };
+    };
+    audit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["AuditEntryResponse"][];
                 };
             };
         };

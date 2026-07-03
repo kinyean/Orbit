@@ -9,6 +9,10 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Runtime config (Phase 10). In a container the entrypoint writes /env.js
+         from env vars so ONE built image is portable across deployments; in dev
+         this 404s harmlessly and the app falls back to import.meta.env. -->
+    <script src="/env.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

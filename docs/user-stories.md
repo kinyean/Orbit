@@ -534,15 +534,21 @@ computes per (sensor↔target) SNR over the sampled trajectory (Friis, ~6 dB per
 band (red below threshold). *Maps to:* [UC-4](./use-cases.md); SRS §3.6. *(Optical detector NEP/QE
 detail deferred.)*
 
-# Phase 10 — Enterprise hardening *(outline)*
+# Phase 10 — Enterprise hardening ✅ (done — Decision 28, [phase-10-plan.md](./phase-10-plan.md))
 
-- US-AUTH-02 — Real OIDC/SAML integration.
-- US-AUTH-03 — RBAC roles activated (scenario ownership enforced).
-- US-INFRA-05 — §5.2 validation test suite.
-- US-INFRA-06 — Audit-log UI.
-- US-INFRA-07 — Reproducibility tests (bit-identical reruns).
-- US-INFRA-08 — TLS termination at ingress.
-- US-INFRA-09 — On-prem packaging.
+- US-AUTH-02 ✅ — Real OIDC integration (OAuth2 resource-server, stateless bearer JWT; self-hosted
+  Keycloak IdP; SPA auth-code + PKCE). Gated by `orbit.auth.mode` (`stub` default / `oidc`).
+  *(SAML2 deferred — OIDC satisfies the SRS's "OIDC/SAML".)*
+- US-AUTH-03 ✅ — RBAC activated: scenario ownership enforced (non-owner → 404, no enumeration) +
+  capability role rules (`ROLE_*` from the Keycloak realm-role claim).
+- US-INFRA-05 ✅ — §5.2 validation suite (`ValidationConformanceTest`) + [validation-conformance.md](./validation-conformance.md);
+  Orekit-reference posture (AIAA 2006-6753 inherited from Orekit, R2).
+- US-INFRA-06 ✅ — Audit-log + version-history UI (`GET /scenarios/{id}/audit`, `/versions`; `AuditLogPanel`).
+- US-INFRA-07 ✅ — Reproducibility tests: byte-identical `loadAndEncode` reruns (SGP4 / numerical /
+  maneuvered / finite-burn) + Monte-Carlo same-seed (§5.4.1, R11/R21).
+- US-INFRA-08 ✅ — TLS at the ingress (cert-manager) + k8s Secrets; CORS/WS origins locked in prod.
+- US-INFRA-09 ✅ — On-prem packaging: Helm chart (`deploy/helm/orbit`) + offline image bundle
+  ([scripts/bundle.sh](../scripts/bundle.sh)) + [deployment.md](./deployment.md).
 
 # Phase 11 — Polish & ship *(outline)*
 

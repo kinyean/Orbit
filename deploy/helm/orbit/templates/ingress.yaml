@@ -1,0 +1,100 @@
+{{- $fullname := include "orbit.fullname" . -}}
+{{- $issuerAnn := .Values.ingress.tls.clusterIssuer -}}
+# API ingress: /api/* → backend, stripping the /api prefix (the backend serves
+# /scenarios, /health, /stream/... un-prefixed). WebSocket upgrades pass through
+# automatically; the long read/send timeouts keep the streams alive.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}-api
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/proxy-read-timeout: {{ .Values.ingress.proxyReadTimeout | quote }}
+    nginx.ingress.kubernetes.io/proxy-send-timeout: {{ .Values.ingress.proxySendTimeout | quote }}
+    {{- if and .Values.ingress.tls.enabled $issuerAnn }}
+    cert-manager.io/cluster-issuer: {{ $issuerAnn | quote }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ .Values.ingress.host | quote }}]
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: {{ $fullname }}-backend
+                port:
+                  number: {{ .Values.backend.port }}
+---
+# Web ingress: everything else → the SPA (no rewrite).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}-web
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+  annotations:
+    {{- if and .Values.ingress.tls.enabled $issuerAnn }}
+    cert-manager.io/cluster-issuer: {{ $issuerAnn | quote }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ .Values.ingress.host | quote }}]
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}-frontend
+                port:
+                  number: {{ .Values.frontend.port }}
+{{- if .Values.keycloak.enabled }}
+---
+# Keycloak on its own host, so the OIDC issuer URL (auth.issuerUrl) is one URL
+# both the browser and the backend use.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}-keycloak
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+  annotations:
+    {{- if and .Values.ingress.tls.enabled $issuerAnn }}
+    cert-manager.io/cluster-issuer: {{ $issuerAnn | quote }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ .Values.keycloak.host | quote }}]
+      secretName: {{ $fullname }}-keycloak-tls
+  {{- end }}
+  rules:
+    - host: {{ .Values.keycloak.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}-keycloak
+                port:
+                  number: {{ .Values.keycloak.port }}
+{{- end }}

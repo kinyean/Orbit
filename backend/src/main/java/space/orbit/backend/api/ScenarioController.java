@@ -24,6 +24,7 @@ import space.orbit.backend.analysis.RendezvousSearchService;
 import space.orbit.backend.analysis.ScreeningResult;
 import space.orbit.backend.analysis.ScreeningService;
 import space.orbit.backend.scenario.AttitudeDraft;
+import space.orbit.backend.scenario.AuditEntryResponse;
 import space.orbit.backend.scenario.ConstraintDraft;
 import space.orbit.backend.scenario.LinkBudgetDraft;
 import space.orbit.backend.scenario.ManeuverDraft;
@@ -34,6 +35,8 @@ import space.orbit.backend.scenario.ScenarioResponse;
 import space.orbit.backend.scenario.ScenarioService;
 import space.orbit.backend.scenario.ScenarioSummary;
 import space.orbit.backend.scenario.ScenarioVersionResponse;
+import space.orbit.backend.scenario.ScenarioVersionSummary;
+import space.orbit.backend.scenario.VersionDiff;
 
 /**
  * Scenario CRUD (US-SCN-03). Mirrors {@link HealthController}: thin controller,
@@ -96,9 +99,31 @@ public class ScenarioController {
         return service.get(id);
     }
 
+    /** Version history list (Phase 10, US-INFRA-06 / US-SCN-04) — metadata only. */
+    @GetMapping("/{id}/versions")
+    public List<ScenarioVersionSummary> versions(@PathVariable UUID id) {
+        return service.versionHistory(id);
+    }
+
     @GetMapping("/{id}/versions/{v}")
     public ScenarioVersionResponse getVersion(@PathVariable UUID id, @PathVariable int v) {
         return service.getVersion(id, v);
+    }
+
+    /**
+     * Structured diff of version {@code v} against its predecessor (Phase 10
+     * governance follow-up) — what actually changed (ΔV numbers, epochs, sensors,
+     * constraints, settings) rather than the flat audit summary. Owner-gated.
+     */
+    @GetMapping("/{id}/versions/{v}/diff")
+    public VersionDiff versionDiff(@PathVariable UUID id, @PathVariable int v) {
+        return service.versionDiff(id, v);
+    }
+
+    /** Audit trail (Phase 10, US-INFRA-06): who changed what, newest first. */
+    @GetMapping("/{id}/audit")
+    public List<AuditEntryResponse> audit(@PathVariable UUID id) {
+        return service.auditTrail(id);
     }
 
     @PutMapping("/{id}")

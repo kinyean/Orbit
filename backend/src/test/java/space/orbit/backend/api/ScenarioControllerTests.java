@@ -136,6 +136,30 @@ class ScenarioControllerTests {
     }
 
     @Test
+    void versionsReturnsHistory() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(service.versionHistory(id)).thenReturn(List.of(
+                new space.orbit.backend.scenario.ScenarioVersionSummary(1, "maya@orbit.local", "2026-07-01T00:00:00Z"),
+                new space.orbit.backend.scenario.ScenarioVersionSummary(2, "maya@orbit.local", "2026-07-01T01:00:00Z")));
+        mvc.perform(get("/scenarios/{id}/versions", id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[1].versionNo").value(2))
+                .andExpect(jsonPath("$[0].authorEmail").value("maya@orbit.local"));
+    }
+
+    @Test
+    void auditReturnsTrail() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(service.auditTrail(id)).thenReturn(List.of(
+                new space.orbit.backend.scenario.AuditEntryResponse(
+                        "MANEUVER_ADD", "maya@orbit.local", "2026-07-01T02:00:00Z", "Added ΔV to Deputy-1")));
+        mvc.perform(get("/scenarios/{id}/audit", id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].action").value("MANEUVER_ADD"))
+                .andExpect(jsonPath("$[0].actorEmail").value("maya@orbit.local"));
+    }
+
+    @Test
     void addManeuverReturnsUpdatedScenario() throws Exception {
         UUID id = UUID.randomUUID();
         when(service.addManeuver(any(), any())).thenReturn(sampleResponse());

@@ -21,10 +21,26 @@ spring:
     locations: classpath:db/migration
     baseline-on-migrate: true
 
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # OIDC issuer (Keycloak realm or an external IdP). Only consulted when
+          # orbit.auth.mode=oidc; blank in dev so no JwtDecoder is auto-configured
+          # and the stub filter chain runs. e.g. http://keycloak:8080/realms/orbit
+          issuer-uri: ${OIDC_ISSUER_URI:}
+
 server:
   port: ${SERVER_PORT:8080}
 
 orbit:
+  auth:
+    # Authentication mode (Phase 10, US-AUTH-02/03).
+    #   stub — a fixed dev user is injected and every request is permitted
+    #          (Phase 1 posture; the default so local dev needs no IdP).
+    #   oidc — validate OIDC bearer JWTs against spring.security...issuer-uri and
+    #          enforce RBAC (ownership + role rules). Set OIDC_ISSUER_URI too.
+    mode: ${ORBIT_AUTH_MODE:stub}
   orekit:
     # Path to the unpacked Orekit data bundle. Container bakes it at /opt/orekit-data;
     # the Gradle test task overrides this via the orekit.data.path system property.

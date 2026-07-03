@@ -1,0 +1,31 @@
+# Production frontend image (Phase 10, US-INFRA-09): build the SPA, serve the
+# static bundle with nginx. The dev image (Dockerfile) is unchanged — it runs
+# the Vite dev server with hot reload; THIS image is the deployable artifact
+# (Helm chart / on-prem bundle).
+#
+# Auth config is injected at RUNTIME (see docker-entrypoint.sh → /env.js), so one
+# built image is portable across deployments. Only the public Cesium ion token is
+# baked at build (a --build-arg), since Vite inlines import.meta.env.
+
+# --- build ---
+FROM node:24-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+# Public Cesium ion token (imagery). Optional — the app still runs without it.
+ARG VITE_CESIUM_ION_TOKEN=""
+ENV VITE_CESIUM_ION_TOKEN=$VITE_CESIUM_ION_TOKEN
+RUN npm run build
+
+# --- serve ---
+FROM nginx:alpine AS serve
+RUN apk add --no-cache gettext                     # envsubst for runtime config
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY env.template.js /etc/orbit/env.template.js
+COPY docker-entrypoint.sh /docker-entrypoint.d/40-orbit-env.sh
+RUN chmod +x /docker-entrypoint.d/40-orbit-env.sh
+EXPOSE 80
+# nginx:alpine's own entrypoint runs everything in /docker-entrypoint.d/ then
+# starts nginx, so our 40-orbit-env.sh writes /env.js on every container start.

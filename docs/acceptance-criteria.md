@@ -695,12 +695,67 @@ cone); Sun occlusion / sun-keep-out (Phase 8); GPU-depth occlusion of the drawn 
 
 ---
 
-## Phase 10 onwards
+## Phase 10 — Enterprise hardening
 
-Acceptance criteria for Phases 10–11 will be drafted when the respective
-phase begins, informed by what we learned in earlier phases. The
-[user-stories outline](./user-stories.md) seeds each phase; the SRS clauses
-they map to are the verification source.
+> Sliced **10A / 10B / 10C** (see [phase-10-plan.md](./phase-10-plan.md), Decision 28).
+>
+> **Phase 10 complete — backend 203 tests green + frontend type-check green + Helm chart
+> `helm lint`/`helm template` clean** (2026-07-02). Activates the Decision-16 seams
+> additively; auth defaults to **stub** so the prior dev loop + all earlier tests are
+> unaffected.
+
+**10A — Real auth + RBAC (US-AUTH-02/03)**
+- [x] OIDC resource-server (stateless bearer JWT) behind `orbit.auth.mode` — `stub`
+      (dev-user filter + permitAll, default) and `oidc` (`spring-boot-starter-oauth2-resource-server`,
+      issuer-uri from env). Two `@ConditionalOnProperty` filter chains; the dev filter is no longer
+      a global servlet filter. (`SecurityConfig`, `SecurityConfigTests`.)
+- [x] Keycloak realm roles → `ROLE_*` authorities (`JwtAuthenticationConverter`), principal = email;
+      `sub` + roles synced onto the `users` row (`UserService`).
+- [x] RBAC: scenario ownership enforced (non-owner → 404, no enumeration — pre-existing) + capability
+      role rules (reads authenticated; mutations require an operator role).
+- [x] WebSocket auth via `?access_token=` (query-param bearer resolver) — the existing handshake
+      interceptor is unchanged.
+- [x] Frontend auth-code + PKCE (`react-oidc-context`) + login gate + one-place `Authorization: Bearer`
+      middleware + `?access_token=` on the streams + logout chip. `stub`/`oidc` via `VITE_AUTH_MODE`
+      or runtime `/env.js`.
+- [x] Self-hosted **Keycloak** dev IdP (`docker-compose.oidc.yml` + seed realm). Full OIDC browser
+      round-trip verified on the dev stack (needs a live Keycloak + browser).
+
+**10B — Governance & trust (US-INFRA-05/06/07)**
+- [x] Audit-log + version-history REST (`GET /scenarios/{id}/audit`, `/versions`, owner-gated,
+      actor emails resolved) + `AuditLogPanel`. (`ScenarioService.auditTrail`/`versionHistory`,
+      `ScenarioServiceTests`, `ScenarioControllerTests`.)
+- [x] Reproducibility (§5.4.1, R11): byte-identical `loadAndEncode` reruns across SGP4 / numerical /
+      maneuvered / finite-burn + Monte-Carlo same-seed. (`ScenarioStreamServiceTests`,
+      `ValidationConformanceTest`.)
+- [x] §5.2 validation suite (`ValidationConformanceTest`: SGP4 stable week; numerical
+      perturbed-yet-bounded + 24 h bit-identical) + [validation-conformance.md](./validation-conformance.md)
+      mapping tests → §5.2 → AIAA 2006-6753 (conformance inherited from Orekit, R2).
+
+**10C — Deployment hardening (US-INFRA-08/09)**
+- [x] Prod frontend image (nginx serving the built SPA; auth config injected at **runtime** via
+      `/env.js` → one portable image). `frontend/Dockerfile.prod` + nginx/entrypoint.
+- [x] Helm chart (`deploy/helm/orbit`): backend/frontend/Keycloak Deployments + Postgres StatefulSet;
+      split api/web/keycloak Ingresses with **cert-manager TLS**, WS timeouts, `/api` prefix strip;
+      k8s **Secrets**; external-DB / external-IdP / GitOps-secret toggles. `helm lint` + `helm template`
+      clean (13 manifests default; 6 with postgres/keycloak off).
+- [x] Offline air-gapped bundle (`scripts/bundle.sh` — `docker save` + `helm package`) +
+      [deployment.md](./deployment.md) runbook. Full cluster install (ingress + TLS + OIDC end-to-end)
+      is verified on the target k8s cluster.
+
+**Invariants** ✅
+- [x] Streaming contract additive, `VERSION="1"` (R12) — auth is transport-layer, no payload change;
+      new REST regenerates the client (`gen:api`). Determinism (R11) held + proven end-to-end. Single
+      audited mutation path (Decision 16) untouched (10B only reads). Stateless posture kept.
+
+**Deferred (Decision 28):** SAML2; production Keycloak HA; external AIAA/Vallado golden vectors; a
+prod Docker Compose path.
+
+## Phase 11 onwards
+
+Acceptance criteria for Phase 11 will be drafted when the phase begins, informed by what
+we learned in earlier phases. The [user-stories outline](./user-stories.md) seeds each
+phase; the SRS clauses they map to are the verification source.
 
 ---
 

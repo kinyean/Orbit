@@ -1,0 +1,10 @@
+apiVersion: v2
+name: orbit
+description: >-
+  Orbit — Inter-Satellite RPO simulation platform (Phase 10, US-INFRA-08/09).
+  Backend (Spring Boot + Orekit), frontend SPA (nginx), Keycloak IdP, and
+  PostgreSQL, fronted by an Ingress with cert-manager TLS.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords: [rpo, orbit, flight-dynamics, spacecraft]

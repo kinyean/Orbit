@@ -168,20 +168,31 @@ peak bandwidth, slow first-render. The sweet spot is empirical.
 
 ---
 
-## R9 — Enterprise shell underestimated (Medium impact, Medium likelihood — *only if* the project goes professional)
+## R9 — Enterprise shell underestimated (Medium impact — largely RESOLVED, Phase 10)
 
 **Description.** Phase 10 (real OIDC/SAML, RBAC enforcement, on-prem
 packaging, validation suite, TLS, secrets, audit UI) is a chunky phase
 on its own. Underestimating means a "we're shipping next month" delay.
 
-**Mitigation.**
-- Seams are real from day one ([Decision 16](./decisions.md)) — the
-  conversion is *additive*, not a rewrite.
-- Treat Phase 10 as its own deliverable with its own estimate, not a
-  cleanup pass at the end.
+**Status (Phase 10 ✅, Decision 28) — largely RESOLVED.** The conversion was
+**additive**, exactly as Decision 16 predicted: auth was a filter-chain swap
+(`orbit.auth.mode` stub|oidc, OIDC resource-server) + coarse role rules on top of
+the ownership check that already existed; the audit UI just exposed the table +
+write-path present since V1; reproducibility was already true (byte-identical
+reruns) and is now proven end-to-end; packaging is a Helm chart + offline bundle.
+Backend **203 tests green**; the chart lints/renders clean. **Residual follow-ups**
+(scoped, not blockers, Decision 28): SAML2 (OIDC shipped; SAML deferred), production
+**Keycloak HA** (the in-cluster IdP is single-instance/H2), external AIAA/Vallado
+golden vectors (Orekit-reference shipped), and a full end-to-end cluster install
+(ingress + TLS + OIDC round-trip) verified on the target k8s cluster.
 
-**Trigger.** Stakeholder commitment to "professional" → re-baseline
-Phase 10 estimate.
+**Mitigation.**
+- Seams were real from day one ([Decision 16](./decisions.md)) — the conversion was
+  *additive*, not a rewrite (borne out).
+- Treated Phase 10 as its own deliverable, sliced 10A/10B/10C.
+
+**Trigger.** Production go-live commitment → verify the deferred follow-ups
+(Keycloak HA, live cluster install) on the target environment.
 
 ---
 

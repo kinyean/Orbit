@@ -13,6 +13,8 @@
 // On success the backend keeps the socket open (idle) for the reserved Phase-5
 // control channel, so onclose normally only fires on a real disconnect.
 
+import { withAccessToken } from '../auth/token';
+
 export interface ScenarioCzmlMessage {
   contractVersion: string;
   type: string;
@@ -86,7 +88,9 @@ export class ScenarioStreamClient {
 
   private open(): void {
     this.handlers.onStatus?.('connecting');
-    const ws = new WebSocket(this.url);
+    // Attach the current access token per (re)connect so it stays fresh across
+    // silent renews (no-op in stub mode). See auth/token.ts.
+    const ws = new WebSocket(withAccessToken(this.url));
     this.ws = ws;
     ws.binaryType = 'arraybuffer';
 

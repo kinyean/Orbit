@@ -1,0 +1,115 @@
+{{- if .Values.keycloak.enabled }}
+{{- $host := .Values.ingress.host -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "orbit.fullname" . }}-realm
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+data:
+  # Realm imported at startup (--import-realm). Client redirect URIs are the
+  # app's public ingress host so the OIDC redirect round-trips. Seed users are
+  # demo credentials — replace/disable for a real deployment (Decision 28).
+  orbit-realm.json: |
+    {
+      "realm": "orbit",
+      "enabled": true,
+      "sslRequired": "external",
+      "accessTokenLifespan": 900,
+      "roles": { "realm": [
+        { "name": "mission_planner" },
+        { "name": "flight_dynamics_engineer" },
+        { "name": "admin" }
+      ]},
+      "clients": [{
+        "clientId": {{ .Values.auth.clientId | quote }},
+        "enabled": true,
+        "publicClient": true,
+        "standardFlowEnabled": true,
+        "rootUrl": "https://{{ $host }}",
+        "redirectUris": ["https://{{ $host }}/*"],
+        "webOrigins": ["https://{{ $host }}"],
+        "attributes": { "pkce.code.challenge.method": "S256",
+          "post.logout.redirect.uris": "https://{{ $host }}/*" }
+      }],
+      "users": [
+        { "username": "maya", "enabled": true, "email": "maya@orbit.local", "emailVerified": true,
+          "credentials": [{ "type": "password", "value": "maya", "temporary": true }],
+          "realmRoles": ["mission_planner"] },
+        { "username": "frank", "enabled": true, "email": "frank@orbit.local", "emailVerified": true,
+          "credentials": [{ "type": "password", "value": "frank", "temporary": true }],
+          "realmRoles": ["flight_dynamics_engineer", "admin"] }
+      ]
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "orbit.fullname" . }}-keycloak
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "orbit.selectorLabels" (dict "root" $ "component" "keycloak") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.keycloak.port }}
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "orbit.fullname" . }}-keycloak
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "orbit.selectorLabels" (dict "root" $ "component" "keycloak") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orbit.selectorLabels" (dict "root" $ "component" "keycloak") | nindent 8 }}
+    spec:
+      containers:
+        - name: keycloak
+          image: {{ .Values.keycloak.image }}
+          # start-dev: single-instance, H2-backed, imports the realm. NOT HA —
+          # documented follow-up (Decision 28). Behind the TLS ingress.
+          args: ["start-dev", "--import-realm"]
+          env:
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              value: admin
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "orbit.secretName" . }}
+                  key: keycloak-admin-password
+            - name: KC_HTTP_ENABLED
+              value: "true"
+            - name: KC_PROXY_HEADERS
+              value: xforwarded
+            - name: KC_HOSTNAME
+              value: {{ printf "https://%s" .Values.keycloak.host | quote }}
+            - name: KC_HOSTNAME_STRICT
+              value: "false"
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /realms/orbit
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 30
+          resources:
+            {{- toYaml .Values.keycloak.resources | nindent 12 }}
+          volumeMounts:
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+      volumes:
+        - name: realm
+          configMap:
+            name: {{ include "orbit.fullname" . }}-realm
+{{- end }}

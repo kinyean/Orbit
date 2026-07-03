@@ -1,10 +1,17 @@
 package space.orbit.backend.scenario;
 
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -13,13 +20,17 @@ import org.springframework.transaction.annotation.Transactional;
  * supplies {@code owner_id} / {@code author_id} / {@code actor_id} for scenario
  * mutations and the audit log.
  *
- * <p>In Phase 1–3 the principal is the stubbed dev user
- * ({@code dev@orbit.local}), seeded by V2__seed_dev_user.sql. The
- * {@link #getOrCreateByEmail} fallback means a real OIDC principal
- * self-provisions in Phase 10 with no code change here (additive — Decision 16).
+ * <p>In {@code stub} mode the principal is the dev user ({@code dev@orbit.local},
+ * seeded by V2). In {@code oidc} mode (Phase 10) a real OIDC principal
+ * self-provisions on first sight via {@link #getOrCreateByEmail}, and its
+ * {@code sub} claim + realm roles are synced onto the row (additive — Decision 16).
  */
 @Service
 public class UserService {
+
+    /** App roles we persist (the IdP may carry others we ignore, e.g. offline_access). */
+    private static final Set<String> APP_ROLES =
+            Set.of("mission_planner", "flight_dynamics_engineer", "admin");
 
     private final UserRepository users;
 
@@ -27,10 +38,15 @@ public class UserService {
         this.users = users;
     }
 
-    /** The current request's user, provisioning a row on first sight. */
+    /** The current request's user, provisioning a row on first sight and syncing IdP claims. */
     @Transactional
     public User currentUser() {
-        return getOrCreateByEmail(currentEmail());
+        Authentication auth = requireAuthentication();
+        User user = getOrCreateByEmail(auth.getName());
+        if (auth instanceof JwtAuthenticationToken jwt) {
+            syncFromToken(user, jwt);
+        }
+        return user;
     }
 
     @Transactional
@@ -49,12 +65,56 @@ public class UserService {
         return users.findByEmail(email);
     }
 
-    /** The principal name — {@code dev@orbit.local} in dev (the email). */
-    private String currentEmail() {
+    /**
+     * Resolve id → email for a set of user ids in one query (Phase 10 audit-log /
+     * version-history UI, so actor/author rows show a readable email, not a UUID).
+     */
+    @Transactional(readOnly = true)
+    public Map<UUID, String> emailsByIds(Collection<UUID> ids) {
+        Map<UUID, String> byId = new HashMap<>();
+        for (User u : users.findAllById(ids)) {
+            byId.put(u.getId(), u.getEmail());
+        }
+        return byId;
+    }
+
+    /**
+     * Mirror the OIDC token's {@code sub} + granted app roles onto the row so the
+     * DB reflects the current IdP state (used by the audit-log UI + any later
+     * app-role reporting). Runtime authorization uses the token authorities, not
+     * this column — this is a record-keeping sync, saved only when something changed.
+     */
+    private void syncFromToken(User user, JwtAuthenticationToken jwt) {
+        boolean changed = false;
+
+        String sub = jwt.getToken().getSubject();
+        if (sub != null && !sub.equals(user.getSsoSubject())) {
+            user.setSsoSubject(sub);
+            changed = true;
+        }
+
+        List<String> roles = jwt.getAuthorities().stream()
+                .map(GrantedAuthority::getAuthority)
+                .filter(a -> a.startsWith("ROLE_"))
+                .map(a -> a.substring("ROLE_".length()).toLowerCase(Locale.ROOT))
+                .filter(APP_ROLES::contains)
+                .sorted()
+                .toList();
+        if (!roles.equals(user.getRoles())) {
+            user.setRoles(roles);
+            changed = true;
+        }
+
+        if (changed) {
+            users.save(user);
+        }
+    }
+
+    private Authentication requireAuthentication() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth == null || auth.getName() == null || auth.getName().isBlank()) {
             throw new IllegalStateException("No authenticated principal on the request");
         }
-        return auth.getName();
+        return auth;
     }
 }

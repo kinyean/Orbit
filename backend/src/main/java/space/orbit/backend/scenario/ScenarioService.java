@@ -11,10 +11,17 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -353,8 +360,21 @@ public class ScenarioService {
         ScenarioBody updated = new ScenarioBody(ScenarioBody.CURRENT_SCHEMA_VERSION,
                 body.fidelity(), body.timeRange(), body.chief(), deputies, body.missDistanceThresholdM());
 
-        int nextNo = saveVersion(scenario, updated, author, "MANEUVER_REMOVE", "Removed maneuver " + maneuverId);
+        int nextNo = saveVersion(scenario, updated, author, "MANEUVER_REMOVE",
+                removedManeuverSummary(body, maneuverId));
         return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    /** Human summary of the removed maneuver (ΔV + epoch + owning deputy), for the audit row. */
+    private static String removedManeuverSummary(ScenarioBody body, String maneuverId) {
+        for (ScenarioBody.Role d : body.deputies()) {
+            for (ScenarioBody.Maneuver m : d.maneuvers()) {
+                if (m.id().equals(maneuverId)) {
+                    return "Removed Δv on " + roleName(d) + ": " + fmtManeuver(m);
+                }
+            }
+        }
+        return "Removed maneuver " + maneuverId;
     }
 
     // --- sensors & attitude (Phase 7, US-SENSE-01 / US-PROX-01) --------------
@@ -402,8 +422,21 @@ public class ScenarioService {
             throw new ScenarioValidationException("No sensor " + sensorId + " in this scenario");
         }
 
-        int nextNo = saveVersion(scenario, updated, author, "SENSOR_REMOVE", "Removed sensor " + sensorId);
+        int nextNo = saveVersion(scenario, updated, author, "SENSOR_REMOVE",
+                removedSensorSummary(body, sensorId));
         return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    /** Human summary of the removed sensor (kind + FOV + range + host), for the audit row. */
+    private static String removedSensorSummary(ScenarioBody body, String sensorId) {
+        for (ScenarioBody.Role r : orderedRoles(body)) {
+            for (ScenarioBody.Sensor s : r.sensors()) {
+                if (s.id().equals(sensorId)) {
+                    return "Removed sensor on " + roleName(r) + ": " + fmtSensor(s);
+                }
+            }
+        }
+        return "Removed sensor " + sensorId;
     }
 
     /** Set (or clear, with a null draft) a sensor's link budget (Phase 9D, US-EVT-05). New
@@ -516,8 +549,21 @@ public class ScenarioService {
             throw new ScenarioValidationException("No constraint " + constraintId + " in this scenario");
         }
 
-        int nextNo = saveVersion(scenario, updated, author, "CONSTRAINT_REMOVE", "Removed constraint " + constraintId);
+        int nextNo = saveVersion(scenario, updated, author, "CONSTRAINT_REMOVE",
+                removedConstraintSummary(body, constraintId));
         return toResponse(scenario, updated, nextNo, (int) versions.countByScenarioId(id));
+    }
+
+    /** Human summary of the removed constraint (kind + params + host), for the audit row. */
+    private static String removedConstraintSummary(ScenarioBody body, String constraintId) {
+        for (ScenarioBody.Role r : orderedRoles(body)) {
+            for (ScenarioBody.Constraint c : r.constraints()) {
+                if (c.id().equals(constraintId)) {
+                    return "Removed constraint on " + roleName(r) + ": " + fmtConstraint(c);
+                }
+            }
+        }
+        return "Removed constraint " + constraintId;
     }
 
     /** Set (or clear, with null) the intra-scenario conjunction miss-distance threshold (metres). */
@@ -630,6 +676,321 @@ public class ScenarioService {
                         "Scenario " + id + " has no version " + versionNo));
         return new ScenarioVersionResponse(id.toString(), v.getVersionNo(),
                 v.getAuthorId().toString(), str(v.getCreatedAt()), parse(v.getBody()));
+    }
+
+    /**
+     * Version history (Phase 10, US-INFRA-06 / US-SCN-04): all versions of a
+     * scenario, oldest first, metadata only. Owner-gated exactly like
+     * {@link #get} (else 404).
+     */
+    @Transactional(readOnly = true)
+    public List<ScenarioVersionSummary> versionHistory(UUID id) {
+        User me = userService.currentUser();
+        activeScenario(id, me); // ownership + not-archived gate
+        List<ScenarioVersion> all = versions.findByScenarioIdOrderByVersionNoAsc(id);
+        Map<UUID, String> emails = userService.emailsByIds(
+                all.stream().map(ScenarioVersion::getAuthorId).collect(Collectors.toSet()));
+        return all.stream()
+                .map(v -> new ScenarioVersionSummary(
+                        v.getVersionNo(),
+                        emails.getOrDefault(v.getAuthorId(), v.getAuthorId().toString()),
+                        str(v.getCreatedAt())))
+                .toList();
+    }
+
+    /**
+     * Audit trail (Phase 10, US-INFRA-06): every action against a scenario,
+     * newest first, with the actor resolved to an email. Owner-gated like
+     * {@link #get} (else 404).
+     */
+    @Transactional(readOnly = true)
+    public List<AuditEntryResponse> auditTrail(UUID id) {
+        User me = userService.currentUser();
+        activeScenario(id, me); // ownership + not-archived gate
+        List<AuditLog> entries = auditLog.findByScenarioIdOrderByTimestampDesc(id);
+        Map<UUID, String> emails = userService.emailsByIds(
+                entries.stream().map(AuditLog::getActorId).collect(Collectors.toSet()));
+        return entries.stream()
+                .map(e -> new AuditEntryResponse(
+                        e.getAction(),
+                        emails.getOrDefault(e.getActorId(), e.getActorId().toString()),
+                        str(e.getTimestamp()),
+                        e.getDiffSummary()))
+                .toList();
+    }
+
+    /**
+     * Structured diff of version {@code versionNo} against its predecessor
+     * (Phase 10 governance follow-up). Every version stores the full body, so the
+     * delta — maneuvers/sensors/constraints added/removed/changed, with ΔV numbers,
+     * epochs and resolved role names — is recovered by comparing two bodies (works
+     * retroactively). Owner-gated like {@link #get}. v1 diffs against an empty
+     * scenario (everything is an {@code add}).
+     */
+    @Transactional(readOnly = true)
+    public VersionDiff versionDiff(UUID id, int versionNo) {
+        User me = userService.currentUser();
+        activeScenario(id, me); // ownership + not-archived gate
+        ScenarioBody newBody = versions.findByScenarioIdAndVersionNo(id, versionNo)
+                .map(v -> parse(v.getBody()))
+                .orElseThrow(() -> new ScenarioNotFoundException(id));
+        Integer fromNo = versionNo > 1 ? versionNo - 1 : null;
+        ScenarioBody oldBody = fromNo == null ? null
+                : versions.findByScenarioIdAndVersionNo(id, fromNo).map(v -> parse(v.getBody())).orElse(null);
+        return new VersionDiff(versionNo, fromNo, diffBodies(oldBody, newBody));
+    }
+
+    // --- version diff (Phase 10 governance) -----------------------------------
+
+    /** Compare two scenario bodies ({@code oldB} null → the empty pre-v1 state). */
+    private List<VersionDiff.Change> diffBodies(ScenarioBody oldB, ScenarioBody newB) {
+        List<VersionDiff.Change> out = new ArrayList<>();
+
+        // settings
+        String oldFid = oldB == null ? null : oldB.fidelity();
+        if (!Objects.equals(oldFid, newB.fidelity())) {
+            out.add(new VersionDiff.Change(oldB == null ? "add" : "change", "settings",
+                    oldB == null ? "Fidelity " + newB.fidelity()
+                                 : "Fidelity " + oldFid + " → " + newB.fidelity()));
+        }
+        ScenarioBody.TimeRange oldTr = oldB == null ? null : oldB.timeRange();
+        if (oldTr != null && newB.timeRange() != null
+                && (!Objects.equals(oldTr.start(), newB.timeRange().start())
+                 || !Objects.equals(oldTr.end(), newB.timeRange().end()))) {
+            out.add(new VersionDiff.Change("change", "settings",
+                    "Time range " + oldTr.start() + "…" + oldTr.end()
+                            + " → " + newB.timeRange().start() + "…" + newB.timeRange().end()));
+        }
+        Double oldThr = oldB == null ? null : oldB.missDistanceThresholdM();
+        if (!Objects.equals(oldThr, newB.missDistanceThresholdM())) {
+            out.add(new VersionDiff.Change(oldThr == null ? "add" : "change", "settings",
+                    "Miss-distance threshold " + fmtThreshold(oldThr, newB.missDistanceThresholdM())));
+        }
+
+        // roster (added / removed roles), then per-role sub-collection diffs
+        Map<Integer, ScenarioBody.Role> oldRoles = rolesById(oldB);
+        Map<Integer, ScenarioBody.Role> newRoles = rolesById(newB);
+        for (ScenarioBody.Role r : orderedRoles(newB)) {
+            if (!oldRoles.containsKey(r.noradId())) {
+                out.add(new VersionDiff.Change("add", "roster",
+                        ("chief".equals(r.role()) ? "Chief " : "Deputy ") + roleName(r) + describeRoleContents(r)));
+            }
+        }
+        for (ScenarioBody.Role r : orderedRoles(oldB)) {
+            if (!newRoles.containsKey(r.noradId())) {
+                out.add(new VersionDiff.Change("remove", "roster",
+                        ("chief".equals(r.role()) ? "Chief " : "Deputy ") + roleName(r)));
+            }
+        }
+        for (ScenarioBody.Role rn : orderedRoles(newB)) {
+            ScenarioBody.Role ro = oldRoles.get(rn.noradId());
+            if (ro != null) {
+                diffRole(ro, rn, out);
+            }
+        }
+        return out;
+    }
+
+    /** Diff the maneuvers / sensors / constraints / attitude of a role present in both versions. */
+    private void diffRole(ScenarioBody.Role ro, ScenarioBody.Role rn, List<VersionDiff.Change> out) {
+        String who = roleName(rn);
+        Map<String, ScenarioBody.Maneuver> oldM = byId(ro.maneuvers(), ScenarioBody.Maneuver::id);
+        Map<String, ScenarioBody.Maneuver> newM = byId(rn.maneuvers(), ScenarioBody.Maneuver::id);
+        for (ScenarioBody.Maneuver m : rn.maneuvers()) {
+            if (!oldM.containsKey(m.id())) {
+                out.add(new VersionDiff.Change("add", "maneuver", "Δv on " + who + ": " + fmtManeuver(m)));
+            }
+        }
+        for (ScenarioBody.Maneuver m : ro.maneuvers()) {
+            if (!newM.containsKey(m.id())) {
+                out.add(new VersionDiff.Change("remove", "maneuver", "Δv on " + who + ": " + fmtManeuver(m)));
+            }
+        }
+        Map<String, ScenarioBody.Sensor> oldS = byId(ro.sensors(), ScenarioBody.Sensor::id);
+        Map<String, ScenarioBody.Sensor> newS = byId(rn.sensors(), ScenarioBody.Sensor::id);
+        for (ScenarioBody.Sensor s : rn.sensors()) {
+            ScenarioBody.Sensor prev = oldS.get(s.id());
+            if (prev == null) {
+                out.add(new VersionDiff.Change("add", "sensor", "Sensor on " + who + ": " + fmtSensor(s)));
+            } else if (!sensorContentEquals(prev, s)) {
+                out.add(new VersionDiff.Change("change", "sensor",
+                        "Sensor " + sensorName(s) + " on " + who + ": " + fmtSensorChange(prev, s)));
+            }
+        }
+        for (ScenarioBody.Sensor s : ro.sensors()) {
+            if (!newS.containsKey(s.id())) {
+                out.add(new VersionDiff.Change("remove", "sensor", "Sensor on " + who + ": " + fmtSensor(s)));
+            }
+        }
+        Map<String, ScenarioBody.Constraint> oldC = byId(ro.constraints(), ScenarioBody.Constraint::id);
+        Map<String, ScenarioBody.Constraint> newC = byId(rn.constraints(), ScenarioBody.Constraint::id);
+        for (ScenarioBody.Constraint c : rn.constraints()) {
+            if (!oldC.containsKey(c.id())) {
+                out.add(new VersionDiff.Change("add", "constraint", "Constraint on " + who + ": " + fmtConstraint(c)));
+            }
+        }
+        for (ScenarioBody.Constraint c : ro.constraints()) {
+            if (!newC.containsKey(c.id())) {
+                out.add(new VersionDiff.Change("remove", "constraint", "Constraint on " + who + ": " + fmtConstraint(c)));
+            }
+        }
+        if (!attitudeEquals(ro.attitude(), rn.attitude())) {
+            out.add(new VersionDiff.Change("change", "attitude",
+                    "Attitude on " + who + ": " + attMode(ro.attitude()) + " → " + attMode(rn.attitude())));
+        }
+    }
+
+    private static List<ScenarioBody.Role> orderedRoles(ScenarioBody b) {
+        if (b == null) {
+            return List.of();
+        }
+        List<ScenarioBody.Role> all = new ArrayList<>();
+        if (b.chief() != null) {
+            all.add(b.chief());
+        }
+        if (b.deputies() != null) {
+            all.addAll(b.deputies());
+        }
+        return all;
+    }
+
+    private static Map<Integer, ScenarioBody.Role> rolesById(ScenarioBody b) {
+        Map<Integer, ScenarioBody.Role> m = new LinkedHashMap<>();
+        for (ScenarioBody.Role r : orderedRoles(b)) {
+            m.put(r.noradId(), r);
+        }
+        return m;
+    }
+
+    private static <T> Map<String, T> byId(List<T> items, Function<T, String> id) {
+        Map<String, T> m = new LinkedHashMap<>();
+        for (T t : items) {
+            m.put(id.apply(t), t);
+        }
+        return m;
+    }
+
+    private static String describeRoleContents(ScenarioBody.Role r) {
+        List<String> bits = new ArrayList<>();
+        if (!r.maneuvers().isEmpty()) {
+            bits.add(r.maneuvers().size() + " maneuver" + (r.maneuvers().size() == 1 ? "" : "s"));
+        }
+        if (!r.sensors().isEmpty()) {
+            bits.add(r.sensors().size() + " sensor" + (r.sensors().size() == 1 ? "" : "s"));
+        }
+        if (!r.constraints().isEmpty()) {
+            bits.add(r.constraints().size() + " constraint" + (r.constraints().size() == 1 ? "" : "s"));
+        }
+        return bits.isEmpty() ? "" : " (" + String.join(", ", bits) + ")";
+    }
+
+    private static boolean sensorContentEquals(ScenarioBody.Sensor a, ScenarioBody.Sensor b) {
+        return Objects.equals(a.kind(), b.kind())
+                && Objects.equals(a.name(), b.name())
+                && Objects.equals(a.fov(), b.fov())
+                && a.minRangeM() == b.minRangeM()
+                && a.maxRangeM() == b.maxRangeM()
+                && Objects.equals(a.linkBudget(), b.linkBudget())
+                && mountEquals(a.mount(), b.mount());
+    }
+
+    private static boolean mountEquals(ScenarioBody.Mount a, ScenarioBody.Mount b) {
+        if (a == null || b == null) {
+            return a == b;
+        }
+        return a.clockDeg() == b.clockDeg() && Arrays.equals(a.boresightBody(), b.boresightBody());
+    }
+
+    private static boolean attitudeEquals(ScenarioBody.AttitudeProfile a, ScenarioBody.AttitudeProfile b) {
+        double[] qa = a == null ? null : a.quaternion();
+        double[] qb = b == null ? null : b.quaternion();
+        return attMode(a).equals(attMode(b)) && Arrays.equals(qa, qb);
+    }
+
+    private static String attMode(ScenarioBody.AttitudeProfile p) {
+        return p == null || p.mode() == null || p.mode().isBlank() ? "lvlh" : p.mode();
+    }
+
+    private static String roleName(ScenarioBody.Role r) {
+        String n = r.name() == null || r.name().isBlank() ? "unknown" : r.name();
+        return n + " (" + r.noradId() + ")";
+    }
+
+    private static String sensorName(ScenarioBody.Sensor s) {
+        return s.name() == null || s.name().isBlank() ? s.kind() : s.name();
+    }
+
+    private static String fmtManeuver(ScenarioBody.Maneuver m) {
+        ScenarioBody.DeltaV dv = m.deltaV();
+        String base = String.format(Locale.ROOT, "R %+.2f, I %+.2f, C %+.2f m/s @ %s",
+                dv.r(), dv.i(), dv.c(), m.epoch());
+        if (m.finite()) {
+            base += String.format(Locale.ROOT, " (finite %.1f N / %.0f s)", m.thrustN(), m.ispSec());
+        }
+        return base;
+    }
+
+    private static String fmtSensor(ScenarioBody.Sensor s) {
+        return sensorName(s) + " [" + s.kind() + ", " + fmtFov(s.fov())
+                + ", range " + fmtMetres(s.minRangeM()) + "–" + fmtMetres(s.maxRangeM()) + "]";
+    }
+
+    private static String fmtFov(ScenarioBody.Fov f) {
+        if (f == null) {
+            return "fov?";
+        }
+        if ("rect".equalsIgnoreCase(f.type())) {
+            return String.format(Locale.ROOT, "%.1f×%.1f°", f.hDeg(), f.vDeg());
+        }
+        return String.format(Locale.ROOT, "cone %.1f°", f.halfAngleDeg());
+    }
+
+    private static String fmtSensorChange(ScenarioBody.Sensor a, ScenarioBody.Sensor b) {
+        if (!Objects.equals(a.linkBudget(), b.linkBudget())) {
+            return b.linkBudget() == null ? "link budget cleared"
+                    : "link budget set (" + fmtLinkBudget(b.linkBudget()) + ")";
+        }
+        return "updated";
+    }
+
+    private static String fmtLinkBudget(ScenarioBody.LinkBudget lb) {
+        return String.format(Locale.ROOT, "%s, EIRP %.1f dBW, G/T %.1f dB/K, %.2f GHz",
+                lb.kind(), lb.eirpDbw(), lb.gOverTdbK(), lb.frequencyGhz());
+    }
+
+    private static String fmtConstraint(ScenarioBody.Constraint c) {
+        if ("sun-keep-out".equals(c.kind())) {
+            return String.format(Locale.ROOT, "sun-keep-out %.1f° (sensor %s)", c.limitDeg(), shortId(c.sensorId()));
+        }
+        if ("approach-corridor".equals(c.kind())) {
+            return String.format(Locale.ROOT, "approach-corridor %.1f° vs %d within %s",
+                    c.limitDeg(), c.targetNoradId(), fmtMetres(c.rangeM()));
+        }
+        return c.kind();
+    }
+
+    private static String fmtThreshold(Double oldV, Double newV) {
+        if (newV == null) {
+            return "cleared";
+        }
+        if (oldV == null) {
+            return fmtMetres(newV);
+        }
+        return fmtMetres(oldV) + " → " + fmtMetres(newV);
+    }
+
+    private static String fmtMetres(double m) {
+        if (Math.abs(m) >= 1000.0) {
+            return String.format(Locale.ROOT, "%.2f km", m / 1000.0);
+        }
+        return String.format(Locale.ROOT, "%.0f m", m);
+    }
+
+    private static String shortId(String id) {
+        if (id == null || id.isBlank()) {
+            return "—";
+        }
+        return id.length() <= 8 ? id : id.substring(0, 8);
     }
 
     // --- helpers --------------------------------------------------------------

@@ -251,6 +251,208 @@
   letter-spacing: 0.5px;
 }
 
+/* Auth (Phase 10, US-AUTH-02): sign-in gate + top-bar identity chip. */
+.auth-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: #0a0e1a;
+  color: #e2e8f0;
+  font-size: 14px;
+}
+
+.auth-brand {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #f1f5f9;
+}
+
+.auth-error {
+  color: #fca5a5;
+  max-width: 420px;
+  text-align: center;
+}
+
+.auth-screen button {
+  height: 32px;
+  padding: 0 16px;
+  background: rgba(56, 189, 248, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  border-radius: 6px;
+  color: #e2e8f0;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 12px;
+  background: rgba(30, 41, 59, 0.6);
+  border: 1px solid rgba(71, 85, 105, 0.4);
+  border-radius: 6px;
+  backdrop-filter: blur(8px);
+  max-width: 260px;
+}
+
+.user-chip-email {
+  font-size: 12px;
+  color: #cbd5e1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-chip-logout {
+  height: 24px;
+  padding: 0 10px;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: 5px;
+  color: #e2e8f0;
+  font-size: 11px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+/* Audit & history panel (Phase 10, US-INFRA-06). */
+.audit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: 11px;
+}
+
+.audit-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 2px;
+  border-bottom: 1px solid rgba(71, 85, 105, 0.2);
+  color: #cbd5e1;
+}
+
+.audit-row-entry {
+  flex-wrap: wrap;
+}
+
+.audit-ver {
+  font-weight: 600;
+  color: #f1f5f9;
+  min-width: 28px;
+}
+
+.audit-action {
+  font-weight: 600;
+  color: #38bdf8;
+  font-family: ui-monospace, monospace;
+}
+
+.audit-time {
+  color: #94a3b8;
+  font-size: 10px;
+}
+
+.audit-actor {
+  color: #94a3b8;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
+
+.audit-summary {
+  flex: 1 1 100%;
+  color: #cbd5e1;
+}
+
+/* Expandable version rows → structured version diff (Phase 10 governance follow-up). */
+.audit-ver-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.audit-ver-row {
+  width: 100%;
+  font: inherit;
+  cursor: pointer;
+  background: none;
+  border: none;
+  border-bottom: 1px solid rgba(71, 85, 105, 0.2);
+  text-align: left;
+}
+
+.audit-ver-row:hover {
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.audit-ver-row.is-open {
+  background: rgba(56, 189, 248, 0.06);
+}
+
+.audit-caret {
+  color: #64748b;
+  min-width: 10px;
+}
+
+.audit-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 2px 7px 20px;
+  border-bottom: 1px solid rgba(71, 85, 105, 0.2);
+}
+
+.diff-line {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 10.5px;
+  color: #cbd5e1;
+}
+
+.diff-op {
+  font-weight: 700;
+  min-width: 10px;
+  text-align: center;
+}
+
+.diff-add .diff-op {
+  color: #4ade80;
+}
+
+.diff-remove .diff-op {
+  color: #f87171;
+}
+
+.diff-change .diff-op {
+  color: #fbbf24;
+}
+
+.diff-cat {
+  color: #64748b;
+  font-family: ui-monospace, monospace;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  min-width: 66px;
+  flex-shrink: 0;
+}
+
+.diff-detail {
+  flex: 1;
+  word-break: break-word;
+}
+
 .search {
   flex: 1;
   max-width: 340px;

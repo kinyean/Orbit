@@ -17,7 +17,21 @@
 // In production the same /api prefix is served by whatever reverse proxy
 // fronts the static build.
 
-import createClient from 'openapi-fetch';
+import createClient, { type Middleware } from 'openapi-fetch';
 import type { paths } from './schema';
+import { getAccessToken } from '../auth/token';
 
 export const api = createClient<paths>({ baseUrl: '/api' });
+
+// Phase 10 (US-AUTH-02): attach the OIDC bearer token to every request when one
+// is present. In stub mode getAccessToken() returns null and no header is added,
+// so requests are unauthenticated exactly as before. One place, so the generated
+// client is otherwise untouched.
+const authMiddleware: Middleware = {
+  onRequest({ request }) {
+    const token = getAccessToken();
+    if (token) request.headers.set('Authorization', `Bearer ${token}`);
+    return request;
+  },
+};
+api.use(authMiddleware);

@@ -9,25 +9,26 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Phase 1 stub authentication. Injects a fixed dev user into the Spring
- * Security context for every request, so:
+ * Stub authentication. Injects a fixed dev user into the Spring Security
+ * context for every request, so:
  * <ul>
  *   <li>{@code SecurityContextHolder.getContext().getAuthentication()} is
  *   never anonymous in dev,</li>
  *   <li>downstream code (audit logging, scenario ownership) can read a
- *   real principal,</li>
- *   <li>the swap to real OIDC/SAML in Phase 10 only requires replacing this
- *   filter — the rest of the security pipeline stays.</li>
+ *   real principal.</li>
  * </ul>
  *
- * <p>This is <em>not</em> production-safe. It will be replaced wholesale at
- * Phase 10 (see decisions.md §16, US-AUTH-02/03).
+ * <p>This is <em>not</em> production-safe. It is only wired into the filter
+ * chain when {@code orbit.auth.mode=stub} (the default); the {@code oidc} mode
+ * swaps in the OAuth2 resource server instead (Phase 10, US-AUTH-02/03). It is
+ * deliberately <strong>not</strong> a {@code @Component} — that would make
+ * Spring Boot auto-register it as a global servlet filter and clobber JWT auth
+ * in {@code oidc} mode; {@link SecurityConfig} constructs it directly for the
+ * stub chain only.
  */
-@Component
 public class DevUserAuthenticationFilter extends OncePerRequestFilter {
 
     /** Stable identifier for the dev user across restarts. */

@@ -1,0 +1,29 @@
+Orbit {{ .Chart.AppVersion }} installed as "{{ .Release.Name }}".
+
+  App:      https://{{ .Values.ingress.host }}
+{{- if .Values.keycloak.enabled }}
+  Keycloak: https://{{ .Values.keycloak.host }}  (issuer: {{ .Values.auth.issuerUrl }})
+{{- end }}
+  Auth mode: {{ .Values.auth.mode }}
+
+Next:
+  1. Point DNS for {{ .Values.ingress.host }}{{ if .Values.keycloak.enabled }} and {{ .Values.keycloak.host }}{{ end }} at the ingress controller.
+  2. Wait for cert-manager to issue the TLS cert(s):
+       kubectl get certificate -n {{ .Release.Namespace }}
+  3. Check rollout:
+       kubectl rollout status deploy/{{ include "orbit.fullname" . }}-backend -n {{ .Release.Namespace }}
+
+{{- if .Values.secrets.create }}
+
+WARNING: chart-generated secrets are in use (secrets.create=true). For production,
+set secrets.create=false and supply a Secret named {{ include "orbit.secretName" . }}
+(keys: db-password, keycloak-admin-password) via sealed-secrets / external-secrets.
+{{- end }}
+{{- if eq .Values.auth.mode "oidc" }}
+{{- if ne .Values.auth.issuerUrl (printf "https://%s/realms/orbit" .Values.keycloak.host) }}
+
+NOTE: auth.issuerUrl ({{ .Values.auth.issuerUrl }}) is not the in-cluster Keycloak
+URL. Ensure it is the ONE issuer URL both the browser and the backend resolve to
+the same IdP (see docs/deployment.md).
+{{- end }}
+{{- end }}

@@ -1,0 +1,98 @@
+# Orbit Helm values (Phase 10, US-INFRA-08/09). 12-factor: everything the
+# backend already reads from env is set here → env, so one chart is portable
+# across cloud + on-prem. Override per environment with -f my-values.yaml.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Container images. Point registry/tag at your built + pushed images (or the
+# air-gapped registry loaded from the offline bundle — scripts/bundle.sh).
+image:
+  registry: ghcr.io/your-org
+  pullPolicy: IfNotPresent
+  backend:
+    repository: orbit-backend
+    tag: "0.1.0"
+  frontend:
+    repository: orbit-frontend
+    tag: "0.1.0"
+  pullSecrets: []
+
+# --- ingress + TLS (US-INFRA-08) ---
+# One public host serves the SPA at / and the backend REST + WebSocket at /api
+# (the ingress strips /api before forwarding). cert-manager issues the TLS cert.
+ingress:
+  className: nginx
+  host: orbit.example.com
+  tls:
+    enabled: true
+    secretName: orbit-tls
+    # cert-manager ClusterIssuer (or Issuer). "" → assume the tls secret is
+    # provisioned out-of-band.
+    clusterIssuer: letsencrypt-prod
+  # WebSocket streams are long-lived — give the ingress generous read timeouts.
+  proxyReadTimeout: "3600"
+  proxySendTimeout: "3600"
+
+# --- auth (US-AUTH-02/03) ---
+# issuerUrl is the ONE OIDC issuer URL both the browser and the backend use
+# (the token's `iss`). With in-cluster Keycloak below, set it to that public URL.
+auth:
+  mode: oidc                       # oidc | stub
+  issuerUrl: "https://keycloak.example.com/realms/orbit"
+  clientId: orbit-frontend
+
+# --- backend ---
+backend:
+  replicas: 1
+  port: 8080
+  resources:
+    requests: { cpu: "500m", memory: "1Gi" }
+    limits:   { cpu: "2",    memory: "2Gi" }
+  # extra env (name/value) if needed
+  extraEnv: []
+
+# --- frontend ---
+frontend:
+  replicas: 1
+  port: 80
+  resources:
+    requests: { cpu: "50m", memory: "64Mi" }
+    limits:   { cpu: "250m", memory: "128Mi" }
+
+# --- PostgreSQL (in-cluster StatefulSet; disable to use an external/managed DB) ---
+postgres:
+  enabled: true
+  image: postgres:16
+  storage: 5Gi
+  storageClassName: ""             # "" → cluster default
+  db: orbit
+  user: orbit
+  resources:
+    requests: { cpu: "250m", memory: "256Mi" }
+    limits:   { cpu: "1",    memory: "1Gi" }
+  # When postgres.enabled=false, point the backend at an external DB:
+  external:
+    url: ""                        # e.g. jdbc:postgresql://db.internal:5432/orbit
+    user: ""
+
+# --- Keycloak (in-cluster IdP; disable to use an external IdP via auth.issuerUrl) ---
+# NOTE: single-instance, H2-backed (start-dev --import-realm). NOT HA — production
+# Keycloak HA (own DB + clustering) is a documented follow-up (Decision 28).
+keycloak:
+  enabled: true
+  image: quay.io/keycloak/keycloak:26.0
+  host: keycloak.example.com       # its own ingress host (issuerUrl points here)
+  port: 8080
+  resources:
+    requests: { cpu: "250m", memory: "512Mi" }
+    limits:   { cpu: "1",    memory: "1Gi" }
+
+# --- secrets ---
+# By default the chart generates a Secret from these values. For GitOps, set
+# create=false and provide a Secret named <fullname>-secrets with keys
+# db-password / keycloak-admin-password (sealed-secrets / external-secrets).
+secrets:
+  create: true
+  dbPassword: "change-me-db"
+  keycloakAdminPassword: "change-me-admin"

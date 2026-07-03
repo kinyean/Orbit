@@ -151,6 +151,17 @@ class ScenarioServiceTests {
             + "\"deputies\":[{\"role\":\"deputy\",\"noradId\":33591,\"name\":\"NOAA\","
             + "\"initialState\":{\"kind\":\"tle\",\"tle\":{\"line1\":\"1\",\"line2\":\"2\",\"epoch\":\"e\"}},\"maneuvers\":[]}]}";
 
+    /** The v2 body above with one ΔV maneuver on the deputy (33591) — the version-diff fixture. */
+    private static final String DEPUTY_TLE_BODY_V2_WITH_MVR =
+            "{\"schemaVersion\":2,\"fidelity\":\"sgp4\","
+            + "\"timeRange\":{\"start\":\"2024-06-01T00:00:00Z\",\"end\":\"2024-06-02T00:00:00Z\"},"
+            + "\"chief\":{\"role\":\"chief\",\"noradId\":25544,\"name\":\"ISS\","
+            + "\"initialState\":{\"kind\":\"tle\",\"tle\":{\"line1\":\"1\",\"line2\":\"2\",\"epoch\":\"e\"}},\"maneuvers\":[]},"
+            + "\"deputies\":[{\"role\":\"deputy\",\"noradId\":33591,\"name\":\"NOAA\","
+            + "\"initialState\":{\"kind\":\"tle\",\"tle\":{\"line1\":\"1\",\"line2\":\"2\",\"epoch\":\"e\"}},"
+            + "\"maneuvers\":[{\"id\":\"m-1\",\"kind\":\"delta_v\",\"epoch\":\"2024-06-01T01:00:00Z\","
+            + "\"frame\":\"ric\",\"deltaV\":{\"r\":1.5,\"i\":-2.0,\"c\":0.0}}]}]}";
+
     /** A v1 body (no maneuvers field anywhere) — the forward-migration fixture. */
     private static final String BODY_V1 =
             "{\"schemaVersion\":1,\"fidelity\":\"sgp4\","
@@ -312,6 +323,73 @@ class ScenarioServiceTests {
                 .isInstanceOf(ScenarioValidationException.class);
         verify(versions, never()).saveAndFlush(any());
         verify(auditLog, never()).save(any());
+    }
+
+    // --- audit-log + version history read paths (Phase 10, US-INFRA-06) ------
+
+    @Test
+    void versionHistoryReturnsMetadataOldestFirstWithEmails() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2); // owned scenario
+        when(versions.findByScenarioIdOrderByVersionNoAsc(id)).thenReturn(List.of(
+                new ScenarioVersion(UUID.randomUUID(), id, 1, OWNER, DEPUTY_TLE_BODY_V2),
+                new ScenarioVersion(UUID.randomUUID(), id, 2, OWNER, DEPUTY_TLE_BODY_V2)));
+        when(userService.emailsByIds(any())).thenReturn(java.util.Map.of(OWNER, "dev@orbit.local"));
+
+        List<ScenarioVersionSummary> history = service.versionHistory(id);
+
+        assertThat(history).hasSize(2);
+        assertThat(history.get(0).versionNo()).isEqualTo(1);
+        assertThat(history.get(1).versionNo()).isEqualTo(2);
+        assertThat(history.get(0).authorEmail()).isEqualTo("dev@orbit.local");
+    }
+
+    @Test
+    void auditTrailResolvesActorEmailsNewestFirst() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2);
+        when(auditLog.findByScenarioIdOrderByTimestampDesc(id)).thenReturn(List.of(
+                new AuditLog(UUID.randomUUID(), id, UUID.randomUUID(), OWNER, "MANEUVER_ADD", "Added ΔV")));
+        when(userService.emailsByIds(any())).thenReturn(java.util.Map.of(OWNER, "dev@orbit.local"));
+
+        List<AuditEntryResponse> trail = service.auditTrail(id);
+
+        assertThat(trail).hasSize(1);
+        assertThat(trail.get(0).action()).isEqualTo("MANEUVER_ADD");
+        assertThat(trail.get(0).actorEmail()).isEqualTo("dev@orbit.local");
+        assertThat(trail.get(0).diffSummary()).isEqualTo("Added ΔV");
+    }
+
+    @Test
+    void versionDiffReportsAddedManeuverWithNumbers() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2); // ownership gate
+        when(versions.findByScenarioIdAndVersionNo(id, 2)).thenReturn(Optional.of(
+                new ScenarioVersion(UUID.randomUUID(), id, 2, OWNER, DEPUTY_TLE_BODY_V2_WITH_MVR)));
+        when(versions.findByScenarioIdAndVersionNo(id, 1)).thenReturn(Optional.of(
+                new ScenarioVersion(UUID.randomUUID(), id, 1, OWNER, DEPUTY_TLE_BODY_V2)));
+
+        VersionDiff diff = service.versionDiff(id, 2);
+
+        assertThat(diff.fromVersionNo()).isEqualTo(1);
+        assertThat(diff.changes()).anySatisfy(c -> {
+            assertThat(c.op()).isEqualTo("add");
+            assertThat(c.category()).isEqualTo("maneuver");
+            assertThat(c.detail())
+                    .contains("NOAA (33591)")
+                    .contains("R +1.50")
+                    .contains("I -2.00")
+                    .contains("@ 2024-06-01T01:00:00Z");
+        });
+    }
+
+    @Test
+    void auditTrailRejectsNonOwner() {
+        UUID id = UUID.randomUUID();
+        // Owned by someone else → the ownership gate collapses to not-found (no enumeration).
+        when(scenarios.findById(id)).thenReturn(Optional.of(new Scenario(id, UUID.randomUUID(), "S")));
+        assertThatThrownBy(() -> service.auditTrail(id))
+                .isInstanceOf(ScenarioNotFoundException.class);
     }
 
     // --- sensors & attitude (Phase 7, US-SENSE-01 / US-PROX-01) --------------

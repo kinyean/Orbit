@@ -379,13 +379,25 @@ build green; verified on the dev stack. Resolves **R16**; introduces the first *
 - ✅ **9D — Link budget / SNR overlays** for RF and optical sensors (`LinkBudgetComputer`,
   schema-v6 `LinkBudget` on a sensor). ⬜ *Deferred:* optical detector NEP/QE detail.
 
-### Phase 10 — Enterprise hardening
-- Real OIDC/SAML integration + RBAC roles activated.
-- §5.2 validation test suite (compare to Orekit reference cases; document
-  AIAA 2006-6753 conformance).
-- Audit-log UI; reproducibility tests (bit-identical reruns).
-- TLS termination at ingress; secrets management.
-- On-prem packaging (image bundle / Helm or Compose).
+### Phase 10 — Enterprise hardening ✅ (done — see [phase-10-plan.md](./phase-10-plan.md), Decision 28)
+Sliced 10A/10B/10C. Activates the Decision-16 seams (additive, not a rewrite). Backend
+**203 tests green**; frontend type-check green; Helm chart `helm lint` + `helm template` clean.
+- ✅ **10A — Real auth + RBAC.** OIDC **resource-server** (stateless bearer JWT) gated by
+  `orbit.auth.mode` (`stub` default keeps local dev IdP-free; `oidc` enforces auth + roles);
+  `JwtAuthenticationConverter` maps Keycloak realm roles → `ROLE_*`; WebSocket auth via
+  `?access_token=` (query-param bearer resolver). Ownership already enforced; capability role
+  rules added. Frontend auth-code+PKCE (`react-oidc-context`) + Bearer middleware. Self-hosted
+  **Keycloak** dev overlay (`docker-compose.oidc.yml`).
+- ✅ **10B — Governance & trust.** Audit-log + version-history REST (`/scenarios/{id}/audit`,
+  `/versions`) + `AuditLogPanel`; end-to-end **reproducibility** tests (byte-identical reruns);
+  **Orekit-reference §5.2 validation suite** + [validation-conformance.md](./validation-conformance.md)
+  (AIAA 2006-6753 conformance inherited from Orekit, R2 — we validate correct integration).
+- ✅ **10C — Deployment.** Prod frontend image (nginx + runtime `/env.js`); **Helm chart**
+  (`deploy/helm/orbit`) — backend/frontend/Keycloak Deployments, Postgres StatefulSet,
+  cert-manager **TLS** at split api/web/keycloak Ingresses, k8s **Secrets**, external-DB /
+  external-IdP toggles; offline `docker save` + `helm package` bundle ([scripts/bundle.sh](../scripts/bundle.sh));
+  [deployment.md](./deployment.md) runbook. Dev stays on Compose. **Deferred:** SAML2; Keycloak
+  HA; external golden vectors.
 
 ### Phase 11 — Polish & ship
 - Sample scenarios; tooltips / help; performance pass to SRS §5.1 metrics.

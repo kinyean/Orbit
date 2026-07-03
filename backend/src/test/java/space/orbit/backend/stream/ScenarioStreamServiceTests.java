@@ -239,6 +239,44 @@ class ScenarioStreamServiceTests {
         assertThat(ea.relative()).isEqualTo(eb.relative());
     }
 
+    @Test
+    void sgp4EncodingIsBitIdenticalOnRerun() {
+        // Reproducibility (US-INFRA-07, §5.4.1) for the default SGP4 path — the
+        // catalog/scenario default fidelity. Byte-identical reruns.
+        ScenarioBody body = body("sgp4", "2024-06-01T12:00:00Z", "2024-06-01T12:30:00Z");
+        EncodedScenario a = service(new ScenarioStreamProperties(30, 5000, true, true), mockBody(body)).loadAndEncode(ID, EMAIL);
+        EncodedScenario b = service(new ScenarioStreamProperties(30, 5000, true, true), mockBody(body)).loadAndEncode(ID, EMAIL);
+        assertThat(a.czml()).isEqualTo(b.czml());
+        assertThat(a.relative()).isEqualTo(b.relative());
+    }
+
+    @Test
+    void finiteBurnScenarioIsBitIdenticalOnRerun() {
+        // Reproducibility (US-INFRA-07, §5.4.1) for the most complex numerical path:
+        // a finite-thrust burn (Orekit ConstantThrustManeuver of the Tsiolkovsky
+        // duration, mass depleted via the rocket equation). Deterministic → byte-identical.
+        ScenarioStreamProperties props = new ScenarioStreamProperties(30, 5000, true, true);
+        EncodedScenario a = service(props, mockBody(bodyWithFiniteBurn())).loadAndEncode(ID, EMAIL);
+        EncodedScenario b = service(props, mockBody(bodyWithFiniteBurn())).loadAndEncode(ID, EMAIL);
+        assertThat(a.czml()).isEqualTo(b.czml());
+        assertThat(a.relative()).isEqualTo(b.relative());
+    }
+
+    /** A deputy carrying a single finite-thrust in-track burn (thrust + Isp). */
+    private static ScenarioBody bodyWithFiniteBurn() {
+        ScenarioBody.Role chief = role("chief", leoTle(25544, "ISS (ZARYA)", 325.0), "ISS (ZARYA)");
+        TLE depTle = leoTle(25545, "DEPUTY-1", 5.0);
+        ScenarioBody.Maneuver m = new ScenarioBody.Maneuver(
+                "m-1", "delta_v", "2024-06-01T12:15:00Z", "ric",
+                new ScenarioBody.DeltaV(0.0, 10.0, 0.0), 500.0, 300.0);
+        ScenarioBody.Role deputy = new ScenarioBody.Role("deputy", 25545, "DEPUTY-1",
+                new ScenarioBody.InitialState("tle",
+                        new ScenarioBody.Tle(depTle.getLine1(), depTle.getLine2(), depTle.getDate().toString())),
+                List.of(m));
+        return new ScenarioBody(6, "sgp4", new ScenarioBody.TimeRange(
+                "2024-06-01T12:00:00Z", "2024-06-01T13:30:00Z"), chief, List.of(deputy));
+    }
+
     // --- relative-state (proximity view, 4B) ---------------------------------
 
     @Test
