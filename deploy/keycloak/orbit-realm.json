@@ -1,0 +1,86 @@
+{
+  "realm": "orbit",
+  "enabled": true,
+  "displayName": "Orbit RPO",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "accessTokenLifespan": 900,
+  "roles": {
+    "realm": [
+      {
+        "name": "mission_planner",
+        "description": "Maya \u2014 compose/edit scenarios, maneuvers"
+      },
+      {
+        "name": "flight_dynamics_engineer",
+        "description": "Frank \u2014 validate, Monte Carlo, screening"
+      },
+      {
+        "name": "admin",
+        "description": "Administrative access"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "orbit-frontend",
+      "name": "Orbit SPA",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "rootUrl": "http://localhost:5174",
+      "baseUrl": "http://localhost:5174",
+      "redirectUris": [
+        "http://localhost:5174/*",
+        "http://localhost:5173/*",
+        "https://localhost/*",
+        "http://174.75.16.25:5174/*",
+        "https://174.75.16.25:8443/*"
+      ],
+      "webOrigins": [
+        "+"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5174/*##http://localhost:5173/*##https://localhost/*##http://174.75.16.25:5174/*##https://174.75.16.25:8443/*"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "maya",
+      "enabled": true,
+      "email": "maya@orbit.local",
+      "emailVerified": true,
+      "firstName": "Maya",
+      "lastName": "Planner",
+      "realmRoles": [
+        "mission_planner"
+      ]
+    },
+    {
+      "username": "frank",
+      "enabled": true,
+      "email": "frank@orbit.local",
+      "emailVerified": true,
+      "firstName": "Frank",
+      "lastName": "Dynamics",
+      "realmRoles": [
+        "flight_dynamics_engineer",
+        "admin"
+      ]
+    },
+    {
+      "username": "gita",
+      "enabled": true,
+      "email": "gita@orbit.local",
+      "emailVerified": true,
+      "firstName": "Gita",
+      "lastName": "Sensors",
+      "realmRoles": [
+        "flight_dynamics_engineer"
+      ]
+    }
+  ]
+}

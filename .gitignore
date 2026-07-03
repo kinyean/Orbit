@@ -1,2 +1,9 @@
 # Throwaway sample data (measured-telemetry CSV excerpts; see measured-data-plan.md)
 _teleos_samples/
+
+# Self-signed dev TLS certs for the OIDC/HTTPS overlay (never commit private keys;
+# regenerated per host — see docker-compose.oidc.yml).
+deploy/nginx/certs/
+
+# Local dev secrets for docker compose (never commit)
+.env

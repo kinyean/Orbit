@@ -7,27 +7,32 @@
 #   docker compose down -v      # stop AND wipe db volume (full reset)
 #   docker compose logs -f backend
 #
-# Ports exposed to host:
-#   5432 — Postgres (for local psql convenience)
-#   8081 — Backend (REST + WebSocket). Host port 8080 is taken on this shared
-#          machine by Apache Airflow; we map host:8081 → container:8080.
-#   5174 — Frontend Vite dev server. Host port 5173 is taken by another
-#          process on this shared machine; we map host:5174 → container:5173.
+# Ports (all bound to 127.0.0.1 = reachable only from THIS box, not the network,
+# because the machine is shared):
+#   5432 — Postgres (local psql convenience)
+#   8081 — Backend (REST + WebSocket). Host 8080 is taken by Apache Airflow;
+#          mapped host:8081 → container:8080.
+#   5174 — Frontend Vite dev server. Host 5173 is taken; mapped 5174 → 5173.
 #
-# The browser hits localhost:8081 (backend) and localhost:5174 (frontend)
-# directly, not via the docker network. VITE_BACKEND_URL reflects this.
+# These are box-local only. For network access, run the OIDC + HTTPS overlay
+# (docker-compose.oidc.yml), which adds nginx on :8443 as the single network-facing
+# entry (it reaches the frontend/backend over the docker network, not these ports).
+# For plain stub-mode dev from another machine, use an SSH tunnel to these ports.
 
 services:
   db:
     image: postgres:16
     environment:
       POSTGRES_USER: orbit
-      POSTGRES_PASSWORD: orbit
+      # From .env (gitignored). See .env.example. Never a literal here.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: orbit
     volumes:
       - db_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      # Bound to loopback: Postgres is reachable only from the box (local psql),
+      # never from the network. The backend reaches it via the docker network (db:5432).
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U orbit -d orbit"]
       interval: 5s
@@ -43,7 +48,8 @@ services:
     environment:
       DB_URL: jdbc:postgresql://db:5432/orbit
       DB_USER: orbit
-      DB_PASSWORD: orbit
+      # From .env (gitignored). See .env.example. Never a literal here.
+      DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
       SERVER_PORT: "8080"
       APP_VERSION: "0.1.0-dev"
       APP_BUILD_TIME: "dev"
@@ -62,10 +68,11 @@ services:
       - /mnt/disk_large/shared_folder:/shared_folder:ro
     ports:
       # host:8081 → container:8080 (8080 is taken on the host by Airflow).
-      # The frontend reaches the backend by docker service name (see PROXY_TARGET
-      # below), not via this published port. The port is kept for direct access
-      # (Swagger UI in a browser, curl from the host, IDE OpenAPI client gen).
-      - "8081:8080"
+      # Bound to loopback: direct backend access is box-only (Swagger UI, curl,
+      # IDE OpenAPI client gen). nginx (:8443) reaches the backend via the docker
+      # network, and the frontend proxies /api → backend the same way — neither
+      # uses this published port, so binding it to localhost changes nothing there.
+      - "127.0.0.1:8081:8080"
 
   frontend:
     build:
@@ -84,8 +91,12 @@ services:
       # the host's node_modules (potentially different platform) overlays it.
       - /app/node_modules
     ports:
-      # host:5174 → container:5173 (5173 is taken on the host)
-      - "5174:5173"
+      # host:5174 → container:5173 (5173 is taken on the host).
+      # Bound to loopback: this plain-HTTP entry is box-only. The network-facing
+      # entry is nginx on :8443 (docker-compose.oidc.yml), which reaches the
+      # frontend via the docker network. For plain stub-mode dev over the network,
+      # use an SSH tunnel to 5174 or run the oidc overlay.
+      - "127.0.0.1:5174:5173"
 
 volumes:
   db_data:

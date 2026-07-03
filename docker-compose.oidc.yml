@@ -1,0 +1,130 @@
+# OIDC + HTTPS overlay for the dev stack (Phase 10, US-AUTH-02/03).
+#
+# The base docker-compose.yml runs in stub auth (no IdP, plain HTTP). This overlay
+# adds a Keycloak dev IdP and an nginx reverse proxy that terminates TLS on a
+# NON-default port (8443) with a self-signed cert, then flips the backend +
+# frontend to oidc mode:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.oidc.yml up -d
+#
+# Then browse  https://174.75.16.25:8443/  and accept the one-time cert warning
+# (the cert is self-signed — this box has no public domain). Log in as a seed user
+# (deploy/keycloak/orbit-realm.json):
+#   maya / maya   (mission_planner)
+#   frank / frank (flight_dynamics_engineer, admin)
+#   gita / gita   (flight_dynamics_engineer)
+#
+# Port 8443 (not 443) is deliberate: this IP/host is shared, so we don't grab the
+# default HTTPS port. Change it by editing the nginx `ports` mapping below and the
+# :8443 in the three issuer/CORS URLs + orbit-realm.json.
+#
+# --- Why HTTPS at all (not just http://174.75.16.25:5174)? ---
+# The OIDC login uses PKCE, which needs the browser's Web Crypto (crypto.subtle).
+# Browsers expose Web Crypto ONLY in a "secure context" = HTTPS (or localhost), so
+# plain HTTP on an IP can't run the login. nginx gives us HTTPS without a domain
+# via a self-signed cert (one warning to click through).
+#
+# --- One origin, so nothing is cross-origin ---
+# nginx serves everything under https://174.75.16.25:8443/ : the Keycloak paths
+# (/realms, /resources, /admin) go to Keycloak, everything else to the frontend
+# (whose Vite proxy forwards /api/* — incl. the /api/stream WebSockets — to the
+# backend). Keycloak derives its issuer (https://174.75.16.25:8443/realms/orbit)
+# from nginx's X-Forwarded-* headers. The backend validates that issuer STRING on
+# the token but fetches the signing keys over the internal docker network
+# (keycloak:8080), so it never has to trust the self-signed cert.
+#
+# --- If this server's IP or port changes, update it in these places ---
+#   deploy/nginx/orbit-tls.conf (X-Forwarded-Port + comments), the cert SAN
+#   (regenerate — see below), OIDC_ISSUER_URI + CORS below, VITE_OIDC_ISSUER below,
+#   and redirectUris in orbit-realm.json. Regenerate the cert (port not needed in
+#   the SAN — certs don't carry ports) with:
+#     openssl req -x509 -newkey rsa:2048 -nodes \
+#       -keyout deploy/nginx/certs/site.key -out deploy/nginx/certs/site.crt \
+#       -days 3650 -subj "/CN=<IP>" -addext "subjectAltName=IP:<IP>,DNS:localhost"
+#
+# Production (Helm) replaces nginx with a real ingress + cert-manager (trusted
+# cert, no warning) at a public domain — the app config is otherwise identical.
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      # Admin console creds — from .env (gitignored). See .env.example. The realm
+      # + seed users are imported from the JSON below; the users' PASSWORDS are set
+      # afterwards by the keycloak-init service (so no password is committed).
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:?set KC_BOOTSTRAP_ADMIN_PASSWORD in .env}
+      KC_HTTP_ENABLED: "true"
+      # Behind nginx: trust X-Forwarded-* so the issuer resolves to the public
+      # origin (https://174.75.16.25:8443/realms/orbit), not the internal address.
+      KC_PROXY_HEADERS: xforwarded
+      KC_HOSTNAME_STRICT: "false"
+    volumes:
+      - ./deploy/keycloak/orbit-realm.json:/opt/keycloak/data/import/orbit-realm.json:ro
+    # No host port: the browser reaches Keycloak via nginx (/realms/*), and the
+    # backend reaches it over the docker network (keycloak:8080).
+
+  # One-shot: after Keycloak is up, set the seed users' passwords from .env via
+  # kcadm — the realm JSON carries usernames/roles but NO credentials, so nothing
+  # secret is committed. Idempotent; re-runs harmlessly on each `up`.
+  keycloak-init:
+    image: quay.io/keycloak/keycloak:26.0
+    depends_on:
+      keycloak:
+        condition: service_started
+    restart: "no"
+    environment:
+      ADMIN_USER: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:?set KC_BOOTSTRAP_ADMIN_PASSWORD in .env}
+      MAYA_PASSWORD: ${MAYA_PASSWORD:?set MAYA_PASSWORD in .env}
+      FRANK_PASSWORD: ${FRANK_PASSWORD:?set FRANK_PASSWORD in .env}
+      GITA_PASSWORD: ${GITA_PASSWORD:?set GITA_PASSWORD in .env}
+    entrypoint: ["/bin/bash", "-c"]
+    # $$ escapes compose interpolation → literal $ for the shell at runtime.
+    command:
+      - |
+        set -eu
+        KCADM=/opt/keycloak/bin/kcadm.sh
+        echo "keycloak-init: waiting for Keycloak admin API…"
+        until $$KCADM config credentials --server http://keycloak:8080 \
+              --realm master --user "$$ADMIN_USER" --password "$$ADMIN_PASSWORD" >/dev/null 2>&1; do
+          sleep 3
+        done
+        $$KCADM set-password -r orbit --username maya  --new-password "$$MAYA_PASSWORD"
+        $$KCADM set-password -r orbit --username frank --new-password "$$FRANK_PASSWORD"
+        $$KCADM set-password -r orbit --username gita  --new-password "$$GITA_PASSWORD"
+        echo "keycloak-init: seed user passwords set."
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      # host 8443 → container 443 (non-default port; the box is shared).
+      - "8443:443"
+    volumes:
+      - ./deploy/nginx/orbit-tls.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - frontend
+      - backend
+      - keycloak
+
+  backend:
+    environment:
+      ORBIT_AUTH_MODE: oidc
+      # The issuer STRING carried in the token (validated on the backend). Signing
+      # keys are fetched over the docker network instead (next line), so the
+      # backend never reaches this https URL nor needs to trust the self-signed cert.
+      OIDC_ISSUER_URI: https://174.75.16.25:8443/realms/orbit
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:8080/realms/orbit/protocol/openid-connect/certs
+      # CORS/WS locked to the single browser origin (no allow-all).
+      CORS_ALLOWED_ORIGINS: "https://174.75.16.25:8443"
+    depends_on:
+      keycloak:
+        condition: service_started
+
+  frontend:
+    environment:
+      VITE_AUTH_MODE: oidc
+      VITE_OIDC_ISSUER: https://174.75.16.25:8443/realms/orbit
+      VITE_OIDC_CLIENT_ID: orbit-frontend
