@@ -112,5 +112,8 @@ helm install orbit orbit-0.1.0.tgz -f my-values.yaml
   external IdP, is the hardening step (Decision 28).
 - **Frontend runtime config** covers auth (`/env.js`); the public Cesium ion token
   is still baked at image build (`--build-arg VITE_CESIUM_ION_TOKEN`).
-- The chart is validated with `helm lint` + `helm template`; a full end-to-end
-  install (ingress + TLS + OIDC round-trip) is validated on the target cluster.
+- The chart is validated with `helm lint` + `helm template` and OIDC round-trips on the
+  dev Compose stack, but a full end-to-end install (ingress + cert-manager TLS + OIDC
+  browser round-trip) has **not yet been run on a live Kubernetes cluster** — a scoped
+  follow-up gated on having a target cluster (a local `kind`/`k3s` + self-signed TLS
+  would exercise most of it; public DNS + real TLS + HA are prod-only). See Decision 28.

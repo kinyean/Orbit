@@ -740,16 +740,24 @@ cone); Sun occlusion / sun-keep-out (Phase 8); GPU-depth occlusion of the drawn 
       k8s **Secrets**; external-DB / external-IdP / GitOps-secret toggles. `helm lint` + `helm template`
       clean (13 manifests default; 6 with postgres/keycloak off).
 - [x] Offline air-gapped bundle (`scripts/bundle.sh` — `docker save` + `helm package`) +
-      [deployment.md](./deployment.md) runbook. Full cluster install (ingress + TLS + OIDC end-to-end)
-      is verified on the target k8s cluster.
+      [deployment.md](./deployment.md) runbook.
+- [ ] Full end-to-end cluster install (ingress + cert-manager TLS + OIDC browser round-trip) on a
+      real Kubernetes cluster — **not yet verified**. The chart is `helm lint` / `helm template` clean
+      and OIDC round-trips on the dev Compose stack, but nothing has been applied to a live cluster
+      (this box has Docker only — no k8s tooling). Gated on having a target cluster; R9's go-live
+      trigger. See the "future enhancements" note below.
 
 **Invariants** ✅
 - [x] Streaming contract additive, `VERSION="1"` (R12) — auth is transport-layer, no payload change;
       new REST regenerates the client (`gen:api`). Determinism (R11) held + proven end-to-end. Single
       audited mutation path (Decision 16) untouched (10B only reads). Stateless posture kept.
 
-**Deferred (Decision 28):** SAML2; production Keycloak HA; external AIAA/Vallado golden vectors; a
-prod Docker Compose path.
+**Deferred / future enhancements (Decision 28):** SAML2; production Keycloak HA; external
+AIAA/Vallado golden vectors; a prod Docker Compose path; **a live end-to-end cluster install** of
+the Helm chart (a local `kind`/`k3s` cluster with self-signed TLS would exercise ingress routing,
+Secrets, the StatefulSet, and the OIDC browser round-trip; public DNS + real Let's Encrypt TLS +
+multi-node/HA remain genuinely prod-only). All are scoped follow-ups, not Phase-10 gaps — the
+SRS's auth/deploy requirements are met by what shipped.
 
 ## Phase 11 onwards
 
