@@ -1,6 +1,6 @@
 import { useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useStore, type MonteCarloParams } from '../store/useStore';
-import { useCollapsed, usePanelSize, usePanelPosition } from '../lib/usePanelChrome';
+import { usePanelSize, usePanelPosition } from '../lib/usePanelChrome';
 
 /**
  * Monte Carlo dispersion panel (Phase 9C, UC-6, US-MC-01/02). Authors a seeded dispersion
@@ -26,9 +26,8 @@ export default function MonteCarloPanel() {
   const [running, setRunning] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
-  const { pos, setPos, commitPos } = usePanelPosition('montecarlo', { x: 248, y: 600 });
-  const { collapsed, toggle } = useCollapsed('montecarlo');
-  const panelRef = usePanelSize<HTMLElement>('montecarlo', collapsed);
+  const { pos, setPos, commitPos } = usePanelPosition('montecarlo', { x: 396, y: 186 });
+  const panelRef = usePanelSize<HTMLElement>('montecarlo', false);
 
   function onDragStart(e: ReactPointerEvent) {
     if ((e.target as HTMLElement).closest('button')) return;
@@ -82,14 +81,13 @@ export default function MonteCarloPanel() {
   }, 0);
 
   return (
-    <aside ref={panelRef} className={`maneuver-panel${collapsed ? ' is-collapsed' : ''}`} style={{ left: pos.x, top: pos.y }}>
+    <aside ref={panelRef} className="maneuver-panel" style={{ left: pos.x, top: pos.y }}>
       <div className="mvr-drag" onPointerDown={onDragStart} title="Drag to move">
         <span className="mvr-drag-title"><span className="mvr-grip" aria-hidden>⠿</span> Monte Carlo · dispersion</span>
-        <button className="panel-min" onClick={toggle} title={collapsed ? 'Expand' : 'Minimize'} aria-label={collapsed ? 'Expand' : 'Minimize'}>
-          {collapsed ? '▸' : '▾'}
+        <button className="panel-min" onClick={() => useStore.getState().closePanel('montecarlo')} title="Close" aria-label="Close">
+          ✕
         </button>
       </div>
-      {!collapsed && (
         <>
           <div className="mvr-add">
             <select value={selected ?? ''} onChange={(e) => setDeputyId(Number(e.target.value))} aria-label="Deputy">
@@ -98,18 +96,18 @@ export default function MonteCarloPanel() {
               ))}
             </select>
             <div className="mvr-ric">
-              <label>samples<input type="number" step="1" min={1} value={sampleCount} onChange={(e) => setSampleCount(e.target.value)} /></label>
-              <label>seed<input type="number" step="1" value={seed} onChange={(e) => setSeed(e.target.value)} /></label>
+              <label>samples<input title="Number of dispersion samples — each is a full numerical propagation" type="number" step="1" min={1} value={sampleCount} onChange={(e) => setSampleCount(e.target.value)} /></label>
+              <label>seed<input title="RNG seed — the same seed reproduces the run bit-identically" type="number" step="1" value={seed} onChange={(e) => setSeed(e.target.value)} /></label>
             </div>
             <div className="mvr-ric">
-              <label>σ pos (m)<input type="number" step="any" value={posSigma} onChange={(e) => setPosSigma(e.target.value)} /></label>
-              <label>σ vel (m/s)<input type="number" step="any" value={velSigma} onChange={(e) => setVelSigma(e.target.value)} /></label>
+              <label>σ pos (m)<input title="1-σ initial position uncertainty, m" type="number" step="any" value={posSigma} onChange={(e) => setPosSigma(e.target.value)} /></label>
+              <label>σ vel (m/s)<input title="1-σ initial velocity uncertainty, m/s" type="number" step="any" value={velSigma} onChange={(e) => setVelSigma(e.target.value)} /></label>
             </div>
             <div className="mvr-ric">
-              <label>Δv mag frac<input type="number" step="any" value={dvMagFrac} onChange={(e) => setDvMagFrac(e.target.value)} /></label>
-              <label>Δv point (°)<input type="number" step="any" value={dvPointingDeg} onChange={(e) => setDvPointingDeg(e.target.value)} /></label>
+              <label>Δv mag frac<input title="1-σ ΔV magnitude execution error, as a fraction of the burn" type="number" step="any" value={dvMagFrac} onChange={(e) => setDvMagFrac(e.target.value)} /></label>
+              <label>Δv point (°)<input title="1-σ ΔV pointing execution error, degrees" type="number" step="any" value={dvPointingDeg} onChange={(e) => setDvPointingDeg(e.target.value)} /></label>
             </div>
-            <button type="button" onClick={() => void onRun()} disabled={running}>
+            <button title="Run the seeded dispersion analysis" type="button" onClick={() => void onRun()} disabled={running}>
               {running ? 'Running…' : 'Run dispersion'}
             </button>
             <div className="mvr-note">
@@ -129,15 +127,14 @@ export default function MonteCarloPanel() {
                 max 3-σ extent {maxExtent >= 1000 ? `${(maxExtent / 1000).toFixed(2)} km` : `${maxExtent.toFixed(0)} m`}
               </div>
               <label className="mvr-epoch-field" style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
-                <input type="checkbox" checked={visible} onChange={(e) => setVisible(e.target.checked)} />
+                <input title="Show or hide the trajectory cloud + 3σ covariance ellipsoids" type="checkbox" checked={visible} onChange={(e) => setVisible(e.target.checked)} />
                 <span>show cloud + ellipsoids</span>
               </label>
-              <button type="button" onClick={() => clear()}>Clear</button>
+              <button title="Discard this dispersion result" type="button" onClick={() => clear()}>Clear</button>
             </div>
           )}
           {msg && <div className="mvr-msg">{msg}</div>}
         </>
-      )}
     </aside>
   );
 }

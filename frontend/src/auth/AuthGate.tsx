@@ -44,7 +44,7 @@ function OidcGate({ children }: { children: ReactNode }) {
     return (
       <AuthScreen>
         <p className="auth-error">Sign-in failed: {auth.error.message}</p>
-        <button onClick={() => void auth.signinRedirect()}>Try again</button>
+        <button title="Sign in via your organization's identity provider" onClick={() => void auth.signinRedirect()}>Try again</button>
       </AuthScreen>
     );
   }

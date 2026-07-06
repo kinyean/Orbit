@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { useStore, type SensorRequest } from '../store/useStore';
-import { useCollapsed, usePanelSize, usePanelPosition } from '../lib/usePanelChrome';
+import { usePanelSize, usePanelPosition } from '../lib/usePanelChrome';
 
 // Same palette as ProximityView / ManeuverPanel so a craft's color is consistent.
 const CHIEF_COLOR = '#ffd166';
@@ -102,9 +102,8 @@ export default function SensorPanel() {
     kind: 'rf', eirpDbw: '20', gOverTdbK: '5', frequencyGhz: '2.2', bandwidthHz: '1e6', thresholdDb: '10',
   });
   const [linkMsg, setLinkMsg] = useState<string | null>(null);
-  const { pos, setPos, commitPos } = usePanelPosition('sensors', { x: 248, y: 560 });
-  const { collapsed, toggle } = useCollapsed('sensors');
-  const panelRef = usePanelSize<HTMLElement>('sensors', collapsed);
+  const { pos, setPos, commitPos } = usePanelPosition('sensors', { x: 332, y: 122 });
+  const panelRef = usePanelSize<HTMLElement>('sensors', false);
 
   function onDragStart(e: ReactPointerEvent) {
     if ((e.target as HTMLElement).closest('button')) return;
@@ -215,14 +214,13 @@ export default function SensorPanel() {
   const selectedLinkSensor = linkSensorId ?? allSensors[0]?.id ?? null;
 
   return (
-    <aside ref={panelRef} className={`maneuver-panel${collapsed ? ' is-collapsed' : ''}`} style={{ left: pos.x, top: pos.y }}>
+    <aside ref={panelRef} className="maneuver-panel" style={{ left: pos.x, top: pos.y }}>
       <div className="mvr-drag" onPointerDown={onDragStart} title="Drag to move">
         <span className="mvr-drag-title"><span className="mvr-grip" aria-hidden>⠿</span> Sensors · FOV</span>
-        <button className="panel-min" onClick={toggle} title={collapsed ? 'Expand' : 'Minimize'}>
-          {collapsed ? '▸' : '▾'}
+        <button className="panel-min" onClick={() => useStore.getState().closePanel('sensors')} title="Close" aria-label="Close">
+          ✕
         </button>
       </div>
-      {!collapsed && (
         <>
           {crafts.map((c, idx) => {
             const sensors = c.sensors ?? [];
@@ -292,7 +290,7 @@ export default function SensorPanel() {
             <div className="mvr-ric">
               <label>
                 type
-                <select
+                <select title="FOV shape — circular cone or rectangle"
                   value={form.fovType}
                   onChange={(e) => setForm({ ...form, fovType: e.target.value as 'cone' | 'rect' })}
                 >
@@ -303,7 +301,7 @@ export default function SensorPanel() {
               {form.fovType === 'cone' ? (
                 <label title="Measured from the boresight (centre) to the cone edge. 0–90°.">
                   half-angle°
-                  <input
+                  <input title="Cone half-angle, degrees"
                     type="number"
                     step="any"
                     min={0}
@@ -316,7 +314,7 @@ export default function SensorPanel() {
                 <>
                   <label title="Full horizontal width of the field of view. 0–180°.">
                     H° (full)
-                    <input
+                    <input title="Rectangular FOV full width, degrees"
                       type="number"
                       step="any"
                       min={0}
@@ -327,7 +325,7 @@ export default function SensorPanel() {
                   </label>
                   <label title="Full vertical width of the field of view. 0–180°.">
                     V° (full)
-                    <input
+                    <input title="Rectangular FOV full height, degrees"
                       type="number"
                       step="any"
                       min={0}
@@ -348,7 +346,7 @@ export default function SensorPanel() {
             <div className="mvr-ric">
               <label>
                 min m
-                <input
+                <input title="Minimum working range, m"
                   type="number"
                   step="any"
                   value={form.minRangeM}
@@ -357,7 +355,7 @@ export default function SensorPanel() {
               </label>
               <label>
                 max m
-                <input
+                <input title="Maximum working range, m"
                   type="number"
                   step="any"
                   value={form.maxRangeM}
@@ -366,7 +364,7 @@ export default function SensorPanel() {
               </label>
               <label>
                 boresight
-                <select value={boresightIdx} onChange={(e) => setBoresightIdx(Number(e.target.value))}>
+                <select title="Body axis the sensor boresight points along" value={boresightIdx} onChange={(e) => setBoresightIdx(Number(e.target.value))}>
                   {BORESIGHTS.map((b, i) => (
                     <option key={b.label} value={i}>{b.label}</option>
                   ))}
@@ -374,7 +372,7 @@ export default function SensorPanel() {
               </label>
             </div>
             {formErr && <div className="mvr-budget-warn">⚠ {formErr}</div>}
-            <button type="submit" disabled={!!formErr}>Add sensor</button>
+            <button title="Add the sensor (creates a new scenario version)" type="submit" disabled={!!formErr}>Add sensor</button>
             <div className="mvr-note">FOV volumes + acquisition events appear in the proximity view.</div>
             {msg && <div className="mvr-msg">{msg}</div>}
           </form>
@@ -394,20 +392,20 @@ export default function SensorPanel() {
               <div className="mvr-ric">
                 <label>
                   kind
-                  <select value={link.kind} onChange={(e) => setLink({ ...link, kind: e.target.value })}>
+                  <select title="Link type — RF or optical (both use the Friis form)" value={link.kind} onChange={(e) => setLink({ ...link, kind: e.target.value })}>
                     <option value="rf">rf</option>
                     <option value="optical">optical</option>
                   </select>
                 </label>
-                <label>EIRP dBW<input type="number" step="any" value={link.eirpDbw} onChange={(e) => setLink({ ...link, eirpDbw: e.target.value })} /></label>
-                <label>G/T dB/K<input type="number" step="any" value={link.gOverTdbK} onChange={(e) => setLink({ ...link, gOverTdbK: e.target.value })} /></label>
+                <label>EIRP dBW<input title="Transmitter EIRP, dBW" type="number" step="any" value={link.eirpDbw} onChange={(e) => setLink({ ...link, eirpDbw: e.target.value })} /></label>
+                <label>G/T dB/K<input title="Receiver G/T, dB/K" type="number" step="any" value={link.gOverTdbK} onChange={(e) => setLink({ ...link, gOverTdbK: e.target.value })} /></label>
               </div>
               <div className="mvr-ric">
-                <label>freq GHz<input type="number" step="any" value={link.frequencyGhz} onChange={(e) => setLink({ ...link, frequencyGhz: e.target.value })} /></label>
-                <label>BW Hz<input type="number" step="any" value={link.bandwidthHz} onChange={(e) => setLink({ ...link, bandwidthHz: e.target.value })} /></label>
-                <label>thr dB<input type="number" step="any" value={link.thresholdDb} onChange={(e) => setLink({ ...link, thresholdDb: e.target.value })} /></label>
+                <label>freq GHz<input title="Carrier frequency, GHz" type="number" step="any" value={link.frequencyGhz} onChange={(e) => setLink({ ...link, frequencyGhz: e.target.value })} /></label>
+                <label>BW Hz<input title="Receiver bandwidth, Hz" type="number" step="any" value={link.bandwidthHz} onChange={(e) => setLink({ ...link, bandwidthHz: e.target.value })} /></label>
+                <label>thr dB<input title="Detection threshold, dB — the timeline band turns red below it" type="number" step="any" value={link.thresholdDb} onChange={(e) => setLink({ ...link, thresholdDb: e.target.value })} /></label>
               </div>
-              <button type="button" onClick={() => void onSetLink(selectedLinkSensor)} disabled={!selectedLinkSensor}>
+              <button title="Save the link budget (creates a new scenario version)" type="button" onClick={() => void onSetLink(selectedLinkSensor)} disabled={!selectedLinkSensor}>
                 Set link budget
               </button>
               <div className="mvr-note">
@@ -418,7 +416,6 @@ export default function SensorPanel() {
             </div>
           )}
         </>
-      )}
     </aside>
   );
 }

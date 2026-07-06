@@ -759,11 +759,91 @@ Secrets, the StatefulSet, and the OIDC browser round-trip; public DNS + real Let
 multi-node/HA remain genuinely prod-only). All are scoped follow-ups, not Phase-10 gaps — the
 SRS's auth/deploy requirements are met by what shipped.
 
-## Phase 11 onwards
+## Phase 11 — Polish & ship
 
-Acceptance criteria for Phase 11 will be drafted when the phase begins, informed by what
-we learned in earlier phases. The [user-stories outline](./user-stories.md) seeds each
-phase; the SRS clauses they map to are the verification source.
+> Sliced **11A / 11B / 11C** (see [phase-11-plan.md](./phase-11-plan.md), Decision 29).
+>
+> **Phase 11 complete — backend 217 tests green + frontend type-check/build green**
+> (2026-07-06). Scope extended (with the user) beyond the roadmap bullet to complete SRS
+> §4.2: CCSDS **OEM export** (US-IO-06) + **events JSON/CSV export** (US-IO-07) landed
+> alongside PNG/MP4. New dep: `mp4-muxer` (approved). Remaining manual items are the
+> browser click-throughs + the §5.1 PerfHud readings on reference hardware (tracked in
+> the phase plan's evidence table).
+
+**11B — Export (SRS §4.2; US-IO-01/02/06/07)**
+- [x] Capture seam: both viewports register `{canvas, renderNow, setExportMode}` in
+      `export/captureRegistry.ts`; pixel reads are same-task after an explicit render —
+      **no `preserveDrawingBuffer`** (Decision 29).
+- [x] PNG snapshot (§4.2.3, US-IO-01): global / proximity / side-by-side composite with a
+      scenario + sim-time caption, downloaded as a Blob (`export/capture.ts`, Export panel).
+- [x] MP4 sequence export (§4.2.3, US-IO-02): deterministic frame-stepped offline render →
+      WebCodecs H.264 (`isConfigSupported` ladder) → `mp4-muxer` → .mp4; source/range/speed/fps
+      options, ≤1800 frames, progress + cancel with full clock/render-loop restore; one-clock
+      rule intact (steps via the existing `setCurrentTime` writer path). Unsupported browsers
+      get a disabled-with-tooltip button (acceptance on Chromium).
+- [x] Events JSON/CSV export (§4.2.2, US-IO-07): client-side pure builders over the stream
+      buffer — sensor AOS/LOS, eclipse, conjunctions, constraint violations, closest
+      approaches (`orbit.scenario-events.v1` + flat CSV, epoch-sorted, names resolved).
+- [x] CCSDS OEM export (§4.2.1, US-IO-06): `GET /scenarios/{id}/export/oem` → one KVN message,
+      a segment per craft (EME2000/UTC, stream-grid sampling; maneuvered deputies carry the
+      real post-burn numerical trajectory; measured roles clipped to the data span; CW roles
+      SGP4-absolute + COMMENT). Owner-gated (404); **audited** (`EXPORT_OEM`, no version row).
+      `OemExportServiceTests`: round-trip through Orekit's `OemParser` (mid-grid state < 1 m vs
+      an independent propagator), **byte-identical rerun** (R11), maneuvered-trajectory check,
+      audit row. Controller 200/attachment + 404 slices. `gen:api` regenerated; Export-panel
+      download uses the typed client (Bearer applies in oidc).
+- [ ] Browser click-through on the dev stack: PNG pixels/composite at several split ratios;
+      a ~10 s MP4 of the NMC demo plays in Chrome/VLC and cancel restores playback; OEM
+      download in oidc mode shows `EXPORT_OEM` in the Audit panel. *(Manual — the mechanisms
+      are test-covered; needs a browser session.)*
+
+**11A — Usability (SRS §5.6; US-UX-01/02)**
+- [x] Per-user sample seeding (§5.6.1): `UserProvisioner` (`REQUIRES_NEW`, race-safe, one
+      `UserProvisionedEvent` per user — also fixes the readOnly-tx provisioning quirk) →
+      seeder listens `AFTER_COMMIT` → every new user gets the demo set; dev user seeded at
+      startup as before; `seedIfAbsent` now `REQUIRES_NEW` (per-demo isolation + the
+      after-commit-listener commit trap). `UserProvisioningSeedTests` (Testcontainers):
+      5 demos + one SEED audit row each, idempotent, readOnly-tx regression.
+- [x] Demo set grown to **five** (3 new: sensor/link-budget inspection, eclipse 6 h, V-bar
+      station 2 km behind), each geometry-validated in `SampleScenarioFormationTests` with
+      the same `analysis/` computers the stream runs (imager AOS+LOS; umbra ingress+egress
+      in-window; station holds −2 km in-track, |R|,|C| < 300 m).
+- [x] Tooltips (§5.6.2): scripted audit — every `<button>/<select>/<input>` carries
+      `title`/`aria-label` (76 added across 13 files); native `title=` stays the mechanism
+      (no new component/dep).
+- [x] Help overlay (`?` in the top bar: quick start / controls / mini-glossary, hand-rolled)
+      + a one-time first-run hint pointing at the demos (dismissed by ×, Help, or loading a
+      scenario; `orbit.help.seen`).
+- [ ] Fresh-OIDC-user click-through: sign in as `gita/gita` on the overlay stack → the five
+      demos appear on first list; hint/Help flows behave. *(Manual; the seeding chain is
+      integration-tested.)*
+
+**11C — Performance pass (SRS §5.1; US-UX-03) + docs (US-UX-04, §4.3.3)**
+- [x] Instrumentation: `lib/perf.ts` (globe/proximity frame marks, seek→rendered-frame scrub
+      latency, load-click→both-stream-payloads timer) + `PerfHud` (⏱ toggle / `?perf=1`)
+      with the §5.1 thresholds highlighted when missed. Closes R7's "instrument an actual
+      FPS counter" caveat.
+- [ ] §5.1 evidence recorded from the PerfHud on reference hardware (proximity ≥60 fps with
+      ≤10 craft; globe ≥30 fps with the full catalog + scenario layer; scrub p95 ≤200 ms;
+      24 h numerical load ≤5 s) — table in [phase-11-plan.md](./phase-11-plan.md); ranked
+      fixes pre-scoped, none applied unmeasured.
+- [x] OpenAPI polish (§4.3.3): info bean (title/version/description incl. WebSocket
+      companions + per-mode auth, bearer scheme) + `@Tag`/`@Operation` on all 31 endpoints
+      (8 tag groups); regenerated client is doc-only churn — `type-check` proves no drift.
+- [x] User guide ([docs/user-guide.md](./user-guide.md) — 14 sections mapped to UC-1..8,
+      §4.2, §5.6) + root [README.md](../README.md) (new; none existed).
+
+**Invariants** ✅
+- [x] Streaming contract untouched, `VERSION="1"` (R12) — exports consume existing buffers/
+      providers; new REST regenerated the client. Determinism (R11): OEM byte-identical on
+      rerun; MP4 frame-stepped off sim time. One clock writer (D11) and the single audited
+      mutation path (D16) preserved — the only extension is the narrow audited-export
+      precedent (`EXPORT_OEM`). Frontend still never propagates (D9); per-frame state stays
+      out of Zustand (D5).
+
+**Deferred (Decision 29):** MediaRecorder/WebM fallback; link-budget SNR series export;
+OEM/AEM *import* + browser upload (measured-data slice 3); frontend bundle code-splitting;
+the live k8s cluster install (unchanged Phase-10 follow-up).
 
 ---
 

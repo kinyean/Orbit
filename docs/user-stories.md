@@ -550,14 +550,61 @@ detail deferred.)*
 - US-INFRA-09 ✅ — On-prem packaging: Helm chart (`deploy/helm/orbit`) + offline image bundle
   ([scripts/bundle.sh](../scripts/bundle.sh)) + [deployment.md](./deployment.md).
 
-# Phase 11 — Polish & ship *(outline)*
+# Phase 11 — Polish & ship ✅ (done — Decision 29, [phase-11-plan.md](./phase-11-plan.md))
 
-- US-UX-01 — Sample scenarios.
-- US-UX-02 — Tooltips / contextual help.
-- US-UX-03 — Performance pass against SRS §5.1 metrics.
-- US-IO-01 — PNG snapshot export.
-- US-IO-02 — MP4 sequence export.
-- US-UX-04 — OpenAPI docs polish; user guide.
+### US-UX-01 — As a new user, I want sample scenarios I can load and play immediately, so I need no training to see the tool work. ✅ (11A)
+*Acceptance:* **five** seeded demos (NMC formation, rendezvous, sensor/link-budget
+inspection, eclipse, V-bar station), each geometry-validated
+(`SampleScenarioFormationTests`); seeded for the dev user at startup AND for **every
+newly provisioned user** (`UserProvisioner` → `UserProvisionedEvent` → seeder,
+`AFTER_COMMIT`; `UserProvisioningSeedTests`) — so real OIDC users see them too
+(the scenario list is owner-scoped). A one-time first-run hint points at them.
+*Maps to:* SRS §5.6.1; personas (Eli, Maya).
+
+### US-UX-02 — As any user, I want contextual help and tooltips on the controls, so the UI explains itself. ✅ (11A)
+*Acceptance:* every interactive control carries a `title`/`aria-label` (scripted audit,
+76 added; units + meaning on numeric fields); a `?` Help overlay (quick start / controls
+reference / mini-glossary from the glossary) + first-run hint. *Maps to:* SRS §5.6.2.
+
+### US-UX-03 — As the team, I want the §5.1 performance targets instrumented and checked, so "smooth" is measured, not eyeballed. ✅ instrumented (11C)
+*Acceptance:* `lib/perf.ts` + `PerfHud` (⏱ / `?perf=1`) show live globe/proximity FPS,
+scrub latency (seek → rendered frame, last + p95), and scenario-load time, with the
+§5.1 thresholds highlighted when missed (closes the R7 FPS-counter caveat). Evidence
+table (readings on reference hardware) in [phase-11-plan.md](./phase-11-plan.md).
+*Maps to:* SRS §5.1.1–4.
+
+### US-IO-01 — As Omar, I want PNG snapshots of the rendered views, so I can drop them into briefings. ✅ (11B)
+*Acceptance:* Export panel captures the global view, proximity view, or both
+side-by-side (scenario + sim-time caption) via same-task canvas reads — no
+`preserveDrawingBuffer` (Decision 29). Works catalog-only too. *Maps to:* SRS §4.2.3;
+[UC-8](./use-cases.md).
+
+### US-IO-02 — As Omar, I want MP4 sequence export, so I can replay a scenario in a briefing without the app. ✅ (11B)
+*Acceptance:* a deterministic frame-stepped offline render (pause → step sim time →
+render → encode) through WebCodecs H.264 + `mp4-muxer` → a real .mp4 with a sim-time
+chip; source/range/speed/fps options, ≤1800-frame cap, progress + cancel with full
+restore; smoothness independent of live FPS. Feature-gated (`isConfigSupported`) with a
+disabled-tooltip fallback on non-WebCodecs browsers. *Maps to:* SRS §4.2.3.
+
+### US-IO-06 — As Frank, I want to export the propagated ephemerides as CCSDS OEM, so downstream tools consume my scenario. ✅ (11B)
+*Acceptance:* `GET /scenarios/{id}/export/oem` → one KVN OEM message, a segment per
+craft (EME2000/UTC, the stream's sampling grid); maneuvered deputies carry the real
+post-burn numerical trajectory (finite burns included); measured roles are clipped to
+their data span; owner-gated; recorded in the audit trail (`EXPORT_OEM`).
+**Byte-identical on re-export** of the same version (R11) and round-trips through
+Orekit's `OemParser` (`OemExportServiceTests`). *Maps to:* SRS §4.2.1;
+[UC-3](./use-cases.md) step 8, [UC-8](./use-cases.md) step 3; Frank persona.
+
+### US-IO-07 — As Frank, I want scenario events exported as JSON and CSV, so I can post-process them. ✅ (11B)
+*Acceptance:* client-side export of every event class over the window — sensor AOS/LOS,
+eclipse ingress/egress, conjunctions, constraint violations, per-deputy closest
+approach — as `orbit.scenario-events.v1` JSON or flat CSV, epoch-sorted with resolved
+names (`export/eventsExport.ts`, pure builders). *Maps to:* SRS §4.2.2.
+
+### US-UX-04 — As the team, I want polished API docs and a user guide, so the project ships explainable. ✅ (11C)
+*Acceptance:* OpenAPI info bean + `@Tag`/`@Operation` on all 31 endpoints (8 groups;
+doc-only — the regenerated client has no type drift); [user-guide.md](./user-guide.md)
+(14 sections mapped to UC-1..8); a root [README.md](../README.md). *Maps to:* SRS §4.3.3.
 
 ---
 

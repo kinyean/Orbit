@@ -62,6 +62,9 @@ class ScenarioControllerTests {
     @MockitoBean
     private MonteCarloService monteCarlo;
 
+    @MockitoBean
+    private space.orbit.backend.io.OemExportService oemExport;
+
     private static final String VALID_BODY = """
             {"name":"Rendezvous","fidelity":"sgp4",
              "timeRange":{"start":"2024-06-01T00:00:00Z","end":"2024-06-02T00:00:00Z"},
@@ -272,6 +275,29 @@ class ScenarioControllerTests {
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.body.fidelity").value("sgp4"));
+    }
+
+    @Test
+    void exportOemReturnsKvnAttachment() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(oemExport.export(any())).thenReturn(new space.orbit.backend.io.OemExportService.OemExport(
+                "demo.oem", "CCSDS_OEM_VERS = 3.0\nORIGINATOR = ORBIT-PROJECT\n"));
+        mvc.perform(get("/scenarios/{id}/export/oem", id))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .header().string("Content-Disposition", "attachment; filename=\"demo.oem\""))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .content().contentTypeCompatibleWith(MediaType.TEXT_PLAIN))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .content().string(Matchers.containsString("CCSDS_OEM_VERS")));
+    }
+
+    @Test
+    void exportOemUnknownScenarioIs404() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(oemExport.export(any())).thenThrow(new ScenarioNotFoundException(id));
+        mvc.perform(get("/scenarios/{id}/export/oem", id))
+                .andExpect(status().isNotFound());
     }
 
     @Test

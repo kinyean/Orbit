@@ -1,12 +1,17 @@
 package space.orbit.backend.api;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -23,6 +28,7 @@ import space.orbit.backend.analysis.RendezvousSearchResult;
 import space.orbit.backend.analysis.RendezvousSearchService;
 import space.orbit.backend.analysis.ScreeningResult;
 import space.orbit.backend.analysis.ScreeningService;
+import space.orbit.backend.io.OemExportService;
 import space.orbit.backend.scenario.AttitudeDraft;
 import space.orbit.backend.scenario.AuditEntryResponse;
 import space.orbit.backend.scenario.ConstraintDraft;
@@ -60,17 +66,21 @@ public class ScenarioController {
     private final ScreeningService screening;
     private final RendezvousSearchService rendezvousSearch;
     private final MonteCarloService monteCarlo;
+    private final OemExportService oemExport;
 
     public ScenarioController(ScenarioService service, ManeuverTemplateService templates,
                               ScreeningService screening, RendezvousSearchService rendezvousSearch,
-                              MonteCarloService monteCarlo) {
+                              MonteCarloService monteCarlo, OemExportService oemExport) {
         this.service = service;
         this.templates = templates;
         this.screening = screening;
         this.rendezvousSearch = rendezvousSearch;
         this.monteCarlo = monteCarlo;
+        this.oemExport = oemExport;
     }
 
+    @Tag(name = "Scenarios")
+    @Operation(summary = "Create a scenario (v1, TLEs frozen from the catalog)")
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public ScenarioResponse create(@Valid @RequestBody ScenarioRequest req) {
@@ -83,28 +93,38 @@ public class ScenarioController {
      * body — the file is read server-side from {@code path} (constrained to
      * {@code orbit.import.allowed-root}); no upload. Returns the created scenario.
      */
+    @Tag(name = "Scenarios")
+    @Operation(summary = "Import a measured ephemeris (WOD CSV on the server) as a scenario")
     @PostMapping("/import/measured")
     @ResponseStatus(HttpStatus.CREATED)
     public ScenarioResponse importMeasured(@Valid @RequestBody MeasuredImportRequest req) {
         return service.importMeasured(req.path(), req.noradId());
     }
 
+    @Tag(name = "Scenarios")
+    @Operation(summary = "List my scenarios")
     @GetMapping
     public List<ScenarioSummary> list() {
         return service.list();
     }
 
+    @Tag(name = "Scenarios")
+    @Operation(summary = "Get a scenario (latest version)")
     @GetMapping("/{id}")
     public ScenarioResponse get(@PathVariable UUID id) {
         return service.get(id);
     }
 
     /** Version history list (Phase 10, US-INFRA-06 / US-SCN-04) — metadata only. */
+    @Tag(name = "Versions & audit")
+    @Operation(summary = "List a scenario's version history")
     @GetMapping("/{id}/versions")
     public List<ScenarioVersionSummary> versions(@PathVariable UUID id) {
         return service.versionHistory(id);
     }
 
+    @Tag(name = "Versions & audit")
+    @Operation(summary = "Get one immutable version")
     @GetMapping("/{id}/versions/{v}")
     public ScenarioVersionResponse getVersion(@PathVariable UUID id, @PathVariable int v) {
         return service.getVersion(id, v);
@@ -115,22 +135,49 @@ public class ScenarioController {
      * governance follow-up) — what actually changed (ΔV numbers, epochs, sensors,
      * constraints, settings) rather than the flat audit summary. Owner-gated.
      */
+    @Tag(name = "Versions & audit")
+    @Operation(summary = "Diff a version against its predecessor")
     @GetMapping("/{id}/versions/{v}/diff")
     public VersionDiff versionDiff(@PathVariable UUID id, @PathVariable int v) {
         return service.versionDiff(id, v);
     }
 
     /** Audit trail (Phase 10, US-INFRA-06): who changed what, newest first. */
+    @Tag(name = "Versions & audit")
+    @Operation(summary = "Get the audit trail (who changed what, newest first)")
     @GetMapping("/{id}/audit")
     public List<AuditEntryResponse> audit(@PathVariable UUID id) {
         return service.auditTrail(id);
     }
 
+    /**
+     * Export the scenario's propagated ephemerides as one CCSDS OEM message
+     * (Phase 11, US-IO-06 / SRS §4.2.1) — a KVN text attachment with a segment
+     * per craft (EME2000/UTC), sampled from the same providers the stream flies.
+     * Owner-gated (→ 404); the export is recorded in the audit trail
+     * ({@code EXPORT_OEM}). Byte-identical on re-export of the same version (R11).
+     */
+    @Tag(name = "Export")
+    @Operation(summary = "Export propagated ephemerides as a CCSDS OEM file")
+    @GetMapping(value = "/{id}/export/oem", produces = MediaType.TEXT_PLAIN_VALUE)
+    public ResponseEntity<String> exportOem(@PathVariable UUID id) {
+        OemExportService.OemExport export = oemExport.export(id);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"" + export.fileName() + "\"")
+                .contentType(MediaType.TEXT_PLAIN)
+                .body(export.content());
+    }
+
+    @Tag(name = "Scenarios")
+    @Operation(summary = "Update a scenario (creates a new immutable version)")
     @PutMapping("/{id}")
     public ScenarioResponse update(@PathVariable UUID id, @Valid @RequestBody ScenarioRequest req) {
         return service.update(id, toDraft(req));
     }
 
+    @Tag(name = "Scenarios")
+    @Operation(summary = "Archive a scenario (soft delete; history preserved)")
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable UUID id) {
@@ -139,6 +186,8 @@ public class ScenarioController {
 
     // --- maneuvers (Phase 5B, US-MAN-01) -------------------------------------
 
+    @Tag(name = "Maneuvers")
+    @Operation(summary = "Add an impulsive or finite ΔV burn to a deputy")
     @PostMapping("/{id}/maneuvers")
     public ScenarioResponse addManeuver(@PathVariable UUID id, @Valid @RequestBody ManeuverRequest req) {
         return service.addManeuver(id, new ManeuverDraft(
@@ -146,6 +195,8 @@ public class ScenarioController {
                 req.thrustN(), req.ispSec()));
     }
 
+    @Tag(name = "Maneuvers")
+    @Operation(summary = "Remove a maneuver")
     @DeleteMapping("/{id}/maneuvers/{maneuverId}")
     public ScenarioResponse removeManeuver(@PathVariable UUID id, @PathVariable String maneuverId) {
         return service.removeManeuver(id, maneuverId);
@@ -153,11 +204,15 @@ public class ScenarioController {
 
     // --- maneuver templates (Phase 5C, US-MAN-02 / US-MAN-03) ----------------
 
+    @Tag(name = "Maneuvers")
+    @Operation(summary = "Insert a Hohmann transfer to a target altitude (template)")
     @PostMapping("/{id}/maneuvers/hohmann")
     public ScenarioResponse hohmann(@PathVariable UUID id, @Valid @RequestBody HohmannRequest req) {
         return templates.hohmann(id, req.deputyNoradId(), req.targetAltitudeKm());
     }
 
+    @Tag(name = "Maneuvers")
+    @Operation(summary = "Insert a two-impulse rendezvous (differential-corrected by default)")
     @PostMapping("/{id}/maneuvers/rendezvous")
     public ScenarioResponse rendezvous(@PathVariable UUID id, @Valid @RequestBody RendezvousRequest req) {
         boolean corrected = req.corrected() == null || req.corrected();
@@ -169,6 +224,8 @@ public class ScenarioController {
      * the stream) → a sorted ΔV map the UI shows as a heatmap; picking a cell feeds the
      * corrected {@code rendezvous} endpoint with its {@code nRev}.
      */
+    @Tag(name = "Analysis")
+    @Operation(summary = "Search the rendezvous arrival-time × revolution ΔV map")
     @PostMapping("/{id}/maneuvers/rendezvous/search")
     public RendezvousSearchResult searchRendezvous(@PathVariable UUID id,
                                                    @Valid @RequestBody RendezvousSearchRequest req) {
@@ -177,6 +234,8 @@ public class ScenarioController {
 
     /** Phasing-orbit rendezvous template (Phase 9A, US-MAN-06): close the along-track
      *  phase gap over {@code phasingRevs} revolutions with two in-track burns. */
+    @Tag(name = "Maneuvers")
+    @Operation(summary = "Insert a phasing-orbit transfer (template)")
     @PostMapping("/{id}/maneuvers/phasing")
     public ScenarioResponse phasing(@PathVariable UUID id, @Valid @RequestBody PhasingRequest req) {
         return templates.phasing(id, req.deputyNoradId(), req.phasingRevs());
@@ -185,18 +244,24 @@ public class ScenarioController {
     // --- close-range CW templates (Phase 9B, US-MAN-07..10) ------------------
 
     /** NMC insertion (Phase 9B, US-MAN-09): one in-track burn onto a bounded relative orbit. */
+    @Tag(name = "Maneuvers")
+    @Operation(summary = "Insert an NMC circumnavigation burn (template)")
     @PostMapping("/{id}/maneuvers/nmc")
     public ScenarioResponse nmc(@PathVariable UUID id, @Valid @RequestBody NmcRequest req) {
         return templates.nmc(id, req.deputyNoradId());
     }
 
     /** V-bar / R-bar hold (Phase 9B, US-MAN-07/08/10): CW two-impulse transfer to a hold point. */
+    @Tag(name = "Maneuvers")
+    @Operation(summary = "Insert a V-bar/R-bar hold-point transfer (template)")
     @PostMapping("/{id}/maneuvers/hold")
     public ScenarioResponse hold(@PathVariable UUID id, @Valid @RequestBody HoldRequest req) {
         return templates.hold(id, req.deputyNoradId(), req.axis(), req.distanceM(), req.arrivalEpoch());
     }
 
     /** Glideslope approach (Phase 9B, US-MAN-09): constant-closing-rate V-bar/R-bar approach. */
+    @Tag(name = "Maneuvers")
+    @Operation(summary = "Insert a constant-rate glideslope approach (template)")
     @PostMapping("/{id}/maneuvers/glideslope")
     public ScenarioResponse glideslope(@PathVariable UUID id, @Valid @RequestBody GlideslopeRequest req) {
         return templates.glideslope(id, req.deputyNoradId(), req.axis(),
@@ -204,6 +269,8 @@ public class ScenarioController {
     }
 
     /** Closed-loop station-keeping (Phase 9B, US-MAN-10): periodic corrective burns holding a point. */
+    @Tag(name = "Maneuvers")
+    @Operation(summary = "Insert closed-loop station-keeping burns (template)")
     @PostMapping("/{id}/maneuvers/station-keep")
     public ScenarioResponse stationKeep(@PathVariable UUID id, @Valid @RequestBody StationKeepRequest req) {
         return templates.stationKeep(id, req.deputyNoradId(), req.axis(),
@@ -212,6 +279,8 @@ public class ScenarioController {
 
     // --- sensors & attitude (Phase 7, US-SENSE-01 / US-PROX-01) --------------
 
+    @Tag(name = "Sensors & attitude")
+    @Operation(summary = "Add a body-fixed sensor to a craft")
     @PostMapping("/{id}/sensors")
     public ScenarioResponse addSensor(@PathVariable UUID id, @Valid @RequestBody SensorRequest req) {
         return service.addSensor(id, new SensorDraft(
@@ -220,12 +289,16 @@ public class ScenarioController {
                 req.boresightX(), req.boresightY(), req.boresightZ(), req.clockDeg()));
     }
 
+    @Tag(name = "Sensors & attitude")
+    @Operation(summary = "Remove a sensor")
     @DeleteMapping("/{id}/sensors/{sensorId}")
     public ScenarioResponse removeSensor(@PathVariable UUID id, @PathVariable String sensorId) {
         return service.removeSensor(id, sensorId);
     }
 
     /** Set a sensor's RF/optical link budget (Phase 9D, US-EVT-05) → SNR series stream. */
+    @Tag(name = "Sensors & attitude")
+    @Operation(summary = "Set or clear a sensor's RF/optical link budget")
     @PutMapping("/{id}/sensors/{sensorId}/link-budget")
     public ScenarioResponse setLinkBudget(@PathVariable UUID id, @PathVariable String sensorId,
                                           @Valid @RequestBody LinkBudgetRequest req) {
@@ -233,6 +306,8 @@ public class ScenarioController {
                 req.kind(), req.eirpDbw(), req.gOverTdbK(), req.frequencyGhz(), req.bandwidthHz(), req.thresholdDb()));
     }
 
+    @Tag(name = "Sensors & attitude")
+    @Operation(summary = "Set a craft's attitude profile (lvlh / fixed)")
     @PutMapping("/{id}/attitude")
     public ScenarioResponse setAttitude(@PathVariable UUID id, @Valid @RequestBody AttitudeRequest req) {
         return service.setAttitude(id, new AttitudeDraft(req.noradId(), req.mode(), req.quaternion()));
@@ -240,6 +315,8 @@ public class ScenarioController {
 
     // --- constraints & conjunctions (Phase 8, US-EVT-02 / US-EVT-03) ---------
 
+    @Tag(name = "Environment & constraints")
+    @Operation(summary = "Add a sun-keep-out or approach-corridor constraint")
     @PostMapping("/{id}/constraints")
     public ScenarioResponse addConstraint(@PathVariable UUID id, @Valid @RequestBody ConstraintRequest req) {
         return service.addConstraint(id, new ConstraintDraft(
@@ -247,11 +324,15 @@ public class ScenarioController {
                 req.limitDeg(), req.rangeM()));
     }
 
+    @Tag(name = "Environment & constraints")
+    @Operation(summary = "Remove a constraint")
     @DeleteMapping("/{id}/constraints/{constraintId}")
     public ScenarioResponse removeConstraint(@PathVariable UUID id, @PathVariable String constraintId) {
         return service.removeConstraint(id, constraintId);
     }
 
+    @Tag(name = "Environment & constraints")
+    @Operation(summary = "Set the conjunction miss-distance threshold")
     @PutMapping("/{id}/miss-distance")
     public ScenarioResponse setMissDistance(@PathVariable UUID id, @Valid @RequestBody MissDistanceRequest req) {
         return service.setMissDistanceThreshold(id, req.missDistanceThresholdM());
@@ -262,6 +343,8 @@ public class ScenarioController {
      * One-shot analysis (not the stream) → a sorted list of close approaches below
      * {@code thresholdKm} (default 5 km).
      */
+    @Tag(name = "Analysis")
+    @Operation(summary = "Screen the scenario against the full live catalog (snapshot)")
     @PostMapping("/{id}/screening")
     public ScreeningResult screen(@PathVariable UUID id,
                                   @RequestParam(name = "thresholdKm", defaultValue = "5.0") double thresholdKm) {
@@ -273,6 +356,8 @@ public class ScenarioController {
      * one-shot analysis (not the stream): runs {@code sampleCount} seeded samples → a
      * trajectory cloud + per-epoch covariance ellipsoids. Reproducible given the seed.
      */
+    @Tag(name = "Analysis")
+    @Operation(summary = "Run seeded Monte Carlo dispersion for a deputy")
     @PostMapping("/{id}/monte-carlo")
     public MonteCarloResult monteCarlo(@PathVariable UUID id, @Valid @RequestBody MonteCarloRequest req) {
         return monteCarlo.analyze(id, req.deputyNoradId(), new MonteCarloService.Params(

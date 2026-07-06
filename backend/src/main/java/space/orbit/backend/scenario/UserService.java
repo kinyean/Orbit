@@ -33,9 +33,11 @@ public class UserService {
             Set.of("mission_planner", "flight_dynamics_engineer", "admin");
 
     private final UserRepository users;
+    private final UserProvisioner provisioner;
 
-    public UserService(UserRepository users) {
+    public UserService(UserRepository users, UserProvisioner provisioner) {
         this.users = users;
+        this.provisioner = provisioner;
     }
 
     /** The current request's user, provisioning a row on first sight and syncing IdP claims. */
@@ -49,10 +51,14 @@ public class UserService {
         return user;
     }
 
+    /**
+     * Resolve by email, provisioning a row on first sight. Creation is delegated to
+     * {@link UserProvisioner} (its own committed transaction + one
+     * {@link UserProvisionedEvent} — the per-user demo-seeding hook, Phase 11).
+     */
     @Transactional
     public User getOrCreateByEmail(String email) {
-        return users.findByEmail(email)
-                .orElseGet(() -> users.save(new User(UUID.randomUUID(), email, List.of())));
+        return users.findByEmail(email).orElseGet(() -> provisioner.provision(email));
     }
 
     /**

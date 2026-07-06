@@ -1,7 +1,7 @@
 import { useState, useSyncExternalStore, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { useStore, type RendezvousSearchResult, type DvCell } from '../store/useStore';
 import { getRelativeData, getRelativeVersion, subscribeRelative } from '../stream/relativeBuffer';
-import { useCollapsed, usePanelSize, usePanelPosition } from '../lib/usePanelChrome';
+import { usePanelSize, usePanelPosition } from '../lib/usePanelChrome';
 
 /** Compact ΔV formatter — m/s, switching to km/s past 1000 (a garbage transfer tell). */
 function fmtDv(n: number): string {
@@ -93,9 +93,8 @@ export default function ManeuverPanel() {
   const [msg, setMsg] = useState<string | null>(null);
   // Draggable position (defaults beside the scenario panel so it doesn't cover it),
   // persisted + viewport-clamped so a refresh keeps it on-screen.
-  const { pos, setPos, commitPos } = usePanelPosition('maneuvers', { x: 248, y: 320 });
-  const { collapsed, toggle } = useCollapsed('maneuvers');
-  const panelRef = usePanelSize<HTMLElement>('maneuvers', collapsed);
+  const { pos, setPos, commitPos } = usePanelPosition('maneuvers', { x: 300, y: 90 });
+  const panelRef = usePanelSize<HTMLElement>('maneuvers', false);
 
   function onDragStart(e: ReactPointerEvent) {
     if ((e.target as HTMLElement).closest('button')) return; // let header buttons click, not drag
@@ -282,19 +281,18 @@ export default function ManeuverPanel() {
   }
 
   return (
-    <aside ref={panelRef} className={`maneuver-panel${collapsed ? ' is-collapsed' : ''}`} style={{ left: pos.x, top: pos.y }}>
+    <aside ref={panelRef} className="maneuver-panel" style={{ left: pos.x, top: pos.y }}>
       <div className="mvr-drag" onPointerDown={onDragStart} title="Drag to move">
         <span className="mvr-drag-title"><span className="mvr-grip" aria-hidden>⠿</span> Maneuvers · ΔV</span>
         <button
           className="panel-min"
-          onClick={toggle}
-          title={collapsed ? 'Expand' : 'Minimize'}
-          aria-label={collapsed ? 'Expand' : 'Minimize'}
+          onClick={() => useStore.getState().closePanel('maneuvers')}
+          title="Close"
+          aria-label="Close"
         >
-          {collapsed ? '▸' : '▾'}
+          ✕
         </button>
       </div>
-      {!collapsed && (
       <>
       {cwWarning && <div className="mvr-cw-warn">⚠ {cwWarning}</div>}
       {deputies.map((d, idx) => {
@@ -360,7 +358,7 @@ export default function ManeuverPanel() {
         </select>
         <label className="mvr-epoch-field">
           <span>epoch (UTC)</span>
-          <input
+          <input title="Burn epoch (UTC, within the scenario window)"
             type="datetime-local"
             value={epoch}
             min={minInput}
@@ -371,17 +369,17 @@ export default function ManeuverPanel() {
         </label>
         <div className="mvr-ric">
           <label>
-            R<input type="number" step="any" value={r} onChange={(e) => setR(e.target.value)} />
+            R<input title="ΔV radial component, m/s" type="number" step="any" value={r} onChange={(e) => setR(e.target.value)} />
           </label>
           <label>
-            I<input type="number" step="any" value={i} onChange={(e) => setI(e.target.value)} />
+            I<input title="ΔV in-track component, m/s" type="number" step="any" value={i} onChange={(e) => setI(e.target.value)} />
           </label>
           <label>
-            C<input type="number" step="any" value={c} onChange={(e) => setC(e.target.value)} />
+            C<input title="ΔV cross-track component, m/s" type="number" step="any" value={c} onChange={(e) => setC(e.target.value)} />
           </label>
         </div>
         <label className="mvr-finite-toggle">
-          <input
+          <input title="Model this burn as a finite thrust arc instead of an instantaneous impulse"
             type="checkbox"
             checked={finiteBurn}
             onChange={(e) => setFiniteBurn(e.target.checked)}
@@ -392,7 +390,7 @@ export default function ManeuverPanel() {
           <div className="mvr-finite">
             <label>
               thrust (N)
-              <input
+              <input title="Engine thrust, newtons"
                 type="number"
                 step="any"
                 min="0"
@@ -402,7 +400,7 @@ export default function ManeuverPanel() {
             </label>
             <label>
               Isp (s)
-              <input
+              <input title="Specific impulse, seconds"
                 type="number"
                 step="any"
                 min="0"
@@ -412,7 +410,7 @@ export default function ManeuverPanel() {
             </label>
           </div>
         )}
-        <button type="submit" disabled={!epoch}>
+        <button title="Add the ΔV burn (creates a new scenario version)" type="submit" disabled={!epoch}>
           Add Δv
         </button>
         <div className="mvr-note">
@@ -426,7 +424,7 @@ export default function ManeuverPanel() {
         <div className="mvr-template-row">
           <label>
             Hohmann → target alt (km)
-            <input
+            <input title="Absolute target circular altitude in km — not a change relative to the current orbit"
               type="number"
               step="any"
               min={MIN_ALT_KM}
@@ -435,14 +433,14 @@ export default function ManeuverPanel() {
               onChange={(e) => setTargetAlt(e.target.value)}
             />
           </label>
-          <button type="button" onClick={() => void onHohmann()}>
+          <button title="Insert the two Hohmann transfer burns" type="button" onClick={() => void onHohmann()}>
             Insert
           </button>
         </div>
         <div className="mvr-template-row">
           <label>
             Rendezvous → arrival
-            <input
+            <input title="Chief-arrival epoch (UTC)"
               type="datetime-local"
               value={arrival}
               min={minInput}
@@ -453,7 +451,7 @@ export default function ManeuverPanel() {
           <button type="button" onClick={() => void onSearch()} disabled={searching} title="Sweep arrival × revolution count for the cheapest transfer">
             {searching ? '…' : 'Find'}
           </button>
-          <button type="button" onClick={() => void onRendezvous()}>
+          <button title="Insert the two-impulse rendezvous (differential-corrected against the real propagators)" type="button" onClick={() => void onRendezvous()}>
             Insert
           </button>
         </div>
@@ -499,7 +497,7 @@ export default function ManeuverPanel() {
         <div className="mvr-template-row">
           <label>
             Phasing → revolutions
-            <input
+            <input title="Revolutions to phase over"
               type="number"
               step="1"
               min={1}
@@ -508,7 +506,7 @@ export default function ManeuverPanel() {
               onChange={(e) => setPhasingRevs(e.target.value)}
             />
           </label>
-          <button type="button" onClick={() => void onPhasing()}>
+          <button title="Insert the phasing-orbit burn pair" type="button" onClick={() => void onPhasing()}>
             Insert
           </button>
         </div>
@@ -533,7 +531,7 @@ export default function ManeuverPanel() {
           </label>
           <label>
             distance (m)
-            <input type="number" step="any" placeholder="±500" value={holdDist} onChange={(e) => setHoldDist(e.target.value)} />
+            <input title="Signed hold-point distance from the chief, m" type="number" step="any" placeholder="±500" value={holdDist} onChange={(e) => setHoldDist(e.target.value)} />
           </label>
         </div>
         <div className="mvr-template-row">
@@ -548,7 +546,7 @@ export default function ManeuverPanel() {
               aria-label="Hold arrival"
             />
           </label>
-          <button type="button" onClick={() => void onHold()}>
+          <button title="Insert the transfer to the hold point" type="button" onClick={() => void onHold()}>
             Insert
           </button>
         </div>
@@ -564,23 +562,23 @@ export default function ManeuverPanel() {
           </label>
           <label>
             rate (m/s)
-            <input type="number" step="any" min="0" placeholder="1" value={gsRate} onChange={(e) => setGsRate(e.target.value)} />
+            <input title="Constant closing rate, m/s" type="number" step="any" min="0" placeholder="1" value={gsRate} onChange={(e) => setGsRate(e.target.value)} />
           </label>
         </div>
         <div className="mvr-template-row">
           <label>
             start (m)
-            <input type="number" step="any" placeholder="1000" value={gsStart} onChange={(e) => setGsStart(e.target.value)} />
+            <input title="Approach start range, m (signed)" type="number" step="any" placeholder="1000" value={gsStart} onChange={(e) => setGsStart(e.target.value)} />
           </label>
           <label>
             end (m)
-            <input type="number" step="any" placeholder="100" value={gsEnd} onChange={(e) => setGsEnd(e.target.value)} />
+            <input title="Approach end range, m (same side, closer in)" type="number" step="any" placeholder="100" value={gsEnd} onChange={(e) => setGsEnd(e.target.value)} />
           </label>
           <label>
             legs
-            <input type="number" step="1" min="1" max="30" placeholder="6" value={gsSegments} onChange={(e) => setGsSegments(e.target.value)} />
+            <input title="Number of glideslope legs" type="number" step="1" min="1" max="30" placeholder="6" value={gsSegments} onChange={(e) => setGsSegments(e.target.value)} />
           </label>
-          <button type="button" onClick={() => void onGlideslope()}>
+          <button title="Insert the glideslope burn sequence" type="button" onClick={() => void onGlideslope()}>
             Insert
           </button>
         </div>
@@ -596,19 +594,19 @@ export default function ManeuverPanel() {
           </label>
           <label>
             distance (m)
-            <input type="number" step="any" placeholder="±500" value={skDist} onChange={(e) => setSkDist(e.target.value)} />
+            <input title="Signed station distance from the chief, m" type="number" step="any" placeholder="±500" value={skDist} onChange={(e) => setSkDist(e.target.value)} />
           </label>
         </div>
         <div className="mvr-template-row">
           <label>
             interval (s)
-            <input type="number" step="any" min="0" placeholder="600" value={skInterval} onChange={(e) => setSkInterval(e.target.value)} />
+            <input title="Seconds between corrective burns" type="number" step="any" min="0" placeholder="600" value={skInterval} onChange={(e) => setSkInterval(e.target.value)} />
           </label>
           <label>
             corrections
-            <input type="number" step="1" min="1" max="24" placeholder="6" value={skCorrections} onChange={(e) => setSkCorrections(e.target.value)} />
+            <input title="Number of corrective burns" type="number" step="1" min="1" max="24" placeholder="6" value={skCorrections} onChange={(e) => setSkCorrections(e.target.value)} />
           </label>
-          <button type="button" onClick={() => void onStationKeep()}>
+          <button title="Insert the closed-loop station-keeping burns" type="button" onClick={() => void onStationKeep()}>
             Insert
           </button>
         </div>
@@ -626,7 +624,6 @@ export default function ManeuverPanel() {
         {msg && <div className="mvr-msg">{msg}</div>}
       </div>
       </>
-      )}
     </aside>
   );
 }

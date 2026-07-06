@@ -549,17 +549,64 @@
   50%      { opacity: 0.35; }
 }
 
+/* Left-edge panel launcher (declutter). A thin vertical rail of buttons; each
+   toggles one floating panel open/closed so the globe stays clear by default.
+   Above the draggable tool panels (z 20), below the stream-error banner (z 30). */
+.panel-dock {
+  position: absolute;
+  top: 72px;
+  left: 0;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  background: rgba(19, 24, 38, 0.85);
+  border: 1px solid rgba(71, 85, 105, 0.3);
+  border-left: none;
+  border-radius: 0 8px 8px 0;
+  backdrop-filter: blur(12px);
+}
+
+.dock-btn {
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.dock-btn:hover {
+  background: rgba(71, 85, 105, 0.3);
+  color: #e2e8f0;
+}
+
+.dock-btn.active {
+  background: rgba(56, 189, 248, 0.16);
+  border-color: rgba(56, 189, 248, 0.45);
+  color: #38bdf8;
+}
+
+/* Constellations now opens from the dock — placed to the right of the always-on
+   Scenarios panel (left:60, width:220), clear of the rail. */
 .filter-panel {
   position: absolute;
   top: 72px;
-  left: 16px;
+  left: 290px;
   width: 220px;
   padding: 16px;
   background: rgba(19, 24, 38, 0.85);
   border: 1px solid rgba(71, 85, 105, 0.3);
   border-radius: 8px;
   backdrop-filter: blur(12px);
-  z-index: 10;
+  z-index: 20;
 }
 
 .filter-panel h3 {
@@ -584,9 +631,9 @@
    scenario list + composer card (US-SCN-01/02). */
 .scenario-panel {
   position: absolute;
-  /* filter-panel top 72 + ~6 rows of constellations ≈ 280 */
-  top: 320px;
-  left: 16px;
+  /* top-left, just right of the launcher rail (Constellations is now docked). */
+  top: 72px;
+  left: 60px;
   width: 220px;
   padding: 16px;
   background: rgba(19, 24, 38, 0.85);
@@ -2067,4 +2114,221 @@
    while minimized (matching the scenario panel). */
 .maneuver-panel.is-collapsed {
   min-height: 0;
+}
+
+/* --- Help overlay + first-run hint (Phase 11, US-UX-02 / SRS §5.6) ---------- */
+
+.help-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(56, 189, 248, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: #e2e8f0;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.help-btn:hover {
+  background: rgba(56, 189, 248, 0.28);
+}
+
+.help-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 8, 16, 0.65);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+}
+
+.help-modal {
+  width: min(1040px, calc(100vw - 48px));
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  background: rgba(15, 20, 34, 0.98);
+  border: 1px solid rgba(71, 85, 105, 0.6);
+  border-radius: 10px;
+  padding: 18px 22px 22px;
+  color: #cbd5e1;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.help-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 16px;
+  font-weight: 600;
+  color: #f1f5f9;
+  margin-bottom: 10px;
+}
+
+.help-close {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.help-close:hover {
+  color: #f1f5f9;
+}
+
+.help-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 22px;
+}
+
+.help-columns h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #7dd3fc;
+}
+
+.help-columns ol,
+.help-columns ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.help-columns dl {
+  margin: 0;
+}
+
+.help-term {
+  margin-bottom: 7px;
+}
+
+.help-term dt {
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.help-term dd {
+  margin: 0;
+  color: #94a3b8;
+}
+
+.help-more {
+  margin: 10px 0 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.first-run-hint {
+  position: absolute;
+  left: 16px;
+  top: 64px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 340px;
+  padding: 10px 12px;
+  background: rgba(56, 189, 248, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.5);
+  border-radius: 8px;
+  color: #e2e8f0;
+  font-size: 13px;
+  line-height: 1.45;
+  backdrop-filter: blur(8px);
+}
+
+.first-run-dismiss {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  flex: 0 0 auto;
+}
+
+.first-run-dismiss:hover {
+  color: #f1f5f9;
+}
+
+/* --- Performance HUD (Phase 11, US-UX-03 / SRS §5.1) ------------------------ */
+
+.perf-toggle {
+  background: none;
+  border: 1px solid rgba(71, 85, 105, 0.4);
+  border-radius: 6px;
+  color: #94a3b8;
+  font-size: 14px;
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.perf-toggle.active {
+  background: rgba(56, 189, 248, 0.16);
+  border-color: rgba(56, 189, 248, 0.5);
+  color: #e2e8f0;
+}
+
+/* When the catalog counts box is hidden (scenario mode, catalog not shown), the
+   lone ⏱ toggle docks into the right-side button column under "Hide proximity"
+   (top 160), styled to match its neighbours instead of floating in an empty box. */
+.perf-toggle-standalone {
+  position: absolute;
+  top: 196px;
+  right: 16px;
+  z-index: 10;
+  padding: 6px 14px;
+  background: rgba(19, 24, 38, 0.85);
+  border-color: rgba(71, 85, 105, 0.3);
+  backdrop-filter: blur(12px);
+}
+
+.perf-toggle-standalone:hover {
+  border-color: #38bdf8;
+}
+
+.perf-hud {
+  position: absolute;
+  top: 128px;
+  right: 332px;
+  min-width: 190px;
+  padding: 8px 12px;
+  background: rgba(19, 24, 38, 0.85);
+  border: 1px solid rgba(71, 85, 105, 0.4);
+  border-radius: 8px;
+  backdrop-filter: blur(12px);
+  z-index: 10;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #cbd5e1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.perf-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.perf-row span:first-child {
+  color: #64748b;
+}
+
+.perf-bad {
+  color: #fca5a5;
 }

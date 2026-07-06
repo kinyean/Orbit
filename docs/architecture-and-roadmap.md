@@ -399,10 +399,24 @@ Sliced 10A/10B/10C. Activates the Decision-16 seams (additive, not a rewrite). B
   [deployment.md](./deployment.md) runbook. Dev stays on Compose. **Deferred:** SAML2; Keycloak
   HA; external golden vectors.
 
-### Phase 11 — Polish & ship
-- Sample scenarios; tooltips / help; performance pass to SRS §5.1 metrics.
-- PNG snapshots + MP4 sequence export from rendered canvases.
-- OpenAPI docs polish; user guide.
+### Phase 11 — Polish & ship ✅ (done — see [phase-11-plan.md](./phase-11-plan.md), Decision 29)
+Sliced 11A/11B/11C. Scope extended (with the user) to complete SRS §4.2. Backend
+**217 tests green**; frontend type-check + build green. New dep: `mp4-muxer`.
+- ✅ **11B — Export (§4.2 complete).** PNG snapshots (same-task canvas capture, no
+  `preserveDrawingBuffer`); **MP4** via a deterministic frame-stepped offline render
+  (WebCodecs H.264 + `mp4-muxer`); **events JSON/CSV** (client-side from the stream
+  buffer); **CCSDS OEM export** (`GET /scenarios/{id}/export/oem`, Orekit `OemWriter`,
+  byte-identical reruns, audited `EXPORT_OEM`). Resolves the deferred media-export
+  decision (§4.2.3).
+- ✅ **11A — Usability (§5.6).** Demo set grown to five (adds sensor/link-budget,
+  eclipse, V-bar station) and seeded **per user on first login** (`UserProvisioner`
+  event → seeder, `AFTER_COMMIT`); `?` Help overlay + first-run hint; tooltip audit
+  (every interactive control titled).
+- ✅ **11C — Perf + docs.** `perf.ts` + PerfHud (live FPS / scrub latency / load time
+  vs the §5.1 targets — the R7 FPS counter, finally instrumented); OpenAPI info bean +
+  `@Tag`/`@Operation` on all 31 endpoints; [user-guide.md](./user-guide.md); root
+  README. ⬜ *§5.1 readings on reference hardware pending (evidence table in the
+  phase plan).*
 
 ### Measured-data ingestion *(feature track, off the phase line — Decision 26)*
 Real measured telemetry (WOD CSV: GNSS ECI pos/vel + ADCS quaternions) imported as a
@@ -452,4 +466,6 @@ These are the v1 acceptance targets:
 - High-fidelity propagation: sub-km / 24h LEO against reference (§5.2.2).
 - CW: sub-meter / 1h for separations under 10 km (§5.2.3).
 
-Each phase ends with a check against the relevant subset.
+Each phase ends with a check against the relevant subset. *(Phase 11: these metrics
+are now instrumented in-app — the ⏱ performance HUD shows live per-view FPS, scrub
+latency, and scenario-load time against these targets.)*

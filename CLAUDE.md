@@ -24,6 +24,42 @@ pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
 ## Current phase
+**Phase 11 complete (11A/11B/11C) — polish & ship. The roadmap's eleven phases are done.**
+Backend **217 tests green**, frontend type-check + `vite build` green. Scope extended (with
+the user) beyond the roadmap bullet to complete **SRS §4.2** (OEM + events export in, not
+just PNG/MP4). One new frontend dep: **`mp4-muxer`** (image rebuilt + anon volume dropped).
+See [phase-11-plan.md](docs/phase-11-plan.md), Decision 29.
+- **11B — export (§4.2 complete).** A capture seam (`frontend/src/export/captureRegistry.ts`:
+  each viewport registers `{canvas, renderNow, setExportMode}`; pixel reads are **same-task**
+  after an explicit render — no `preserveDrawingBuffer`, Decision 29). **PNG** snapshots
+  (global/proximity/composite + caption). **MP4** = deterministic frame-stepped offline render
+  (pause → `setCurrentTime` per frame via the existing writer path → WebCodecs H.264 →
+  `mp4-muxer`; codec ladder behind `isConfigSupported`; ≤1800 frames; cancel restores clock +
+  loops in `finally`; Chromium-first, non-WebCodecs browsers get a disabled tooltip).
+  **Events JSON/CSV** client-side from the stream buffer (all five event kinds, pure builders
+  in `export/eventsExport.ts`). **CCSDS OEM export**: `GET /scenarios/{id}/export/oem`
+  (`io/OemExportService` — ScreeningService pattern, real providers incl. maneuvered/finite
+  and measured-clipped-to-span; Orekit `OemWriter`; creation date pinned to the version stamp
+  → **byte-identical rerun**, round-tripped through `OemParser` in tests; **audited**
+  `EXPORT_OEM`, no version row — the narrow audited-export precedent). `ExportPanel` in the UI.
+- **11A — usability (§5.6).** Demo set grown to **five** (new: sensor/link-budget inspection,
+  eclipse 6 h, V-bar station 2 km behind — each validated in `SampleScenarioFormationTests`)
+  and seeded **per user on first login**: `scenario/UserProvisioner` creates the user row in
+  `REQUIRES_NEW` (fixes the readOnly-tx provisioning flush quirk) + publishes one
+  `UserProvisionedEvent`; the seeder listens `AFTER_COMMIT`; `seedIfAbsent` is now
+  `REQUIRES_NEW` (per-demo isolation + the after-commit-listener commit trap;
+  `UserProvisioningSeedTests`). `?` **Help overlay** + one-time first-run hint; tooltip audit
+  (76 `title=` added — every interactive control covered).
+- **11C — perf + docs.** `lib/perf.ts` + **PerfHud** (⏱ toggle / `?perf=1`): live per-view FPS,
+  scrub latency (seek → rendered frame), scenario-load time, §5.1 thresholds highlighted (the
+  R7 FPS counter). OpenAPI **info bean** + `@Tag`/`@Operation` on all 31 endpoints (doc-only;
+  regenerated client has no type drift). [docs/user-guide.md](docs/user-guide.md) (UC-mapped) +
+  a root [README.md](README.md) (new). **Remaining manual:** browser click-throughs (PNG/MP4/
+  OEM-in-oidc, fresh-OIDC-user demos) + recording the §5.1 PerfHud readings on reference
+  hardware — the evidence table is in the phase plan. **Deferred (Decision 29):** WebM
+  fallback; link-budget series export; OEM/AEM *import* (measured slice 3); bundle
+  code-splitting; the live cluster install (Phase-10 follow-up).
+
 **Phase 10 complete (10A/10B/10C) — enterprise hardening.** Backend **203 tests green**,
 frontend type-check green, Helm chart `helm lint` + `helm template` clean. Activates the
 Decision-16 seams **additively** (auth defaults to `stub`, so the prior dev loop + all earlier

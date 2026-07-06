@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type PointerEvent as ReactPointerEven
 import { api } from '../api/client';
 import type { components } from '../api/schema';
 import { useStore } from '../store/useStore';
-import { useCollapsed, usePanelSize, usePanelPosition } from '../lib/usePanelChrome';
+import { usePanelSize, usePanelPosition } from '../lib/usePanelChrome';
 
 type AuditEntry = components['schemas']['AuditEntryResponse'];
 type VersionSummary = components['schemas']['ScenarioVersionSummary'];
@@ -29,9 +29,8 @@ export default function AuditLogPanel() {
   const [expanded, setExpanded] = useState<number | null>(null);
   const [diffs, setDiffs] = useState<Record<number, DiffState>>({});
 
-  const { pos, setPos, commitPos } = usePanelPosition('audit', { x: 248, y: 640 });
-  const { collapsed, toggle } = useCollapsed('audit');
-  const panelRef = usePanelSize<HTMLElement>('audit', collapsed);
+  const { pos, setPos, commitPos } = usePanelPosition('audit', { x: 428, y: 218 });
+  const panelRef = usePanelSize<HTMLElement>('audit', false);
 
   const refresh = useCallback(async (id: string) => {
     setLoading(true);
@@ -108,17 +107,16 @@ export default function AuditLogPanel() {
   if (!scenarioId) return null;
 
   return (
-    <aside ref={panelRef} className={`maneuver-panel${collapsed ? ' is-collapsed' : ''}`} style={{ left: pos.x, top: pos.y }}>
+    <aside ref={panelRef} className="maneuver-panel" style={{ left: pos.x, top: pos.y }}>
       <div className="mvr-drag" onPointerDown={onDragStart} title="Drag to move">
         <span className="mvr-drag-title"><span className="mvr-grip" aria-hidden>⠿</span> Audit &amp; history</span>
-        <button className="panel-min" onClick={toggle} title={collapsed ? 'Expand' : 'Minimize'} aria-label={collapsed ? 'Expand' : 'Minimize'}>
-          {collapsed ? '▸' : '▾'}
+        <button className="panel-min" onClick={() => useStore.getState().closePanel('audit')} title="Close" aria-label="Close">
+          ✕
         </button>
       </div>
-      {!collapsed && (
         <>
           <div className="mvr-add">
-            <button type="button" onClick={() => void refresh(scenarioId)} disabled={loading}>
+            <button title="Refresh the audit trail" type="button" onClick={() => void refresh(scenarioId)} disabled={loading}>
               {loading ? 'Loading…' : 'Refresh'}
             </button>
             {error && <div className="mvr-msg">{error}</div>}
@@ -138,7 +136,7 @@ export default function AuditLogPanel() {
                 const d = diffs[vn];
                 return (
                   <div key={vn} className="audit-ver-group">
-                    <button
+                    <button title="Show what changed in this version"
                       type="button"
                       className={`audit-row audit-ver-row${isOpen ? ' is-open' : ''}`}
                       onClick={() => toggleVersion(vn)}
@@ -189,7 +187,6 @@ export default function AuditLogPanel() {
             </div>
           </div>
         </>
-      )}
     </aside>
   );
 }

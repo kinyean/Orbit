@@ -22,6 +22,8 @@ import { CameraRig, type CameraFocus } from '../proximity/cameraModes';
 import { createEarthBackdrop, type BackdropMode } from '../proximity/earthBackdrop';
 import { createSensorFov, type SensorFov } from '../proximity/sensors';
 import { buildMonteCarloLayer, type MonteCarloLayer } from '../proximity/montecarlo';
+import { registerCaptureSource } from '../export/captureRegistry';
+import { markProxFrame } from '../lib/perf';
 
 // Marker / model colors. Chief = amber (matches the globe's CHIEF_RGB); deputies
 // cycle a palette matching the globe's SCENARIO_DEPUTY_PALETTE so a deputy is the
@@ -488,16 +490,19 @@ export default function ProximityView() {
     };
 
     // Render loop — the lockstep seam. Reads the shared clock; never writes it.
+    // The frame body is factored into drawFrame() so the capture seam (Phase 11B)
+    // can render one frame synchronously at the current store time; while the MP4
+    // exporter runs (`exporting`), the rAF loop idles and the exporter is the only
+    // caller.
     let rafId = 0;
     let lastReadout = 0;
+    let exporting = false;
     const out: [number, number, number] = [0, 0, 0];
     const dvDir = new THREE.Vector3();
     const glyphPos = new THREE.Vector3();
-    const renderFrame = () => {
-      rafId = requestAnimationFrame(renderFrame);
+    const drawFrame = (now: number) => {
       const data = getRelativeData();
       if (getRelativeVersion() !== builtVersion) rebuild();
-      const now = performance.now();
 
       // Backdrop toggle (polled from the ref — changes are rare).
       if (backdropRef.current !== lastBackdrop) {
@@ -622,7 +627,23 @@ export default function ProximityView() {
         lastReadout = now;
         readoutRef.current.textContent = `scale ${fmtDistance(controls.getDistance())}`;
       }
+      markProxFrame(); // perf instrumentation (Phase 11, §5.1.1)
     };
+    const renderFrame = () => {
+      rafId = requestAnimationFrame(renderFrame);
+      if (!exporting) drawFrame(performance.now());
+    };
+
+    // Capture seam (Phase 11B, US-IO-01/02): expose the canvas + an explicit
+    // synchronous render at the current store time.
+    const unregisterCapture = registerCaptureSource('proximity', {
+      canvas: renderer.domElement,
+      renderNow: () => drawFrame(performance.now()),
+      setExportMode: (on) => {
+        exporting = on;
+      },
+    });
+
     rebuild();
     renderFrame();
 
@@ -638,6 +659,7 @@ export default function ProximityView() {
 
     return () => {
       cancelAnimationFrame(rafId);
+      unregisterCapture();
       resize.disconnect();
       controls.dispose();
       glyphs.forEach((g) => {
@@ -728,7 +750,7 @@ export default function ProximityView() {
       <div className="proximity-controls">
         <label className="prox-ctrl">
           <span>Camera</span>
-          <select value={focusValue} onChange={(e) => onFocusChange(e.target.value)}>
+          <select title="Camera mode — free orbit, ride a craft's body frame, or look along a sensor boresight" value={focusValue} onChange={(e) => onFocusChange(e.target.value)}>
             <option value="external">External (free)</option>
             <option value="chief">Chief body</option>
             {deputies.map((d, i) => (
@@ -769,8 +791,8 @@ export default function ProximityView() {
         <div className="prox-ctrl">
           <span>Sensors</span>
           <div className="prox-seg">
-            <button className={showSensors ? 'active' : ''} onClick={() => setShowSensors(true)}>View</button>
-            <button className={!showSensors ? 'active' : ''} onClick={() => setShowSensors(false)}>Off</button>
+            <button title="Show sensor FOV volumes" className={showSensors ? 'active' : ''} onClick={() => setShowSensors(true)}>View</button>
+            <button title="Hide sensor FOV volumes" className={!showSensors ? 'active' : ''} onClick={() => setShowSensors(false)}>Off</button>
           </div>
         </div>
         <div className="prox-ctrl">
@@ -783,13 +805,13 @@ export default function ProximityView() {
             >
               On
             </button>
-            <button className={!showAxes ? 'active' : ''} onClick={() => setShowAxes(false)}>Off</button>
+            <button title="Hide the body-axis triads" className={!showAxes ? 'active' : ''} onClick={() => setShowAxes(false)}>Off</button>
           </div>
         </div>
         {showSensors && (
           <label className="prox-ctrl">
             <span>FOV opacity</span>
-            <input
+            <input title="FOV volume opacity"
               type="range"
               min={5}
               max={60}

@@ -349,7 +349,7 @@ const DistanceChart = forwardRef<DistanceChartHandle, Props>(function DistanceCh
         <div className="dchart-controls">
           <div className="dchart-wins" role="group" aria-label="visible time span">
             {avail.map((w) => (
-              <button
+              <button title="Show this time span in the chart"
                 key={w.key}
                 className={`dchart-win${winKey === w.key ? ' active' : ''}`}
                 onClick={() => pickWindow(w.key)}

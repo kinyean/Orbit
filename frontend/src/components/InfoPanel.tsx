@@ -90,13 +90,13 @@ export default function InfoPanel() {
                   Make chief
                 </button>
               )}
-              <button className="role-btn" onClick={() => removeFromScenario(sat.noradId)}>
+              <button title="Remove this satellite from the scenario" className="role-btn" onClick={() => removeFromScenario(sat.noradId)}>
                 {isChief ? 'Remove chief from scenario' : 'Remove from scenario'}
               </button>
             </>
           ) : (
             <>
-              <button className="role-btn" onClick={onSetChief}>
+              <button title="Designate this satellite as the scenario's chief (the relative-frame origin)" className="role-btn" onClick={onSetChief}>
                 Set as chief
               </button>
               <button

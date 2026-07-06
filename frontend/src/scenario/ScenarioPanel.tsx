@@ -159,7 +159,7 @@ export default function ScenarioPanel() {
         </button>
         {importOpen && (
           <div className="scenario-import-body">
-            <input
+            <input title="Server-side CSV path (inside the allowed import root)"
               type="text"
               className="scenario-import-path"
               placeholder="Server CSV path (e.g. /shared_folder/…)"
@@ -177,7 +177,7 @@ export default function ScenarioPanel() {
                 onChange={(e) => setImportNorad(e.target.value)}
                 disabled={importBusy}
               />
-              <button
+              <button title="Import the measured CSV as a new scenario (its chief flies the real data)"
                 className="scenario-import-btn"
                 onClick={() => void onImport()}
                 disabled={importBusy || !importPath.trim()}
@@ -203,7 +203,7 @@ export default function ScenarioPanel() {
               key={s.id}
               className={s.id === composer.scenarioId ? 'scenario-item active' : 'scenario-item'}
             >
-              <button className="scenario-load" onClick={() => s.id && void loadScenario(s.id)}>
+              <button title="Load this scenario for playback and analysis" className="scenario-load" onClick={() => s.id && void loadScenario(s.id)}>
                 <span className="scenario-name">{s.name}</span>
                 <span className="scenario-meta">
                   {nameFor(s.chiefNoradId ?? -1)}
@@ -282,7 +282,7 @@ export default function ScenarioPanel() {
               <span className="composer-role">Time range (UTC)</span>
               <label className="tr-field">
                 <span>Start</span>
-                <input
+                <input title="Scenario window start (UTC)"
                   type="datetime-local"
                   value={toInput(composer.start)}
                   onChange={(e) => onRangeChange('start', e.target.value)}
@@ -290,7 +290,7 @@ export default function ScenarioPanel() {
               </label>
               <label className="tr-field">
                 <span>End</span>
-                <input
+                <input title="Scenario window end (UTC)"
                   type="datetime-local"
                   value={toInput(composer.end)}
                   onChange={(e) => onRangeChange('end', e.target.value)}

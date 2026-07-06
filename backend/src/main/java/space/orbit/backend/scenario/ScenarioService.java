@@ -231,8 +231,15 @@ public class ScenarioService {
      * roles aren't catalog satellites (e.g. a synthetic close-formation), so the
      * body is supplied directly rather than resolved from the catalog. Still goes
      * through this single audited mutation path (Decision 16).
+     *
+     * <p>{@code REQUIRES_NEW} (Phase 11): each demo commits in its own transaction,
+     * for two reasons. (1) Per-demo isolation — one bad demo must never roll back
+     * the others (the seeder catches + logs per demo). (2) The per-user seeding
+     * listener fires {@code AFTER_COMMIT} of the provisioning transaction, where a
+     * joined ({@code REQUIRED}) transaction would silently not commit — a documented
+     * Spring trap. See Decision 29.
      */
-    @Transactional
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
     public void seedIfAbsent(UUID ownerId, String name, ScenarioBody body) {
         if (scenarios.findByOwnerIdAndNameAndDeletedAtIsNull(ownerId, name).isPresent()) {
             return;
@@ -647,6 +654,39 @@ public class ScenarioService {
         ScenarioVersion latest = latestVersion(scenario);
         return toResponse(scenario, parse(latest.getBody()), latest.getVersionNo(),
                 (int) versions.countByScenarioId(id));
+    }
+
+    /** What a file exporter needs from a scenario: name + latest body + version stamp. */
+    public record ExportView(String name, ScenarioBody body, int versionNo,
+                             OffsetDateTime versionCreatedAt) {}
+
+    /**
+     * Scenario view for file export (Phase 11, US-IO-06 / SRS §4.2.1). Owner-gated
+     * like {@link #get}. Carries the latest version's {@code createdAt} so the export
+     * header's creation date is a <em>stable</em> content stamp — not the wall clock —
+     * keeping the exported file byte-identical on re-export (R11).
+     */
+    @Transactional(readOnly = true)
+    public ExportView exportView(UUID id) {
+        User me = userService.currentUser();
+        Scenario scenario = activeScenario(id, me);
+        ScenarioVersion latest = latestVersion(scenario);
+        return new ExportView(scenario.getName(), parse(latest.getBody()),
+                latest.getVersionNo(), latest.getCreatedAt());
+    }
+
+    /**
+     * Record a successful CCSDS OEM export in the audit trail (Phase 11; UC-8 step 6 —
+     * "the audit trail shows the export event"). A deliberate, narrow extension of the
+     * Decision-16 audit table to a read-that-produces-an-artifact: no version row is
+     * written (an export doesn't mutate the scenario), and pure reads stay un-audited.
+     * See Decision 29.
+     */
+    @Transactional
+    public void recordOemExport(UUID id, String summary) {
+        User actor = userService.currentUser();
+        Scenario scenario = activeScenario(id, actor);
+        audit(id, scenario.getLatestVersionId(), actor.getId(), "EXPORT_OEM", summary);
     }
 
     /**

@@ -57,7 +57,7 @@ export default class ErrorBoundary extends Component<Props, State> {
         >
           <p style={{ margin: 0 }}>The {this.props.label ?? 'view'} hit an error and was paused.</p>
           <p style={{ margin: 0, fontSize: '0.8rem', opacity: 0.7, maxWidth: '40ch' }}>{error.message}</p>
-          <button type="button" onClick={this.reset}>
+          <button title="Reload this view" type="button" onClick={this.reset}>
             Reload view
           </button>
         </div>

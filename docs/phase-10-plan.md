@@ -14,8 +14,9 @@ Decision 28. This file is the **resume point**.
   reproducibility tests; §5.2 Orekit-reference validation suite + conformance doc).
 - **10C — Deployment hardening: ✅ done** (frontend prod image; Helm chart —
   `helm lint` + `helm template` clean; TLS/ingress/secrets; offline bundle;
-  `docs/deployment.md`). Full cluster install (ingress + TLS + OIDC end-to-end) is
-  verified on the target k8s cluster.
+  `docs/deployment.md`). A full end-to-end cluster install (ingress + cert-manager TLS +
+  OIDC browser round-trip) has **not yet been run on a live k8s cluster** — a scoped
+  follow-up (see line 90 + Decision 28), not a Phase-10 gap.
 
 Backend `./gradlew test` = **203 green** (was 188 at Phase 9). Frontend `type-check`
 green. Auth defaults to **stub**, so the existing dev loop is unchanged.

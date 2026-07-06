@@ -57,6 +57,7 @@ considered**, **Consequences**.
 16. [Enterprise posture: professional-grade from the start](#16-enterprise-posture-professional-grade-from-the-start)
 17. [Deployment: containerized, cloud + on-prem](#17-deployment-containerized-cloud--on-prem)
 28. [Enterprise hardening: OIDC resource-server, RBAC, audit UI, §5.2 validation, Helm/K8s (Phase 10)](#28-enterprise-hardening-oidc-resource-server--rbac--audit-ui--52-validation--helm-phase-10)
+29. [Polish & ship: client-side capture (PNG/MP4), OEM export, per-user samples, help + perf instrumentation (Phase 11)](#29-polish--ship-client-side-capture-pngmp4-oem-export-per-user-samples-help--perf-instrumentation-phase-11)
 
 **UX / interaction**
 18. [Global-view camera: click-to-inspect, double-click focus](#18-global-view-camera-click-to-inspect-double-click-focus)
@@ -1553,6 +1554,119 @@ production Keycloak HA; external golden vectors; a prod Compose path. **Phase 11
 
 ---
 
+## 29. Polish & ship: client-side capture (PNG/MP4), OEM export, per-user samples, help + perf instrumentation (Phase 11)
+
+**Context.** Phase 11 (roadmap §11; SRS §4.2 / §5.1 / §5.6 / §4.3.3; US-UX-01..04,
+US-IO-01/02) is the ship phase. Beyond the roadmap bullet (samples, tooltips/help,
+§5.1 pass, PNG/MP4, OpenAPI polish, user guide), a scope review found SRS §4.2
+two-thirds unimplemented — **§4.2.1 CCSDS OEM export** (UC-3 step 8 / UC-8 step 3,
+Frank's handoff format) and **§4.2.2 events JSON/CSV export** had no implementation —
+and §5.6.1 unmeetable under OIDC (the seeded demos belonged to the dev user; `list()`
+is owner-scoped, so real users saw nothing). Three long-deferred items came due: the
+**media-export mechanism** (§4.2.3, deferred list), the **§5.1 FPS instrumentation**
+(R7's "revisit with an actual FPS counter"), and a root README/user guide (none
+existed). Scope decisions taken with the user: complete §4.2 (both exports in);
+MP4 via WebCodecs + `mp4-muxer` (dep approved); samples per-user on first login;
+the live k8s cluster install stays a Phase-10 follow-up.
+
+**Decision.** Sliced 11B (export, riskiest first) / 11A (usability) / 11C (perf + docs).
+- **Capture: client-side, same-task pixel reads — no `preserveDrawingBuffer`.**
+  Each viewport registers a `CaptureSource {canvas, renderNow(), setExportMode()}` in a
+  module-singleton registry (the Decision-5 idiom; no lifted refs). WebGL keeps the
+  drawing buffer valid until the JS task ends, so rendering explicitly and copying to a
+  2D canvas **in the same task** always reads real pixels; `preserveDrawingBuffer` would
+  put a per-frame copy cost on the whole app's life to serve occasional exports —
+  rejected (escape hatch: two ctor flags, if a driver ever misbehaves). Cesium's
+  `viewer.render()` fires the existing preRender clock copy, so an explicit render draws
+  at store time; ProximityView's rAF body was factored into a callable `drawFrame`.
+- **MP4: deterministic frame-stepped offline render** (WebCodecs `VideoEncoder` H.264 →
+  `mp4-muxer`, the one new dependency). The exporter pauses playback and steps sim time
+  through the existing `seek`/`setCurrentTime` actions (one-clock rule intact —
+  `clockEngine` only writes while playing), renders both views per output frame,
+  composites (≤1920 px, even dims) with a sim-time chip, and encodes as it goes
+  (backpressure on `encodeQueueSize`; nothing retained; cancel + `finally` restore).
+  Output smoothness is independent of live FPS — the MediaRecorder realtime alternative
+  drops frames under load and emits WebM on Chrome/Firefox (SRS says MP4). Codec ladder
+  `avc1.640028 → 4d0028 → 42E01F` behind `isConfigSupported`; unsupported browsers get a
+  disabled-with-tooltip button (acceptance on Chromium; a WebM fallback is deferred).
+- **PNG**: one-shot render → 2D composite (global / proximity / side-by-side) with a
+  scenario + sim-time caption; the screening-CSV Blob-download idiom shared via
+  `export/download.ts`.
+- **Events JSON/CSV: client-side, zero backend.** Every event class already rides the
+  `scenario-relative` envelope into the stream buffer — the export is a pure builder
+  over data the timeline already draws (`orbit.scenario-events.v1` JSON + flat CSV;
+  names resolved from the body). Link-budget SNR *series* excluded (a curve, not
+  events); screening keeps its own CSV.
+- **OEM export: backend, Orekit's writer, audited.** `io/OemExportService` follows the
+  ScreeningService pattern — resolve through the owner-gate, rebuild the **real**
+  providers (numerical-with-impulses for maneuvered deputies incl. finite burns;
+  measured roles served from the dataset with the grid intersected to the data span —
+  never fabricated HOLD states in an interchange file; CW exports SGP4-absolute + a
+  COMMENT, the screening precedent, since the linearized relative model has no
+  authoritative absolute trajectory), sample EME2000/UTC on the stream's effective-step
+  grid, one `OemSegment` per craft via `WriterBuilder().buildOemWriter()` +
+  `KvnGenerator`. **Determinism (R11):** the header creation date is pinned to the
+  latest *version* `createdAt` (the one wall-clock leak) → byte-identical re-export,
+  proven by test + a round-trip through Orekit's `OemParser`. **Audited-export
+  precedent:** UC-8 says the trail shows the export, so `recordOemExport` writes one
+  `EXPORT_OEM` audit row through the existing `ScenarioService.audit` — *no version
+  row* (exports don't mutate). Deliberately narrow: exports are audited; pure reads
+  are not.
+- **Samples: seed per user on first login.** `UserProvisioner` creates the user row in
+  its own `REQUIRES_NEW` transaction (fixing a latent quirk — provisioning reached from
+  `readOnly=true` read paths joined that transaction and wasn't reliably flushed) and
+  publishes one `UserProvisionedEvent`; the seeder listens `AFTER_COMMIT` and runs
+  `seedAll(userId)`. `seedIfAbsent` became `REQUIRES_NEW` — per-demo transaction
+  isolation *and* the documented Spring trap that a joined transaction inside an
+  after-commit listener silently doesn't commit. Ownership gate untouched (each user
+  owns editable copies — learning-by-modifying; the global read-only-samples
+  alternative would have split the single security gate late in the project). The set
+  grew to **five demos** (new: sensor/link-budget inspection, eclipse, V-bar station),
+  each geometry-validated by the same `analysis/` computers the stream runs.
+- **Help + tooltips (§5.6):** native `title=` stays the mechanism (the existing idiom;
+  no component, no dep) — a scripted audit drove every interactive control to carry
+  `title`/`aria-label`; a hand-rolled `?` Help modal (quick start / controls /
+  mini-glossary from glossary.md) + a one-time first-run hint pointing at the demos.
+- **Perf instrumentation (§5.1):** `lib/perf.ts` (module singleton; marks in Globe's
+  postRender, ProximityView's drawFrame, `seek`/`step`, `loadScenario` → both stream
+  payloads) + a PerfHud (⏱ toggle / `?perf=1`) showing FPS per view, scrub last/p95,
+  and load time with the §5.1 thresholds highlighted. Evidence table lives in
+  phase-11-plan.md (numbers recorded from reference hardware); fixes were pre-ranked
+  but **none applied unmeasured**.
+- **OpenAPI polish + docs:** an `OpenAPI` info bean (title/version/description naming
+  the WebSocket companions + per-mode auth) + `@Tag`/`@Operation` on all 31 endpoints —
+  doc-only (regenerated client is comment churn; type-check proves no drift);
+  `docs/user-guide.md` (UC-mapped walkthrough) and a root `README.md`.
+
+**Alternatives considered.** *Server-side headless rendering for PNG/MP4* (rejected —
+a GPU-bearing render service to package into Helm/the offline bundle, against §6.2
+portability; the canvases already render client-side). *MediaRecorder capture* (rejected
+as primary — realtime-only, drops frames under load, WebM on two of four mandated
+browsers; kept as a possible fallback, deferred). *`preserveDrawingBuffer: true`*
+(rejected — permanent per-frame cost for occasional export; same-task reads are free).
+*Global read-only sample scenarios* (rejected — needs an `is_sample` flag + a read/write
+split inside `activeScenario`, the load-bearing 404 gate, plus clone-on-edit; per-user
+seeding is additive and keeps one ownership rule). *Auditing exports via a version row
+or not at all* (rejected — a version implies mutation; no audit fails UC-8 step 6).
+*Hand-rolled KVN writer* (rejected — Orekit's `OemWriter` is the validated
+implementation, Decision 15).
+
+**Consequences.** New frontend `export/` module (`captureRegistry`, `capture`,
+`mp4Exporter`, `eventsExport`, `ExportPanel`, `download`), `lib/perf.ts`, `PerfHud`,
+`HelpOverlay`/`FirstRunHint`; Globe/ProximityView gain capture + perf seams; new dep
+**`mp4-muxer`**. New backend `io/OemExportService` + `GET /scenarios/{id}/export/oem`,
+`scenario/UserProvisioner` + `UserProvisionedEvent`, `api/OpenApiConfig`;
+`ScenarioService` gains `exportView`/`recordOemExport` and `seedIfAbsent` is
+`REQUIRES_NEW`; the audit vocabulary gains `EXPORT_OEM`. New stories **US-IO-06** (OEM
+export) + **US-IO-07** (events export). Backend tests **203 → 217**. This resolves the
+deferred **media-export §4.2.3** decision and completes SRS §4.2; §5.6 is met for every
+auth mode; R7's FPS-counter caveat is closed by the PerfHud. **Deferred:** WebM/
+MediaRecorder fallback; link-budget series export; OEM/AEM *import* + upload (measured
+track slice 3); bundle code-splitting; the live cluster install (Phase-10 follow-up).
+**The roadmap's eleven phases are complete.**
+
+---
+
 # Superseded decisions (pre-SRS pivot)
 
 Retained for the record. These were sound for the *public satellite tracker*
@@ -1614,8 +1728,13 @@ Explicitly not decided yet; each has a tracked reason.
   (`/public/models/spacecraft.glb`); articulation = named joints at a static
   deployed pose. Real model sourcing / rig conventions can land later through the
   seam without rework (R6).
-- **Media export implementation (§4.2.3).** Client-side canvas capture
-  (WebCodecs/MediaRecorder) vs server-side render — decide at the export phase.
+- ~~**Media export implementation (§4.2.3).** Client-side canvas capture
+  (WebCodecs/MediaRecorder) vs server-side render — decide at the export phase.~~
+  **Resolved (Phase 11, Decision 29):** client-side — same-task pixel reads after an
+  explicit render (no `preserveDrawingBuffer`), PNG via 2D composite, MP4 via a
+  deterministic frame-stepped WebCodecs H.264 encode into `mp4-muxer`. Server-side
+  rendering rejected (a GPU render service against §6.2 portability); a
+  MediaRecorder/WebM fallback for non-WebCodecs browsers is the residual deferred bit.
 - **Self-hosting Cesium imagery tiles.** Ion for now; switch at the 5 GB/mo
   ceiling.
 - **Catalog refresh cadence + sample density.** Phase 2 baseline (measured,

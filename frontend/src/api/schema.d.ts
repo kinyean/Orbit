@@ -11,9 +11,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** Get a scenario (latest version) */
         get: operations["get"];
+        /** Update a scenario (creates a new immutable version) */
         put: operations["update"];
         post?: never;
+        /** Archive a scenario (soft delete; history preserved) */
         delete: operations["delete"];
         options?: never;
         head?: never;
@@ -28,6 +31,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
+        /** Set or clear a sensor's RF/optical link budget */
         put: operations["setLinkBudget"];
         post?: never;
         delete?: never;
@@ -44,6 +48,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
+        /** Set the conjunction miss-distance threshold */
         put: operations["setMissDistance"];
         post?: never;
         delete?: never;
@@ -60,6 +65,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
+        /** Set a craft's attitude profile (lvlh / fixed) */
         put: operations["setAttitude"];
         post?: never;
         delete?: never;
@@ -75,8 +81,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** List my scenarios */
         get: operations["list"];
         put?: never;
+        /** Create a scenario (v1, TLEs frozen from the catalog) */
         post: operations["create"];
         delete?: never;
         options?: never;
@@ -93,6 +101,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Add a body-fixed sensor to a craft */
         post: operations["addSensor"];
         delete?: never;
         options?: never;
@@ -109,6 +118,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Screen the scenario against the full live catalog (snapshot) */
         post: operations["screen"];
         delete?: never;
         options?: never;
@@ -125,6 +135,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Run seeded Monte Carlo dispersion for a deputy */
         post: operations["monteCarlo"];
         delete?: never;
         options?: never;
@@ -141,6 +152,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Add an impulsive or finite ΔV burn to a deputy */
         post: operations["addManeuver"];
         delete?: never;
         options?: never;
@@ -157,6 +169,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Insert closed-loop station-keeping burns (template) */
         post: operations["stationKeep"];
         delete?: never;
         options?: never;
@@ -173,6 +186,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Insert a two-impulse rendezvous (differential-corrected by default) */
         post: operations["rendezvous"];
         delete?: never;
         options?: never;
@@ -189,6 +203,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Search the rendezvous arrival-time × revolution ΔV map */
         post: operations["searchRendezvous"];
         delete?: never;
         options?: never;
@@ -205,6 +220,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Insert a phasing-orbit transfer (template) */
         post: operations["phasing"];
         delete?: never;
         options?: never;
@@ -221,6 +237,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Insert an NMC circumnavigation burn (template) */
         post: operations["nmc"];
         delete?: never;
         options?: never;
@@ -237,6 +254,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Insert a V-bar/R-bar hold-point transfer (template) */
         post: operations["hold"];
         delete?: never;
         options?: never;
@@ -253,6 +271,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Insert a Hohmann transfer to a target altitude (template) */
         post: operations["hohmann"];
         delete?: never;
         options?: never;
@@ -269,6 +288,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Insert a constant-rate glideslope approach (template) */
         post: operations["glideslope"];
         delete?: never;
         options?: never;
@@ -285,6 +305,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Add a sun-keep-out or approach-corridor constraint */
         post: operations["addConstraint"];
         delete?: never;
         options?: never;
@@ -301,6 +322,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Import a measured ephemeris (WOD CSV on the server) as a scenario */
         post: operations["importMeasured"];
         delete?: never;
         options?: never;
@@ -315,6 +337,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** List a scenario's version history */
         get: operations["versions"];
         put?: never;
         post?: never;
@@ -331,6 +354,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** Get one immutable version */
         get: operations["getVersion"];
         put?: never;
         post?: never;
@@ -347,7 +371,25 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** Diff a version against its predecessor */
         get: operations["versionDiff"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scenarios/{id}/export/oem": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export propagated ephemerides as a CCSDS OEM file */
+        get: operations["exportOem"];
         put?: never;
         post?: never;
         delete?: never;
@@ -363,6 +405,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** Get the audit trail (who changed what, newest first) */
         get: operations["audit"];
         put?: never;
         post?: never;
@@ -379,6 +422,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** Service health, build info + streaming-contract version */
         get: operations["health"];
         put?: never;
         post?: never;
@@ -398,6 +442,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
+        /** Remove a sensor */
         delete: operations["removeSensor"];
         options?: never;
         head?: never;
@@ -414,6 +459,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
+        /** Remove a maneuver */
         delete: operations["removeManeuver"];
         options?: never;
         head?: never;
@@ -430,6 +476,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
+        /** Remove a constraint */
         delete: operations["removeConstraint"];
         options?: never;
         head?: never;
@@ -1482,6 +1529,28 @@ export interface operations {
                 };
                 content: {
                     "*/*": components["schemas"]["VersionDiff"];
+                };
+            };
+        };
+    };
+    exportOem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
                 };
             };
         };

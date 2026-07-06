@@ -52,6 +52,7 @@ class SecurityConfigTests {
     @MockitoBean private ScreeningService screening;
     @MockitoBean private RendezvousSearchService rendezvousSearch;
     @MockitoBean private MonteCarloService monteCarlo;
+    @MockitoBean private space.orbit.backend.io.OemExportService oemExport;
 
     private static final String VALID_BODY = """
             {"name":"Rendezvous","fidelity":"sgp4",

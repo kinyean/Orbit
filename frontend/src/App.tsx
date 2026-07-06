@@ -15,6 +15,10 @@ import SensorPanel from './scenario/SensorPanel';
 import EnvironmentPanel from './scenario/EnvironmentPanel';
 import MonteCarloPanel from './scenario/MonteCarloPanel';
 import AuditLogPanel from './scenario/AuditLogPanel';
+import ExportPanel from './export/ExportPanel';
+import PanelDock from './components/PanelDock';
+import HelpOverlay from './components/HelpOverlay';
+import FirstRunHint from './components/FirstRunHint';
 import UserChip from './auth/UserChip';
 import { authMode } from './auth/config';
 import { useStore } from './store/useStore';
@@ -30,6 +34,8 @@ export default function App() {
   const scenarioActive = useStore((s) => s.loadedScenario !== null);
   const scenarioStreamError = useStore((s) => s.scenarioStreamError);
   const showCatalogInScenario = useStore((s) => s.showCatalogInScenario);
+  // Which floating panels are open (declutter dock). Low-frequency UI state.
+  const openPanels = useStore((s) => s.openPanels);
   const [proximityEnabled, setProximityEnabled] = useState(true);
   const [splitPct, setSplitPct] = useState(55);
   const viewportsRef = useRef<HTMLDivElement>(null);
@@ -125,8 +131,10 @@ export default function App() {
           />
         </form>
         {authMode === 'oidc' && <UserChip />}
+        <HelpOverlay />
         <StatusChip />
       </header>
+      <FirstRunHint />
 
       {scenarioStreamError && (
         <div className="stream-error-banner" role="alert">
@@ -141,13 +149,15 @@ export default function App() {
         </div>
       )}
 
-      <FilterPanel />
+      <PanelDock />
       <ScenarioPanel />
-      {scenarioActive && <ManeuverPanel />}
-      {scenarioActive && <SensorPanel />}
-      {scenarioActive && <EnvironmentPanel />}
-      {scenarioActive && <MonteCarloPanel />}
-      {scenarioActive && <AuditLogPanel />}
+      {openPanels.filters && <FilterPanel />}
+      {scenarioActive && openPanels.maneuvers && <ManeuverPanel />}
+      {scenarioActive && openPanels.sensors && <SensorPanel />}
+      {scenarioActive && openPanels.environment && <EnvironmentPanel />}
+      {scenarioActive && openPanels.montecarlo && <MonteCarloPanel />}
+      {scenarioActive && openPanels.audit && <AuditLogPanel />}
+      {openPanels.export && <ExportPanel proximityMounted={proximityVisible} />}
       <StatsOverlay />
       {scenarioActive && (
         <button

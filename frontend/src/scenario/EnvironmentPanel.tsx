@@ -1,6 +1,6 @@
 import { useState, useSyncExternalStore, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { useStore, type ConstraintRequest, type ScreeningResult } from '../store/useStore';
-import { useCollapsed, usePanelSize, usePanelPosition } from '../lib/usePanelChrome';
+import { usePanelSize, usePanelPosition } from '../lib/usePanelChrome';
 import { getRelativeData, getRelativeVersion, subscribeRelative } from '../stream/relativeBuffer';
 
 /** Parse a raw numeric-field string; NaN for empty/invalid (callers guard on > 0). */
@@ -64,14 +64,13 @@ export default function EnvironmentPanel() {
   const [rangeKm, setRangeKm] = useState('5');
   const [thresholdKm, setThresholdKm] = useState('5');
   const [msg, setMsg] = useState<string | null>(null);
-  const { pos, setPos, commitPos } = usePanelPosition('environment', { x: 248, y: 800 });
+  const { pos, setPos, commitPos } = usePanelPosition('environment', { x: 364, y: 154 });
   // Catalog screening (UC-7): threshold, in-flight flag, last result.
   const [screenKm, setScreenKm] = useState('5');
   const [screening, setScreening] = useState(false);
   const [screenResult, setScreenResult] = useState<ScreeningResult | null>(null);
   const [screenMsg, setScreenMsg] = useState<string | null>(null);
-  const { collapsed, toggle } = useCollapsed('environment');
-  const panelRef = usePanelSize<HTMLElement>('environment', collapsed);
+  const panelRef = usePanelSize<HTMLElement>('environment', false);
 
   function onDragStart(e: ReactPointerEvent) {
     if ((e.target as HTMLElement).closest('button')) return;
@@ -170,14 +169,13 @@ export default function EnvironmentPanel() {
   const eclipseCount = (rel?.eclipses ?? []).filter((e) => e.type === 'umbra-ingress').length;
 
   return (
-    <aside ref={panelRef} className={`maneuver-panel env-panel${collapsed ? ' is-collapsed' : ''}`} style={{ left: pos.x, top: pos.y }}>
+    <aside ref={panelRef} className="maneuver-panel env-panel" style={{ left: pos.x, top: pos.y }}>
       <div className="mvr-drag" onPointerDown={onDragStart} title="Drag to move">
         <span className="mvr-drag-title"><span className="mvr-grip" aria-hidden>⠿</span> Environment · Events</span>
-        <button className="panel-min" onClick={toggle} title={collapsed ? 'Expand' : 'Minimize'}>
-          {collapsed ? '▸' : '▾'}
+        <button className="panel-min" onClick={() => useStore.getState().closePanel('environment')} title="Close" aria-label="Close">
+          ✕
         </button>
       </div>
-      {!collapsed && (
         <>
           <div className="mvr-deputy">
             <div className="mvr-note">
@@ -193,7 +191,7 @@ export default function EnvironmentPanel() {
             <div className="env-row">
               <label className="env-field">
                 <span>miss &lt; (km)</span>
-                <input
+                <input title="Conjunction miss-distance threshold, km"
                   type="number"
                   step="any"
                   min={0}
@@ -201,7 +199,7 @@ export default function EnvironmentPanel() {
                   onChange={(e) => setThresholdKm(e.target.value)}
                 />
               </label>
-              <button type="button" className="env-btn" onClick={() => void onSetThreshold()}>Set</button>
+              <button title="Save the conjunction threshold (creates a new scenario version)" type="button" className="env-btn" onClick={() => void onSetThreshold()}>Set</button>
             </div>
             <div className="mvr-note">
               {currentThreshold != null
@@ -253,7 +251,7 @@ export default function EnvironmentPanel() {
               {kind === 'sun-keep-out' ? (
                 <label>
                   sensor
-                  <select value={sensorId} onChange={(e) => setSensorId(e.target.value)}>
+                  <select title="Host sensor the sun-keep-out limit applies to" value={sensorId} onChange={(e) => setSensorId(e.target.value)}>
                     <option value="">—</option>
                     {hostSensors.map((s) => (
                       <option key={s.id} value={s.id}>{s.name}</option>
@@ -263,7 +261,7 @@ export default function EnvironmentPanel() {
               ) : (
                 <label>
                   target
-                  <select value={targetId ?? ''} onChange={(e) => setTargetId(Number(e.target.value))}>
+                  <select title="Deputy the approach corridor applies to" value={targetId ?? ''} onChange={(e) => setTargetId(Number(e.target.value))}>
                     <option value="">—</option>
                     {targets.map((t) => (
                       <option key={t.noradId} value={t.noradId ?? ''}>{t.name ?? `NORAD ${t.noradId}`}</option>
@@ -273,13 +271,13 @@ export default function EnvironmentPanel() {
               )}
               <label title={kind === 'sun-keep-out' ? 'Minimum Sun↔boresight angle' : 'Corridor half-angle about the host ram (+Y) axis'}>
                 limit°
-                <input type="number" step="any" min={0} max={180} value={limitDeg}
+                <input title="Constraint limit half-angle, degrees" type="number" step="any" min={0} max={180} value={limitDeg}
                   onChange={(e) => setLimitDeg(e.target.value)} />
               </label>
               {kind === 'approach-corridor' && (
                 <label title="The corridor applies only within this range of the host">
                   range km
-                  <input type="number" step="any" min={0} value={rangeKm}
+                  <input title="Corridor applies within this range of the host, km" type="number" step="any" min={0} value={rangeKm}
                     onChange={(e) => setRangeKm(e.target.value)} />
                 </label>
               )}
@@ -290,7 +288,7 @@ export default function EnvironmentPanel() {
                 : 'Flags when the target leaves a limit° cone about the host ram axis while within range.'}
             </div>
             {formErr && <div className="mvr-budget-warn">⚠ {formErr}</div>}
-            <button type="submit" disabled={!!formErr}>Add constraint</button>
+            <button title="Add the constraint (creates a new scenario version)" type="submit" disabled={!!formErr}>Add constraint</button>
             {msg && <div className="mvr-msg">{msg}</div>}
           </form>
 
@@ -301,10 +299,10 @@ export default function EnvironmentPanel() {
             <div className="env-row">
               <label className="env-field">
                 <span>miss &lt; (km)</span>
-                <input type="number" step="any" min={0} value={screenKm}
+                <input title="Screening miss-distance threshold, km" type="number" step="any" min={0} value={screenKm}
                   onChange={(e) => setScreenKm(e.target.value)} />
               </label>
-              <button type="button" className="env-btn" disabled={screening || !(num(screenKm) > 0)} onClick={() => void onScreen()}>
+              <button title="Screen the scenario against the full live catalog (a snapshot of the current TLE set)" type="button" className="env-btn" disabled={screening || !(num(screenKm) > 0)} onClick={() => void onScreen()}>
                 {screening ? 'Screening…' : 'Screen'}
               </button>
               {screenResult && (screenResult.conjunctions?.length ?? 0) > 0 && (
@@ -344,7 +342,6 @@ export default function EnvironmentPanel() {
             </div>
           </div>
         </>
-      )}
     </aside>
   );
 }

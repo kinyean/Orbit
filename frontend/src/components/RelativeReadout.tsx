@@ -116,7 +116,7 @@ export default function RelativeReadout() {
         <span>Relative state · LVLH</span>
         {!collapsed && (
           <div className="rel-tabs" role="tablist">
-            <button
+            <button title="Numeric relative-state table (R/I/C, range, range-rate)"
               className={`rel-tab${tab === 'table' ? ' active' : ''}`}
               role="tab"
               aria-selected={tab === 'table'}
@@ -124,7 +124,7 @@ export default function RelativeReadout() {
             >
               Table
             </button>
-            <button
+            <button title="Distance-vs-time graph over the scenario window"
               className={`rel-tab${tab === 'graph' ? ' active' : ''}`}
               role="tab"
               aria-selected={tab === 'graph'}

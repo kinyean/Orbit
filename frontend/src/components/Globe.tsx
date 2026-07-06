@@ -29,6 +29,8 @@ import { constellationOf } from '../lib/constellations';
 import { CatalogStreamClient } from '../stream/CatalogStreamClient';
 import { ScenarioStreamClient } from '../stream/ScenarioStreamClient';
 import { setRelativeData, clearRelativeData, parseRelativeMessage } from '../stream/relativeBuffer';
+import { registerCaptureSource } from '../export/captureRegistry';
+import { markGlobeFrame, markStreamReady } from '../lib/perf';
 import { STREAM_CONTRACT_VERSION } from '../api/contract';
 
 const cesiumToken = import.meta.env.VITE_CESIUM_ION_TOKEN;
@@ -265,6 +267,19 @@ export default function Globe() {
     // double-click handler drives the smooth, zoom-preserving focus instead.
     viewer.screenSpaceEventHandler.removeInputAction(ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
     viewerRef.current = viewer;
+
+    // Capture seam (Phase 11B, US-IO-01/02): expose the canvas + an explicit
+    // synchronous render. `viewer.render()` fires the preRender listener below,
+    // which copies store.currentTime into viewer.clock — so an explicit render
+    // draws the scene at the shared sim time. Export mode hands the render loop
+    // to the MP4 exporter (useDefaultRenderLoop back on when it finishes).
+    const unregisterCapture = registerCaptureSource('globe', {
+      canvas: viewer.scene.canvas,
+      renderNow: () => viewer.render(),
+      setExportMode: (on) => {
+        viewer.useDefaultRenderLoop = !on;
+      },
+    });
 
     const dataSource = new CzmlDataSource('catalog');
     viewer.dataSources.add(dataSource);
@@ -626,6 +641,9 @@ export default function Globe() {
       );
     });
 
+    // Perf instrumentation (Phase 11, §5.1): one mark per rendered globe frame.
+    const removePerfMark = viewer.scene.postRender.addEventListener(() => markGlobeFrame());
+
     const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
     // Single click = inspect (select + info panel + ring, no camera move) AND
     // toggle the satellite's orbit path on/off. The path toggle is debounced and
@@ -666,9 +684,11 @@ export default function Globe() {
       window.clearTimeout(snapshotTimer);
       window.clearTimeout(snapshotSafetyTimer);
       window.clearTimeout(toggleTimer);
+      unregisterCapture();
       unsubscribeTravel();
       stream.close();
       removeClockSync();
+      removePerfMark();
       handler.destroy();
       viewer.destroy();
       viewerRef.current = null;
@@ -741,7 +761,7 @@ export default function Globe() {
         onCzml: (czml) => {
           processChain = processChain
             .then(() => scenarioDs.process(czml as unknown as object))
-            .then(() => undefined)
+            .then(() => markStreamReady('czml')) // load timer (Phase 11, §5.1.4)
             .catch((err) => {
               // eslint-disable-next-line no-console
               console.error('Scenario CZML chunk failed to process; skipping it', err);
@@ -751,7 +771,10 @@ export default function Globe() {
         // serves both viewports; ProximityView reads this buffer each frame.
         onRelative: (msg) => {
           const data = parseRelativeMessage(msg);
-          if (data) setRelativeData(data);
+          if (data) {
+            setRelativeData(data);
+            markStreamReady('relative'); // load timer (Phase 11, §5.1.4)
+          }
         },
         // Surface a refusal so a blank proximity view isn't silent. 4422 →
         // "rejected" (e.g. a spacecraft decays/maneuvers below the surface over

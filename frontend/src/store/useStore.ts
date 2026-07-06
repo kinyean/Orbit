@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { CONSTELLATIONS, type Constellation } from '../lib/constellations';
 import { api } from '../api/client';
+import { markLoadStart, markSeek } from '../lib/perf';
 import type { components } from '../api/schema';
 
 /** A saved scenario as listed by GET /scenarios (generated from the backend contract). */
@@ -147,6 +148,12 @@ export interface State {
   // live-window edge) — fine for composition.
   showCatalogInScenario: boolean;
 
+  // Panel launcher dock (declutter): which floating panels are currently open.
+  // A missing/false entry = closed; all start closed. The left-edge rail toggles
+  // these; each panel's own ✕ closes itself — one shared source of truth so the
+  // rail button and the panel stay in sync. UI/control state (Decision 5).
+  openPanels: Record<string, boolean>;
+
   // Monte Carlo dispersion (Phase 9C, UC-6). Static once computed → lives in Zustand
   // (unlike the per-frame stream); the proximity view reads it to draw the cloud +
   // ellipsoids. `visible` toggles the overlay.
@@ -175,6 +182,10 @@ export interface State {
   requestProximityFocus: (noradId: number) => void;
   resetCamera: () => void;
   setShowCatalogInScenario: (show: boolean) => void;
+  // Panel dock actions (declutter). toggle = flip open/closed; open/close = force.
+  togglePanel: (id: string) => void;
+  openPanel: (id: string) => void;
+  closePanel: (id: string) => void;
 
   // Composer actions
   setChief: (id: number) => void;
@@ -369,6 +380,7 @@ export const useStore = create<State>((set, get) => ({
   proximityFocus: null,
   cameraResetNonce: 0,
   showCatalogInScenario: false,
+  openPanels: {},
   monteCarlo: null,
   monteCarloVisible: true,
 
@@ -384,11 +396,13 @@ export const useStore = create<State>((set, get) => ({
     const ms = bounds
       ? Math.min(bounds.end.getTime(), Math.max(bounds.start.getTime(), t.getTime()))
       : t.getTime();
+    markSeek(); // scrub-latency probe (Phase 11, §5.1.3)
     // Scrubbing locates-and-pauses (so the engine doesn't fight the drag) and
     // leaves the catalog's live regime (a frozen snapshot is shown there).
     set({ currentTime: new Date(ms), catalogLive: false, isPlaying: false });
   },
-  step: (deltaSec) =>
+  step: (deltaSec) => {
+    markSeek(); // scrub-latency probe (Phase 11, §5.1.3)
     set((s) => {
       let ms = s.currentTime.getTime() + deltaSec * 1000;
       if (s.bounds) {
@@ -396,7 +410,8 @@ export const useStore = create<State>((set, get) => ({
       }
       // Stepping is frame-by-frame → pause; and it freezes the catalog at the new instant.
       return { currentTime: new Date(ms), isPlaying: false, catalogLive: false };
-    }),
+    });
+  },
   resetClock: () => {
     // Live mode: reset means "go live now". Scenario mode: jump to the window start, paused.
     if (!get().loadedScenario) {
@@ -438,6 +453,10 @@ export const useStore = create<State>((set, get) => ({
     set((s) => ({ proximityFocus: { noradId, nonce: (s.proximityFocus?.nonce ?? 0) + 1 } })),
   resetCamera: () => set((s) => ({ cameraResetNonce: s.cameraResetNonce + 1 })),
   setShowCatalogInScenario: (show) => set({ showCatalogInScenario: show }),
+  togglePanel: (id) =>
+    set((s) => ({ openPanels: { ...s.openPanels, [id]: !s.openPanels[id] } })),
+  openPanel: (id) => set((s) => ({ openPanels: { ...s.openPanels, [id]: true } })),
+  closePanel: (id) => set((s) => ({ openPanels: { ...s.openPanels, [id]: false } })),
 
   setChief: (id) =>
     set((s) => ({
@@ -520,6 +539,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   loadScenario: async (id) => {
+    markLoadStart(); // scenario-load timer (Phase 11, §5.1.4) — closed by the stream payloads
     const { data, error } = await api.GET('/scenarios/{id}', { params: { path: { id } } });
     if (error || !data) {
       console.error('Failed to load scenario', error);

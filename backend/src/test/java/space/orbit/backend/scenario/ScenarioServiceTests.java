@@ -361,6 +361,20 @@ class ScenarioServiceTests {
     }
 
     @Test
+    void recordOemExportWritesExactlyOneAuditRowNoVersion() {
+        UUID id = UUID.randomUUID();
+        existingWithBody(id, DEPUTY_TLE_BODY_V2); // owned scenario
+
+        service.recordOemExport(id, "Exported CCSDS OEM (2 craft, 362 states @ 30 s)");
+
+        ArgumentCaptor<AuditLog> aCap = ArgumentCaptor.forClass(AuditLog.class);
+        verify(auditLog).save(aCap.capture());
+        assertThat(aCap.getValue().getAction()).isEqualTo("EXPORT_OEM");
+        assertThat(aCap.getValue().getDiffSummary()).contains("2 craft");
+        verify(versions, never()).saveAndFlush(any()); // an export never mutates the scenario
+    }
+
+    @Test
     void versionDiffReportsAddedManeuverWithNumbers() {
         UUID id = UUID.randomUUID();
         existingWithBody(id, DEPUTY_TLE_BODY_V2); // ownership gate

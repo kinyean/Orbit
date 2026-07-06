@@ -151,6 +151,12 @@ instrumented). The `PointPrimitiveCollection` / LOD fallback was **not** needed.
 Re-watch this when the scenario layer (highlighted sats + orbit paths + ground
 tracks) lands on top of the catalog, and instrument an actual FPS counter then.
 
+**Status (Phase 11).** The FPS counter exists: the ⏱ performance HUD
+(`lib/perf.ts` + `PerfHud`, Decision 29) shows live globe/proximity FPS, scrub
+latency, and scenario-load time against the §5.1 targets, highlighting misses.
+Record the reference-hardware readings in the phase-11 evidence table; the LOD
+fallback remains the designed answer if the globe ever measures under 30.
+
 ---
 
 ## R8 — CZML chunk sizing trade-offs (Low impact, Medium likelihood)
