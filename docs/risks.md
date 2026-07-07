@@ -151,11 +151,19 @@ instrumented). The `PointPrimitiveCollection` / LOD fallback was **not** needed.
 Re-watch this when the scenario layer (highlighted sats + orbit paths + ground
 tracks) lands on top of the catalog, and instrument an actual FPS counter then.
 
-**Status (Phase 11).** The FPS counter exists: the ⏱ performance HUD
-(`lib/perf.ts` + `PerfHud`, Decision 29) shows live globe/proximity FPS, scrub
-latency, and scenario-load time against the §5.1 targets, highlighting misses.
-Record the reference-hardware readings in the phase-11 evidence table; the LOD
-fallback remains the designed answer if the globe ever measures under 30.
+**Status (Phase 11) — R7 has now materialized, exactly as this note predicted.** The
+FPS counter exists (the ⏱ performance HUD — `lib/perf.ts` + `PerfHud`, Decision 29), and
+readings were recorded 2026-07-07 on a browser with an **RTX 4090** (hardware WebGL, above
+the SRS mid-range bar; evidence table in [phase-11-plan.md](./phase-11-plan.md)). With the
+scenario layer alone the globe holds its 30 fps cap. But when the **full ~15.5k-dot catalog
+is overlaid on top of a scenario** — the precise trigger flagged above — the globe drops to
+**~10 fps**. It is **not** a GPU limit (a 4090 is idle here): the catalog renders as CZML
+**Entities**, whose per-frame `SampledPositionProperty` evaluation is single-threaded JS on
+the main thread. So the designed answer stands and is now *due*: the
+**`PointPrimitiveCollection` / LOD** path (superseded Decision E) is the fix for this case —
+pre-scoped in the phase plan, not yet applied. (Note: this is a documented follow-up, not a
+shipping blocker — the catalog overlay on a scenario is optional, and the common
+catalog-only and scenario-only views are fine.)
 
 ---
 
@@ -338,7 +346,7 @@ user may trust an unconverged or garbage result as a real rendezvous.
 - Documented as a feasibility / ΔV **sketch**, not a converged trajectory
   (Decision 23); Hohmann is the reliable template for demos.
 - A differential corrector (iterate the burns against the real propagators) is the
-  proper fix — see Phase 6 plan "Future improvements".
+  proper fix — see [build-history.md](./build-history.md) §Phase 6.
 
 **Trigger.** Closest approach not collapsing after a rendezvous; ΔV reported in
 km/s; the panel's ΔV warning firing.
@@ -397,7 +405,7 @@ failed-step cost on top.
 - Bail on the first domain-exit (stop re-propagating past a decay) + HOLD the trail.
 - The R8 sample cap bounds sample count (not integration steps).
 - Consider an explicit window/effort cap, or async streaming with progress, for
-  heavy numerical runs — see Phase 6 plan "Future improvements".
+  heavy numerical runs — see [build-history.md](./build-history.md) §Phase 6.
 
 **Trigger.** Scenario load beyond a few seconds; "it hangs" reports on long /
 numerical scenarios.

@@ -469,7 +469,7 @@ be expanded as we approach them.
 - US-SENSE-05 — Sensor-frame proximity-view camera mode.
 - US-EVT-01 — Acquisition / loss-of-sight events on the timeline.
 
-# Phase 8 — Environment & events ✅ (done — Decision 25, [phase-8-plan.md](./phase-8-plan.md))
+# Phase 8 — Environment & events ✅ (done — Decision 25, [build-history.md](./build-history.md))
 
 - US-ENV-01 ✅ — Sun and Moon positions at sim time (Orekit `CelestialBodyFactory`),
   streamed as LVLH unit directions (`sunVector`/`moonVector`).
@@ -484,7 +484,7 @@ be expanded as we approach them.
 - US-EVT-04 ✅ — Timeline event annotations (eclipse bands, conjunction ticks, violation marks)
   + `EnvironmentPanel`.
 
-# Phase 9 — Advanced maneuvers & analysis ✅ (done — Decision 27, [phase-9-plan.md](./phase-9-plan.md))
+# Phase 9 — Advanced maneuvers & analysis ✅ (done — Decision 27, [build-history.md](./build-history.md))
 
 ### US-MAN-06 — As Maya, I want a converged two-impulse rendezvous (not an open-loop sketch), so the deputy actually arrives at the chief. ✅ (9A)
 *Acceptance:* the two-impulse rendezvous defaults to a **differential corrector**
@@ -534,7 +534,7 @@ computes per (sensor↔target) SNR over the sampled trajectory (Friis, ~6 dB per
 band (red below threshold). *Maps to:* [UC-4](./use-cases.md); SRS §3.6. *(Optical detector NEP/QE
 detail deferred.)*
 
-# Phase 10 — Enterprise hardening ✅ (done — Decision 28, [phase-10-plan.md](./phase-10-plan.md))
+# Phase 10 — Enterprise hardening ✅ (done — Decision 28, [build-history.md](./build-history.md))
 
 - US-AUTH-02 ✅ — Real OIDC integration (OAuth2 resource-server, stateless bearer JWT; self-hosted
   Keycloak IdP; SPA auth-code + PKCE). Gated by `orbit.auth.mode` (`stub` default / `oidc`).
@@ -566,12 +566,16 @@ newly provisioned user** (`UserProvisioner` → `UserProvisionedEvent` → seede
 76 added; units + meaning on numeric fields); a `?` Help overlay (quick start / controls
 reference / mini-glossary from the glossary) + first-run hint. *Maps to:* SRS §5.6.2.
 
-### US-UX-03 — As the team, I want the §5.1 performance targets instrumented and checked, so "smooth" is measured, not eyeballed. ✅ instrumented (11C)
+### US-UX-03 — As the team, I want the §5.1 performance targets instrumented and checked, so "smooth" is measured, not eyeballed. ✅ instrumented + measured (11C)
 *Acceptance:* `lib/perf.ts` + `PerfHud` (⏱ / `?perf=1`) show live globe/proximity FPS,
 scrub latency (seek → rendered frame, last + p95), and scenario-load time, with the
-§5.1 thresholds highlighted when missed (closes the R7 FPS-counter caveat). Evidence
-table (readings on reference hardware) in [phase-11-plan.md](./phase-11-plan.md).
-*Maps to:* SRS §5.1.1–4.
+§5.1 thresholds highlighted when missed (closes the R7 FPS-counter caveat). Readings
+**recorded** (2026-07-07, browser on an RTX 4090; table in [phase-11-plan.md](./phase-11-plan.md)):
+proximity 60 fps at 1–4 craft, globe 30 fps (its cap) with the scenario layer, scrub p95 69 ms,
+10-craft SGP4 load 1.79 s. **Two documented misses** (tracked follow-ups): the full ~15.5k-dot
+catalog *overlay* drops the globe to ~10 fps (R7 — CZML-Entity CPU path; LOD/`PointPrimitiveCollection`
+mitigation pre-scoped), and a 10-craft proximity scene (the SRS ceiling) sits at ~30 fps; 2–4-craft
+scenarios hold 60. *Maps to:* SRS §5.1.1–4.
 
 ### US-IO-01 — As Omar, I want PNG snapshots of the rendered views, so I can drop them into briefings. ✅ (11B)
 *Acceptance:* Export panel captures the global view, proximity view, or both

@@ -1631,8 +1631,11 @@ the live k8s cluster install stays a Phase-10 follow-up.
   postRender, ProximityView's drawFrame, `seek`/`step`, `loadScenario` → both stream
   payloads) + a PerfHud (⏱ toggle / `?perf=1`) showing FPS per view, scrub last/p95,
   and load time with the §5.1 thresholds highlighted. Evidence table lives in
-  phase-11-plan.md (numbers recorded from reference hardware); fixes were pre-ranked
-  but **none applied unmeasured**.
+  phase-11-plan.md — recorded 2026-07-07 on a browser with an **RTX 4090** (hardware
+  WebGL, above the SRS mid-range bar): passes at typical loads, with two documented
+  misses (the full ~15.5k-dot catalog overlay → globe ~10 fps, **R7** / Decision E's
+  `PointPrimitiveCollection` path; and a 10-craft proximity scene → ~30 fps). Fixes were
+  pre-ranked but **none applied unmeasured**.
 - **OpenAPI polish + docs:** an `OpenAPI` info bean (title/version/description naming
   the WebSocket companions + per-mode auth) + `@Tag`/`@Operation` on all 31 endpoints —
   doc-only (regenerated client is comment churn; type-check proves no drift);
@@ -1762,6 +1765,10 @@ Explicitly not decided yet; each has a tracked reason.
   space). Flat non-physical lighting until the Phase 8 Sun vector.
 - **Two-body + J2 quick model.** Not needed — Orekit's fidelity modes cover the
   range.
+- **Proximity ribbon polish.** Optional fade-to-transparent at the trail window
+  edge (comet-tail) in place of the current hard cut; tune `WINDOW_SECONDS` /
+  the Catmull-Rom subdivision per feedback. A cosmetic nicety carried from the
+  Phase-6 follow-ups (Decision 23).
 - **Composable / chained maneuver templates (multi-phase RPO sequences).** Today every
   template fires its first burn at the **scenario start** (`timeRange.start`) and — for the
   CW templates `nmc`/`hold`/`glideslope` — solves from the deputy's **un-maneuvered** SGP4

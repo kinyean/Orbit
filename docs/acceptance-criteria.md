@@ -22,58 +22,64 @@ against a metric. Phase done = every criterion passes.
 
 ---
 
-## Phase 1 — Project structure & dual-container dev env
+## Phase 1 — Project structure & dual-container dev env ✅ (complete)
+
+> Checked off retroactively (2026-07-07): these criteria were met during
+> Phase 1 and have been continuously exercised by every later phase (the
+> whole stack runs on this foundation); the boxes were simply never ticked.
 
 **Infrastructure**
-- [ ] `docker compose up` from the project root starts backend, Postgres,
+- [x] `docker compose up` from the project root starts backend, Postgres,
       and frontend containers without errors.
-- [ ] Postgres data persists across container restarts via a named volume.
-- [ ] Backend reaches Postgres by Docker service name (not localhost).
-- [ ] Frontend reaches backend by Docker service name in dev.
+- [x] Postgres data persists across container restarts via a named volume.
+- [x] Backend reaches Postgres by Docker service name (not localhost).
+- [x] Frontend reaches backend by Docker service name in dev.
 
 **Database**
-- [ ] Flyway (or equivalent) runs on backend startup, applies migrations,
+- [x] Flyway (or equivalent) runs on backend startup, applies migrations,
       and is idempotent on re-run.
-- [ ] Tables exist: `users`, `scenarios`, `scenario_versions`, `audit_log`.
-- [ ] `scenarios` table has `owner_id` referencing `users.id`.
-- [ ] `users` table has a `roles` array column.
-- [ ] Migration scripts checked into version control.
+- [x] Tables exist: `users`, `scenarios`, `scenario_versions`, `audit_log`.
+- [x] `scenarios` table has `owner_id` referencing `users.id`.
+- [x] `users` table has a `roles` array column.
+- [x] Migration scripts checked into version control.
 
 **Backend**
-- [ ] Spring Boot starts and logs a healthy banner.
-- [ ] `GET /health` returns 200 with JSON body containing `version`,
+- [x] Spring Boot starts and logs a healthy banner.
+- [x] `GET /health` returns 200 with JSON body containing `version`,
       `buildTime`, `dbStatus: "up"`.
-- [ ] `GET /v3/api-docs` returns the OpenAPI 3.x JSON spec.
-- [ ] Swagger UI (or equivalent) reachable at `/swagger-ui` in dev.
-- [ ] Spring Security filter chain is configured; all endpoints pass
+- [x] `GET /v3/api-docs` returns the OpenAPI 3.x JSON spec.
+- [x] Swagger UI (or equivalent) reachable at `/swagger-ui` in dev.
+- [x] Spring Security filter chain is configured; all endpoints pass
       through it.
-- [ ] Default policy: permit-all (no auth required), dev user injected
+- [x] Default policy: permit-all (no auth required), dev user injected
       with all roles. `request.userPrincipal` populated on every request.
 - [ ] Backend logs structured JSON (correlation IDs, level, ts).
+      *(Never implemented — plain Spring Boot console logging shipped instead;
+      no later phase needed it. Revisit only if ops requires log aggregation.)*
 
 **Frontend integration**
-- [ ] A build step generates a TypeScript client from the OpenAPI spec.
-- [ ] Generated client is imported and used for at least the health check.
-- [ ] Frontend displays a small "backend: healthy" status chip on load,
+- [x] A build step generates a TypeScript client from the OpenAPI spec.
+- [x] Generated client is imported and used for at least the health check.
+- [x] Frontend displays a small "backend: healthy" status chip on load,
       proven via the generated client (not a hand-rolled fetch).
-- [ ] No regression in Phase 0 catalog UI behavior (still renders, filters
+- [x] No regression in Phase 0 catalog UI behavior (still renders, filters
       still work, time controller still ticks).
 
 **Scenario shell**
-- [ ] Empty scenario panel renders in the layout.
-- [ ] Empty composer card renders with "No chief designated."
-- [ ] Zustand store has a `composer` slice with shape
+- [x] Empty scenario panel renders in the layout.
+- [x] Empty composer card renders with "No chief designated."
+- [x] Zustand store has a `composer` slice with shape
       `{ chiefId, deputyIds, scenarioId, isDirty }` plus setters
       (`setChief`, `addDeputy`, `removeFromScenario`, `clear`).
-- [ ] Composer slice is per-slice subscribable (no whole-store reads in
+- [x] Composer slice is per-slice subscribable (no whole-store reads in
       components).
 
 **Hygiene**
-- [ ] Backend has at least one unit test that runs in CI (or local) and
+- [x] Backend has at least one unit test that runs in CI (or local) and
       passes.
-- [ ] Frontend `npm run type-check` still passes.
-- [ ] README updated with `docker compose up` instructions.
-- [ ] CLAUDE.md "build commands" section updated with backend / stack
+- [x] Frontend `npm run type-check` still passes.
+- [x] README updated with `docker compose up` instructions.
+- [x] CLAUDE.md "build commands" section updated with backend / stack
       commands.
 
 ---
@@ -171,7 +177,7 @@ against a metric. Phase done = every criterion passes.
 
 > Sliced into **3A** (scenario composition end-to-end on SGP4 — the shippable
 > Maya-facing slice) and **3B** (numerical propagator + LVLH/RIC frames — the
-> Frank-facing physics depth). See [phase-3-plan.md](./phase-3-plan.md).
+> Frank-facing physics depth). See [build-history.md](./build-history.md).
 >
 > **Phase 3A complete & verified end-to-end** (2026-06-04). New backend package
 > `scenario` (entities/repos/`ScenarioService`/`UserService`/`ScenarioBody`),
@@ -189,7 +195,7 @@ against a metric. Phase done = every criterion passes.
 > `FrameService` grew LVLH/RIC + a minimal body frame + `toRelativeState`. No
 > UI, contract, or schema change (it's proven by `./gradlew test`, not in the
 > browser — Phase 4 makes it visible). 49 backend tests pass. See
-> [phase-3b-plan.md](./phase-3b-plan.md) and Decision 20.
+> [build-history.md](./build-history.md) and Decision 20.
 
 **Propagator** *(Phase 3B ✅)*
 - [x] Numerical propagator (DP8(7), gravity ≥J4 [16×16], NRLMSISE-00 drag, SRP,
@@ -248,7 +254,7 @@ against a metric. Phase done = every criterion passes.
 
 > Sliced into **4A** (authoritative shared clock + per-scenario CZML stream —
 > the global view *plays* a loaded scenario) then **4B** (three.js proximity
-> view + relative-state + lockstep). See [phase-4-plan.md](./phase-4-plan.md).
+> view + relative-state + lockstep). See [build-history.md](./build-history.md).
 >
 > **Phase 4A complete — backend tests green + frontend type-check/build green**
 > (2026-06-11). Backend: per-scenario WebSocket `/stream/scenario/{id}`
@@ -308,7 +314,7 @@ against a metric. Phase done = every criterion passes.
 
 ## Phase 5 — Relative motion + initial maneuvers
 
-> Sliced **5A / 5B / 5C** (see [phase-5-plan.md](./phase-5-plan.md)).
+> Sliced **5A / 5B / 5C** (see [build-history.md](./build-history.md)).
 >
 > **5A complete — backend tests green + frontend build green** (2026-06-15):
 > live relative readout + backend-computed closest approach.
@@ -383,7 +389,7 @@ against a metric. Phase done = every criterion passes.
 
 ## Phase 6 — Proximity visualization
 
-> Sliced **6A / 6B / 6C** (see [phase-6-plan.md](./phase-6-plan.md), Decision 23).
+> Sliced **6A / 6B / 6C** (see [build-history.md](./build-history.md), Decision 23).
 >
 > **Phase 6 complete — backend tests green + frontend type-check/build green**
 > (2026-06-16). The bare `THREE.Points` proximity scene became a real scene:
@@ -455,7 +461,7 @@ against a metric. Phase done = every criterion passes.
 
 ## Phase 7 — Sensors & FOV
 
-> Sliced **7A / 7B** (see [phase-7-plan.md](./phase-7-plan.md), Decision 24).
+> Sliced **7A / 7B** (see [build-history.md](./build-history.md), Decision 24).
 >
 > **Phase 7 complete — backend 113 tests green + frontend type-check/build green**
 > (2026-06-18). Sensors are first-class scenario objects + backend-authoritative modeled
@@ -545,7 +551,7 @@ cone); Sun occlusion / sun-keep-out (Phase 8); GPU-depth occlusion of the drawn 
 
 ## Phase 8 — Environment & events
 
-> Sliced **8A / 8B / 8C** (see [phase-8-plan.md](./phase-8-plan.md), Decision 25).
+> Sliced **8A / 8B / 8C** (see [build-history.md](./build-history.md), Decision 25).
 >
 > **Phase 8 complete — backend 152 tests green + frontend type-check/build green**
 > (2026-06-23). New `analysis/` computers (`EclipseEventComputer`, `ConjunctionEventComputer`,
@@ -611,7 +617,7 @@ cone); Sun occlusion / sun-keep-out (Phase 8); GPU-depth occlusion of the drawn 
 
 ## Phase 9 — Advanced maneuvers & analysis
 
-> Sliced **9A / 9B / 9C / 9D** (see [phase-9-plan.md](./phase-9-plan.md), Decision 27).
+> Sliced **9A / 9B / 9C / 9D** (see [build-history.md](./build-history.md), Decision 27).
 >
 > **Complete — 9A / 9B / 9C / 9D done; backend 187 tests green + frontend type-check/build green**
 > (2026-06-29). New `analysis/` computers (`RendezvousSearchService`, `MonteCarloService`,
@@ -697,7 +703,7 @@ cone); Sun occlusion / sun-keep-out (Phase 8); GPU-depth occlusion of the drawn 
 
 ## Phase 10 — Enterprise hardening
 
-> Sliced **10A / 10B / 10C** (see [phase-10-plan.md](./phase-10-plan.md), Decision 28).
+> Sliced **10A / 10B / 10C** (see [build-history.md](./build-history.md), Decision 28).
 >
 > **Phase 10 complete — backend 203 tests green + frontend type-check green + Helm chart
 > `helm lint`/`helm template` clean** (2026-07-02). Activates the Decision-16 seams
@@ -766,9 +772,10 @@ SRS's auth/deploy requirements are met by what shipped.
 > **Phase 11 complete — backend 217 tests green + frontend type-check/build green**
 > (2026-07-06). Scope extended (with the user) beyond the roadmap bullet to complete SRS
 > §4.2: CCSDS **OEM export** (US-IO-06) + **events JSON/CSV export** (US-IO-07) landed
-> alongside PNG/MP4. New dep: `mp4-muxer` (approved). Remaining manual items are the
-> browser click-throughs + the §5.1 PerfHud readings on reference hardware (tracked in
-> the phase plan's evidence table).
+> alongside PNG/MP4. New dep: `mp4-muxer` (approved). The §5.1 PerfHud readings are now
+> **recorded** (2026-07-07, RTX 4090 — see the phase plan's evidence table): passes at
+> typical loads, with two documented misses (full-catalog overlay ~10 fps / R7; 10-craft
+> proximity ~30 fps). Remaining manual items are the browser click-throughs.
 
 **11B — Export (SRS §4.2; US-IO-01/02/06/07)**
 - [x] Capture seam: both viewports register `{canvas, renderNow, setExportMode}` in
@@ -823,10 +830,17 @@ SRS's auth/deploy requirements are met by what shipped.
       latency, load-click→both-stream-payloads timer) + `PerfHud` (⏱ toggle / `?perf=1`)
       with the §5.1 thresholds highlighted when missed. Closes R7's "instrument an actual
       FPS counter" caveat.
-- [ ] §5.1 evidence recorded from the PerfHud on reference hardware (proximity ≥60 fps with
-      ≤10 craft; globe ≥30 fps with the full catalog + scenario layer; scrub p95 ≤200 ms;
-      24 h numerical load ≤5 s) — table in [phase-11-plan.md](./phase-11-plan.md); ranked
-      fixes pre-scoped, none applied unmeasured.
+- [x] §5.1 evidence recorded from the PerfHud (2026-07-07, browser on an RTX 4090 —
+      hardware WebGL, above the SRS mid-range bar; table in [phase-11-plan.md](./phase-11-plan.md)).
+      **Passes:** proximity 60 fps at 1–4 craft (all demos); globe steady 30 fps (its cap)
+      with the scenario layer; scrub 43 ms / p95 69 ms; 10-craft SGP4 load 1.79 s.
+      **Two documented misses (tracked follow-ups, not blockers):** globe ~10 fps with the
+      full ~15.5k-dot catalog *overlaid* (R7 — CZML-Entity per-frame eval is CPU-bound on the
+      main thread, GPU-irrelevant; LOD/`PointPrimitiveCollection` mitigation pre-scoped), and
+      proximity ~30 fps at the 10-craft SRS *ceiling* (a per-frame main-thread cost — not the
+      cheap ribbon `setSplit` — needs a browser profile). §5.1.4 heavy-numerical (10-craft
+      24 h numerical) is the R18 outlier (server benchmark didn't finish in 6.5 min), not the
+      ≤5 s baseline. Ranked fixes pre-scoped; none applied unmeasured.
 - [x] OpenAPI polish (§4.3.3): info bean (title/version/description incl. WebSocket
       companions + per-mode auth, bearer scheme) + `@Tag`/`@Operation` on all 31 endpoints
       (8 tag groups); regenerated client is doc-only churn — `type-check` proves no drift.

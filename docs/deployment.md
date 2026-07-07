@@ -10,7 +10,7 @@ the WHY.
 | | Auth | Runtime | TLS | Secrets |
 |---|---|---|---|---|
 | **Local dev** | stub (dev user) | `docker compose up` | none | compose defaults |
-| **Local dev + OIDC** | Keycloak | `docker compose -f docker-compose.yml -f docker-compose.oidc.yml up` | none | compose (dev creds) |
+| **Local dev + OIDC** | Keycloak | `docker compose -f docker-compose.yml -f docker-compose.oidc.yml up` | self-signed @ nginx :8443 | compose (dev creds) |
 | **Prod / on-prem** | OIDC (Keycloak or external IdP) | `helm install` on Kubernetes | cert-manager @ ingress | k8s Secrets |
 
 ## Auth modes (US-AUTH-02/03)
@@ -28,9 +28,15 @@ or the runtime `/env.js` (frontend):
 
 **Issuer consistency (the one thing to get right):** the token's `iss` must be a
 single URL both the browser and the backend resolve to the same Keycloak.
-- *Compose+OIDC:* `http://host.docker.internal:8082/realms/orbit` (backend reaches
-  it via `extra_hosts: host-gateway`; add `host.docker.internal` to the browser
-  machine's hosts if not on Docker Desktop — see `docker-compose.oidc.yml`).
+- *Compose+OIDC:* the whole stack sits behind one **HTTPS nginx front on :8443**
+  (self-signed cert in `deploy/nginx/certs/`; HTTPS because OIDC PKCE needs
+  Web Crypto, which browsers expose only in a secure context). Frontend,
+  Keycloak (`/realms`, `/resources`, `/admin`), and `/api` share that single
+  origin, so the issuer is `https://<host>:8443/realms/orbit` for browser and
+  backend alike. The backend validates the issuer *string* but fetches JWKS over
+  the docker network (`http://keycloak:8080/...`) so it never has to trust the
+  self-signed cert. The `docker-compose.oidc.yml` header comment lists every
+  place to update if the host/IP or port changes.
 - *Helm:* Keycloak sits behind the ingress at its own host (`keycloak.host`), so
   `auth.issuerUrl = https://<keycloak.host>/realms/orbit` is one public URL both
   sides use — no mismatch.
@@ -40,9 +46,10 @@ single URL both the browser and the backend resolve to the same Keycloak.
 ```
 docker compose -f docker-compose.yml -f docker-compose.oidc.yml up --build
 ```
-Then open the frontend and sign in as a seed user (`deploy/keycloak/orbit-realm.json`):
-`maya/maya` (mission_planner), `frank/frank` (flight_dynamics_engineer, admin),
-`gita/gita` (flight_dynamics_engineer).
+Then open **https://\<host\>:8443/** (accept the self-signed certificate) and sign
+in as a seed user (`deploy/keycloak/orbit-realm.json`): `maya/maya`
+(mission_planner), `frank/frank` (flight_dynamics_engineer, admin), `gita/gita`
+(flight_dynamics_engineer).
 
 ## Kubernetes install (Helm)
 

@@ -187,23 +187,59 @@ drop for the new dep) serves `mp4-muxer`; the OEM endpoint is live and
   snapshot pixels + composite at several split ratios; a ~10 s MP4 of the NMC
   demo (plays in Chrome/VLC; cancel restores playback); OEM download via the
   panel in oidc mode + `EXPORT_OEM` visible in the Audit panel; a fresh OIDC user
-  (`gita/gita`) sees the 5 demos on first list; first-run hint/Help flows; and
-  the **§5.1 PerfHud readings on reference hardware** (record numbers below when
-  taken).
+  (`gita/gita`) sees the 5 demos on first list; first-run hint/Help flows. The
+  **§5.1 PerfHud readings are now recorded** (2026-07-07, RTX 4090 — see the
+  evidence table below; two documented misses: full-catalog overlay + 10-craft
+  proximity).
 
-### §5.1 evidence (to record from the PerfHud, reference hardware)
+### §5.1 evidence (recorded from the PerfHud, 2026-07-07)
 
-| Target | Check | Measured |
-|---|---|---|
-| Proximity ≥60 fps (§5.1.1) | NMC demo + a 10-craft composed scenario, 60 s sustained | _pending_ |
-| Global ≥30 fps (§5.1.2) | full catalog + scenario layer (capped at `targetFrameRate` 30) | _pending_ |
-| Scrub ≤200 ms (§5.1.3) | timeline drag, HUD p95 | _pending_ |
-| 24 h load ≤5 s (§5.1.4) | demo window widened to 24 h, numerical fidelity | _pending_ |
+**Reference hardware.** Browser on an **NVIDIA RTX 4090** (Windows; hardware WebGL via
+ANGLE/D3D11 — confirmed from the WebGL renderer string, and *well above* the SRS §5.1
+"mid-range discrete GPU, 16 GB RAM" bar), rendering the app served from the Linux dev
+server (Xeon Gold 6542Y). FPS is a browser/GPU read; scrub + load include backend +
+network. So a sub-target FPS here is a CPU/main-thread bottleneck, not a GPU limit.
 
-Ranked fix candidates if a number misses (pre-scoped, Decision 29): ribbon
-`setSplit` throttling; parallel per-role sampling in `loadAndEncode` (bounded
-pool + ordered collect — the MonteCarloService trick); catalog `CallbackProperty`
-work. None applied yet — measure first.
+| Target | Config | Measured | Verdict |
+|---|---|---|---|
+| Proximity ≥60 fps (§5.1.1) | 1–4 craft (all 5 demos), catalog hidden | 60 | ✅ |
+| Proximity ≥60 fps (§5.1.1) | **10 craft** (SRS ceiling), catalog hidden, 1× | ~30 | ❌ *only at the 10-craft ceiling* |
+| Global ≥30 fps (§5.1.2) | scenario layer, catalog hidden (scenario-mode default) | 30 (the cap) | ✅ |
+| Global ≥30 fps (§5.1.2) | **+ full ~15.5k-dot catalog** overlaid | ~10 | ❌ *R7 (below)* |
+| Scrub ≤200 ms (§5.1.3) | timeline drag, HUD p95 | 43 ms · p95 69 ms | ✅ |
+| 24 h load ≤5 s (§5.1.4) | 10-craft SGP4 | 1.79 s | ✅ |
+| *(playback ≥400×)* | any of the above | both views ~20 | *degrades — not a §5.1 target* |
+
+**Two documented misses, different causes:**
+- **Globe + full catalog (~10 fps).** The ~15,500-satellite catalog renders as CZML
+  **Entities**, whose per-frame `SampledPositionProperty` evaluation is single-threaded
+  JS on the main thread — GPU-irrelevant, so the RTX 4090 can't help. This is **R7**
+  materializing exactly as its Phase-2 status note predicted ("re-watch when the scenario
+  layer lands on top of the catalog"). The globe *meets* §5.1.2 with the scenario layer
+  alone (catalog hidden is the scenario-mode default); the miss is specifically the
+  optional full-catalog overlay. Mitigation: `PointPrimitiveCollection` / LOD instead of
+  CZML Entities (superseded Decision E) — the pre-scoped catalog work below.
+- **Proximity at 10 craft (~30 fps).** A per-frame main-thread cost that scales with craft
+  count — **not** the ribbon `setSplit` (already O(log n) + two `setDrawRange` calls);
+  pinning it down needs a browser Performance profile. Shows only at the SRS *ceiling* of
+  10 craft; all five demos and typical 2–4-craft scenarios hold 60. The two views are
+  independent rAF loops (Globe capped at 30, ProximityView uncapped) but share the JS main
+  thread, so they read the same number when the combined per-frame work exceeds the budget.
+
+**§5.1.4 caveat.** 1.79 s is a 10-craft **SGP4** load. A 10-craft *full-numerical* 24 h
+scenario is the **R18** heavy outlier — a server-side `loadAndEncode` benchmark (10 craft ×
+2880 samples, DP8(7) + J16 + drag + SRP + third-body) did **not** finish in 6.5 min — so
+§5.1.4 holds for SGP4 / measured / typical scenarios, with heavy-numerical the known R18
+exception (bail-on-decay + the R8 sample cap bound it, but a 10-craft numerical 24 h build
+is not a ≤5 s operation; a chief + 1–2 numerical deputies over 24 h is).
+
+Ranked fix candidates for the misses (pre-scoped, Decision 29): catalog
+`PointPrimitiveCollection` / LOD (the §5.1.2 fix — R7 / Decision E); a browser profile of
+the 10-craft proximity loop before any change (§5.1.1); parallel per-role sampling in
+`loadAndEncode` (the §5.1.4 heavy-numerical case — bounded pool + ordered collect, the
+MonteCarloService trick). None applied — the passes cover typical loads; the misses are
+tracked follow-ups, not shipping blockers (10 craft + full-catalog overlay is the extreme
+corner, and the demos/typical scenarios pass).
 
 ## Deferred (Decision 29)
 

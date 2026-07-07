@@ -367,3 +367,71 @@ instants.
   refine), deterministic (R11). The client pairs them into in-view windows on the timeline.
   v1: the FOV test is a circular bound (a rect uses its larger half-angle); occlusion is
   Earth-only; the Sun is Phase 8. See Decision 24.
+
+#### Phase 8 additive fields (Sun/Moon, eclipse, conjunctions, constraints — `VERSION` stays `"1"`, R12)
+
+```jsonc
+{
+  // … all of the above, plus:
+  "sunVector":  [ t, x,y,z,  … ],    // stride 4; Sun unit direction in the chief-LVLH scene
+  "moonVector": [ t, x,y,z,  … ],    // stride 4; same layout as sunVector
+  "eclipses": [                      // per-craft shadow crossings (US-ENV-02); omitted if empty
+    { "type": "penumbra-ingress", "noradId": 25545, "epoch": "2026-06-11T00:31:04Z" },
+    { "type": "umbra-ingress",    "noradId": 25545, "epoch": "2026-06-11T00:33:40Z" },
+    { "type": "umbra-egress",     "noradId": 25545, "epoch": "2026-06-11T01:06:12Z" },
+    { "type": "penumbra-egress",  "noradId": 25545, "epoch": "2026-06-11T01:08:47Z" }
+  ],
+  "conjunctions": [                  // intra-scenario closest approaches below the
+    {                                // scenario's missDistanceThresholdM (US-EVT-02); omitted if empty
+      "aNoradId": 25544, "bNoradId": 25545,
+      "tcaEpoch": "2026-06-11T00:42:10Z", "missDistanceM": 1842 }
+  ],
+  "violations": [                    // constraint violations (US-EVT-03); omitted if empty
+    { "type": "violation-start",     // or "violation-end"
+      "constraintId": "…", "kind": "sun-keep-out",   // or "approach-corridor"
+      "hostId": 25544, "sensorId": "…",              // sensorId only for sun-keep-out
+      "targetId": 25545, "epoch": "2026-06-11T00:47:00Z",
+      "valueDeg": 14.21, "limitDeg": 20.0 }
+  ]
+}
+```
+
+- **`sunVector` / `moonVector`**: flat `[t, x, y, z, …]` unit-direction series in the
+  chief-LVLH scene, on the render grid (`t` whole seconds since `epoch`; components to
+  1e-6). The client drives the proximity view's `DirectionalLight` (terminator, craft
+  illumination) from `sunVector`. Omitted when unavailable — older clients ignore them.
+- **`eclipses`**: ingress/egress boundary crossings of the Earth's conical shadow per
+  spacecraft, `type` ∈ {`penumbra-ingress`, `umbra-ingress`, `umbra-egress`,
+  `penumbra-egress`}. The client pairs them into umbra/penumbra timeline bands and dims
+  craft materials while shadowed. Earth shadow only (lunar eclipse of a satellite is
+  negligible). Computed from geocentric ECI positions captured in the sampling loop —
+  deterministic (R11). See Decision 25.
+- **`conjunctions`**: every unordered pair of scenario craft whose closest approach over
+  the window falls below the scenario's `missDistanceThresholdM` (schema v5, default
+  ~5 km) — canonical `aNoradId < bNoradId`, golden-section-refined on the sampled arrays.
+  Drawn as timeline ticks. (Catalog screening is a separate REST request/response, not a
+  stream field.)
+- **`violations`**: sun-keep-out / approach-corridor constraint checks (`kind`), emitted
+  as start/end crossings (`type`); `valueDeg`/`limitDeg` give the offending angle vs the
+  configured limit (0.01° rounding). `sensorId` is present only for sun-keep-out (the
+  boresight comes from the named sensor).
+
+#### Phase 9 additive field (link budget — `VERSION` stays `"1"`, R12)
+
+```jsonc
+{
+  // … all of the above, plus:
+  "linkBudgets": [                   // per (link-budget sensor ↔ target) SNR series
+    { "hostId": 25544, "sensorId": "…", "targetId": 25545,
+      "kind": "rf",                  // or "optical"
+      "thresholdDb": 6.0,
+      "series": [ t, snr,  t, snr,  … ] }   // stride 2: t whole seconds, SNR in dB (0.1 dB)
+  ]
+}
+```
+
+- **`linkBudgets`** (US-EVT-05): one entry per sensor that carries a `LinkBudget`
+  (`ScenarioBody` schema v6) × target craft. `series` is a flat `[t, snr, …]` array on a
+  strided subset of the render grid (bounded point count); a non-finite SNR is encoded as
+  `-999`. The client draws a timeline SNR band, red below `thresholdDb`. Friis model —
+  see Decision 27. Omitted when no sensor has a link budget.

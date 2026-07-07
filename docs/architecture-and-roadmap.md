@@ -325,7 +325,7 @@ Sliced into **3A** (scenario composition on SGP4) then **3B** (physics depth).
 - Earth backdrop **decided: yes** — true-scale sphere along −R from a new additive
   `chiefRadiusM` stream field, with an Earth/Stars/Off toggle; flat non-physical
   lighting until the Phase 8 Sun vector. Derived ram/LVLH orientation is a labeled
-  estimate until Phase 7 attitude. See Decision 23, [phase-6-plan.md](./phase-6-plan.md).
+  estimate until Phase 7 attitude. See Decision 23, [build-history.md](./build-history.md).
 
 ### Phase 7 — Sensors & FOV ✅ (done)
 - Sensor model (type, FOV geometry, range, pointing) — cone + rectangular, body-fixed;
@@ -336,11 +336,11 @@ Sliced into **3A** (scenario composition on SGP4) then **3B** (physics depth).
   Phase 8 with the Sun vector; inter-spacecraft is negligible for point targets.*
 - Sensor-frame view (camera anchored along a sensor's boresight).
 - Acquisition / loss-of-sight events (`analysis/SensorEventComputer`) on the timeline.
-- See [phase-7-plan.md](./phase-7-plan.md), Decision 24. *(Deferred: CCSDS AEM measured
+- See [build-history.md](./build-history.md), Decision 24. *(Deferred: CCSDS AEM measured
   attitude, gimbaled pointing, frustum/polygonal FOV, sun-keep-out.)*
 
 ### Phase 8 — Environment & events ✅ (done)
-Sliced 8A/8B/8C (see [phase-8-plan.md](./phase-8-plan.md), Decision 25). Rides the Phase-7
+Sliced 8A/8B/8C (see [build-history.md](./build-history.md), Decision 25). Rides the Phase-7
 architecture (sampled-trajectory `analysis/` computers, additive `scenario-relative` fields —
 `VERSION` stays `"1"`, forward-additive `ScenarioBody` schema **v5**, single audited
 `ScenarioService`). Backend 152 tests green; frontend type-check + build green; verified
@@ -358,7 +358,7 @@ end-to-end on the dev stack.
   two-stage shell-prune + fine refine) → sorted results table + CSV (UC-7); a snapshot vs the
   live catalog (R11 caveat).
 
-### Phase 9 — Advanced maneuvers & analysis ✅ (done — see [phase-9-plan.md](./phase-9-plan.md), Decision 27)
+### Phase 9 — Advanced maneuvers & analysis ✅ (done — see [build-history.md](./build-history.md), Decision 27)
 Sliced 9A/9B/9C/9D. Rides the Phase 4–8 architecture (sampled-trajectory `analysis/` computers,
 additive `scenario-relative` fields — `VERSION` stays `"1"`, forward-additive `ScenarioBody`
 schema **v6**, single audited `ScenarioService`). Backend 187 tests green; frontend type-check +
@@ -379,7 +379,7 @@ build green; verified on the dev stack. Resolves **R16**; introduces the first *
 - ✅ **9D — Link budget / SNR overlays** for RF and optical sensors (`LinkBudgetComputer`,
   schema-v6 `LinkBudget` on a sensor). ⬜ *Deferred:* optical detector NEP/QE detail.
 
-### Phase 10 — Enterprise hardening ✅ (done — see [phase-10-plan.md](./phase-10-plan.md), Decision 28)
+### Phase 10 — Enterprise hardening ✅ (done — see [build-history.md](./build-history.md), Decision 28)
 Sliced 10A/10B/10C. Activates the Decision-16 seams (additive, not a rewrite). Backend
 **203 tests green**; frontend type-check green; Helm chart `helm lint` + `helm template` clean.
 - ✅ **10A — Real auth + RBAC.** OIDC **resource-server** (stateless bearer JWT) gated by
@@ -415,8 +415,9 @@ Sliced 11A/11B/11C. Scope extended (with the user) to complete SRS §4.2. Backen
 - ✅ **11C — Perf + docs.** `perf.ts` + PerfHud (live FPS / scrub latency / load time
   vs the §5.1 targets — the R7 FPS counter, finally instrumented); OpenAPI info bean +
   `@Tag`/`@Operation` on all 31 endpoints; [user-guide.md](./user-guide.md); root
-  README. ⬜ *§5.1 readings on reference hardware pending (evidence table in the
-  phase plan).*
+  README. ✅ *§5.1 readings recorded (2026-07-07, RTX 4090; evidence table in the phase
+  plan) — passes at typical loads; two documented misses (full-catalog overlay ~10 fps / R7;
+  10-craft proximity ~30 fps), mitigations pre-scoped.*
 
 ### Measured-data ingestion *(feature track, off the phase line — Decision 26)*
 Real measured telemetry (WOD CSV: GNSS ECI pos/vel + ADCS quaternions) imported as a
@@ -443,12 +444,11 @@ Reusable and **first-class going forward**:
 - Zustand store pattern (Decision 5).
 - Cesium ion configuration via `.env` and the existing token.
 
-Repointed in Phase 2 (no longer fetched client-side):
-- [lib/celestrak.ts](../frontend/src/lib/celestrak.ts) — TLE
-  ingestion moves to the backend (Decision 15); the frontend consumes the
-  backend catalog stream instead.
-- [lib/propagator.ts](../frontend/src/lib/propagator.ts) —
-  satellite.js drops out; the frontend no longer propagates.
+Repointed in Phase 2 (no longer fetched client-side; both files deleted then):
+- `lib/celestrak.ts` — TLE ingestion moved to the backend (Decision 15); the
+  frontend consumes the backend catalog stream instead.
+- `lib/propagator.ts` — satellite.js dropped out; the frontend no longer
+  propagates.
 
 The existing TimeController, top bar, and info panel survive as UI primitives
 and get rewired to scenario state in Phases 1–4.

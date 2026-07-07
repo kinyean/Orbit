@@ -19,201 +19,69 @@ the **HOW + WHEN**. `decisions.md` is the **WHY**. `personas.md` is
 `user-stories.md` is the **BACKLOG** (story-by-story, phase-by-phase).
 `glossary.md` is the **DOMAIN VOCABULARY**. `risks.md` is **WHAT COULD GO
 WRONG**. `acceptance-criteria.md` is **WHAT "DONE" LOOKS LIKE** per phase.
+`docs/dev-guide.md` (not embedded here) is the **HANDOVER GUIDE** — module maps,
+runtime pipeline narratives, change recipes, gotchas. `docs/build-history.md` is
+the **frozen build narrative** (the merged former phase plans).
 The previous public-tracker product plan was retired in the 2026-05-28 SRS
 pivot — see `decisions.md` "Superseded" section for the carried-over
 rationale.
 
-## Current phase
-**Phase 11 complete (11A/11B/11C) — polish & ship. The roadmap's eleven phases are done.**
-Backend **217 tests green**, frontend type-check + `vite build` green. Scope extended (with
-the user) beyond the roadmap bullet to complete **SRS §4.2** (OEM + events export in, not
-just PNG/MP4). One new frontend dep: **`mp4-muxer`** (image rebuilt + anon volume dropped).
-See [phase-11-plan.md](docs/phase-11-plan.md), Decision 29.
-- **11B — export (§4.2 complete).** A capture seam (`frontend/src/export/captureRegistry.ts`:
-  each viewport registers `{canvas, renderNow, setExportMode}`; pixel reads are **same-task**
-  after an explicit render — no `preserveDrawingBuffer`, Decision 29). **PNG** snapshots
-  (global/proximity/composite + caption). **MP4** = deterministic frame-stepped offline render
-  (pause → `setCurrentTime` per frame via the existing writer path → WebCodecs H.264 →
-  `mp4-muxer`; codec ladder behind `isConfigSupported`; ≤1800 frames; cancel restores clock +
-  loops in `finally`; Chromium-first, non-WebCodecs browsers get a disabled tooltip).
-  **Events JSON/CSV** client-side from the stream buffer (all five event kinds, pure builders
-  in `export/eventsExport.ts`). **CCSDS OEM export**: `GET /scenarios/{id}/export/oem`
-  (`io/OemExportService` — ScreeningService pattern, real providers incl. maneuvered/finite
-  and measured-clipped-to-span; Orekit `OemWriter`; creation date pinned to the version stamp
-  → **byte-identical rerun**, round-tripped through `OemParser` in tests; **audited**
-  `EXPORT_OEM`, no version row — the narrow audited-export precedent). `ExportPanel` in the UI.
-- **11A — usability (§5.6).** Demo set grown to **five** (new: sensor/link-budget inspection,
-  eclipse 6 h, V-bar station 2 km behind — each validated in `SampleScenarioFormationTests`)
-  and seeded **per user on first login**: `scenario/UserProvisioner` creates the user row in
-  `REQUIRES_NEW` (fixes the readOnly-tx provisioning flush quirk) + publishes one
-  `UserProvisionedEvent`; the seeder listens `AFTER_COMMIT`; `seedIfAbsent` is now
-  `REQUIRES_NEW` (per-demo isolation + the after-commit-listener commit trap;
-  `UserProvisioningSeedTests`). `?` **Help overlay** + one-time first-run hint; tooltip audit
-  (76 `title=` added — every interactive control covered).
-- **11C — perf + docs.** `lib/perf.ts` + **PerfHud** (⏱ toggle / `?perf=1`): live per-view FPS,
-  scrub latency (seek → rendered frame), scenario-load time, §5.1 thresholds highlighted (the
-  R7 FPS counter). OpenAPI **info bean** + `@Tag`/`@Operation` on all 31 endpoints (doc-only;
-  regenerated client has no type drift). [docs/user-guide.md](docs/user-guide.md) (UC-mapped) +
-  a root [README.md](README.md) (new). **Remaining manual:** browser click-throughs (PNG/MP4/
-  OEM-in-oidc, fresh-OIDC-user demos) + recording the §5.1 PerfHud readings on reference
-  hardware — the evidence table is in the phase plan. **Deferred (Decision 29):** WebM
-  fallback; link-budget series export; OEM/AEM *import* (measured slice 3); bundle
-  code-splitting; the live cluster install (Phase-10 follow-up).
+## Project status
 
-**Phase 10 complete (10A/10B/10C) — enterprise hardening.** Backend **203 tests green**,
-frontend type-check green, Helm chart `helm lint` + `helm template` clean. Activates the
-Decision-16 seams **additively** (auth defaults to `stub`, so the prior dev loop + all earlier
-tests are unaffected). See [phase-10-plan.md](docs/phase-10-plan.md), Decision 28.
-- **10A — real auth + RBAC.** OIDC **resource-server** (stateless bearer JWT) gated by
-  `orbit.auth.mode` (`stub` default / `oidc`); `SecurityConfig` two-chain split;
-  `JwtAuthenticationConverter` maps Keycloak `realm_access.roles` → `ROLE_*` (principal =
-  email); `UserService` syncs `sub`+roles. Ownership already enforced (non-owner → 404);
-  capability role rules added. **WebSocket auth** via `?access_token=` (query-param bearer
-  resolver → existing handshake interceptor unchanged). Frontend `auth/` module
-  (`react-oidc-context` PKCE + Bearer middleware + stream token + `UserChip`). Self-hosted
-  **Keycloak** dev overlay (`docker-compose.oidc.yml` + `deploy/keycloak/orbit-realm.json`).
-  New deps: `spring-boot-starter-oauth2-resource-server`, `react-oidc-context`+`oidc-client-ts`.
-- **10B — governance & trust.** Audit-log + version-history REST (`GET /scenarios/{id}/audit`,
-  `/versions`, owner-gated) + `AuditLogPanel`; end-to-end **reproducibility** tests (byte-identical
-  `loadAndEncode` across SGP4/numerical/maneuvered/finite-burn + MC same-seed); **§5.2 validation
-  suite** (`validation/ValidationConformanceTest`) + [validation-conformance.md](docs/validation-conformance.md)
-  (AIAA 2006-6753 inherited from Orekit, R2 — we validate correct integration).
-- **10C — deployment.** Prod frontend image (`frontend/Dockerfile.prod`, nginx + runtime `/env.js`);
-  **Helm chart** [deploy/helm/orbit](deploy/helm/orbit) (backend/frontend/Keycloak Deployments,
-  Postgres StatefulSet, cert-manager **TLS** at split api/web/keycloak Ingresses, k8s **Secrets**,
-  external-DB/IdP + GitOps toggles); offline bundle [scripts/bundle.sh](scripts/bundle.sh);
-  [deployment.md](docs/deployment.md). **Dev stays on Compose.** **Deferred (Decision 28):** SAML2;
-  production Keycloak HA; external golden vectors; a prod Compose path. **Phase 11 next** — polish & ship.
+**All eleven roadmap phases are complete** (Phase 11 shipped 2026-07-06). Backend
+**217 tests green**; frontend type-check + `vite build` green. The per-phase build
+narrative is curated in [build-history.md](docs/build-history.md); the WHY per phase
+is `decisions.md` (Decisions 19–29); done-state is `acceptance-criteria.md`. Current
+shapes: `ScenarioBody` schema **v6**; streaming contract `VERSION = "1"` (all
+additions ever made were additive). One-line map of what exists:
 
-**Phase 9 complete (9A/9B/9C/9D) — advanced maneuvers & analysis.** Backend 188
-tests green, frontend type-check + build green. Rides the Phase 4–8 architecture exactly
-(sampled-trajectory `analysis/` computers, additive `scenario-relative` fields with `VERSION`
-still `"1"`, forward-additive `ScenarioBody` schema **v6**, single audited `ScenarioService`).
-**Resolves R16**; introduces the first **seeded RNG** (determinism held — per-sample seed +
-ordered collect). See [phase-9-plan.md](docs/phase-9-plan.md), Decision 27. **Post-9 additive
-change (2026-07-02):** the maneuver templates + `RendezvousSearchService` now plan against a
-**measured-ephemeris chief** (e.g. an imported TELEOS-2 dataset), not just a frozen TLE, via
-`scenario/ChiefStateResolver` + the shared `MeasuredEphemerisFactory`; `RendezvousCorrector.correct`
-now takes a `Propagator` (so a measured chief works) and fast-refuses ΔV-dominated seeds. Deputies
-stay TLE-backed (you don't maneuver the truth). This is the precondition for the deferred
-composable-templates work (decisions.md).
-- **9A — flight-ready rendezvous (closes R16).** `scenario/RendezvousCorrector` — a differential
-  corrector (damped Gauss-Newton/LM + backtracking line search, domain-exit fallback, ΔV/iter caps)
-  against the **real** propagators; the two-impulse template defaults `corrected=true`,
-  non-convergence falls back to the open-loop seed + an audit warning (not a 422).
-  `analysis/RendezvousSearchService` — an arrival × revolution two-body Lambert ΔV grid (serial
-  chief-grid + parallel cells). `ManeuverTemplateService.phasing` — a co-elliptic in-track sketch.
-  New REST `POST /maneuvers/rendezvous/search`, `/maneuvers/phasing`.
-- **9B — CW close-range templates + finite burns.** `prop/CwTargeting` (analytic CW STM blocks
-  matching `CwPropagation` + `twoImpulse`, null at the integer-rev singularity) → `ManeuverTemplateService`
-  `nmc` (in-track drift-cancel `vy=−2nx`) + `hold` (CW two-impulse to a V-bar/R-bar point). New
-  REST `POST /maneuvers/nmc`, `/maneuvers/hold`. **Finite burns (US-MAN-11):** `Impulse`/`Maneuver`
-  gain optional `thrustN`/`ispSec` (v6-additive; null → impulsive); `PropagationService.buildManeuvered`
-  realises a finite burn as an Orekit `ConstantThrustManeuver` of the Tsiolkovsky duration that
-  achieves the ΔV (centred on the epoch → collapses to the impulse as thrust→∞; mass depleted via the
-  rocket equation). CW/impulse-equivalent paths treat it as impulsive at the epoch (= midpoint).
-  `ManeuverPanel` finite toggle (thrust + Isp). **Glideslope (US-MAN-09):** a constant-closing-rate
-  V-bar/R-bar approach discretized into chained CW two-impulse legs (`ManeuverTemplateService.glideslope`)
-  + a final park burn; `POST /maneuvers/glideslope`. **Closed-loop station-keeping (US-MAN-10):**
-  periodic corrective burns holding a V-bar/R-bar point — genuinely closed-loop (each correction
-  rebuilds the deputy's real numerical propagator with the corrections so far, reads back its drifted
-  relative state, and re-aims via CW); `POST /maneuvers/station-keep`.
-- **9C — Monte Carlo + covariance (UC-6).** `analysis/MonteCarloService` perturbs the deputy ECI
-  seed (Gaussian pos/vel) + maneuver ΔV (mag + pointing), propagates each sample in a **bounded**
-  `ForkJoinPool` (≤6, caps memory), aggregates the cloud + per-epoch covariance ellipsoids
-  (Hipparchus eigendecomposition → canonicalized → three.js quaternion via the extracted
-  `FrameService.matrixToQuaternionXyzw`). Deterministic despite RNG: **per-sample**
-  `SplittableRandom(mix(seed,i))`, fixed draw order, index-ordered collect, canonicalized
-  eigenvectors. Default 100, cap 500 (each sample = a full numerical prop, R18). New REST
-  `POST /scenarios/{id}/monte-carlo`; `MonteCarloPanel.tsx` + `proximity/montecarlo.ts` (cloud +
-  3σ shells).
-- **9D — link budget / SNR (US-EVT-05).** `ScenarioBody` schema **v6** adds an optional
-  `LinkBudget` on a `Sensor` (forward-additive; no DB migration). `analysis/LinkBudgetComputer`
-  on the sampled trajectory — Friis `SNR(r)=EIRP+G/T−Lfs(r)+228.6−10log10(B)` (~6 dB per
-  range-doubling); streamed additively as `linkBudgets` (strided). `SensorPanel` link-budget
-  fields + `Timeline` SNR band. **Deferred:** optical detector NEP/QE detail.
+- **Phase 1** — dual-container dev env, Flyway schema (owner/roles from V1), OpenAPI
+  client, Spring Security stub.
+- **Phase 2** — Orekit SGP4 core + `FrameService` v1; the shared gzip-CZML catalog
+  stream (~15.5k sats) + globe browsing (Decision 18 camera).
+- **Phase 3** — scenario CRUD + immutable versioning + audit through the single
+  `ScenarioService` (frozen-TLE jsonb bodies, Decision 19); numerical propagator
+  (DP8(7), J4+, drag, SRP, third-body) + LVLH/RIC frames (Decision 20).
+- **Phase 4** — one authoritative clock (single rAF `clockEngine` writer) +
+  per-scenario precompute-once streams (`scenario-czml` + `scenario-relative`);
+  three.js proximity view in lockstep (Decisions 11, 21).
+- **Phase 5** — relative readout + backend closest approach + distance chart
+  (Decision 22); impulsive ΔV maneuvers (schema v2, audited, numerical
+  re-propagation); CW fidelity + Hohmann/Lambert templates.
+- **Phase 6** — proximity scene: procedural models + GLTF-swap seam, windowed
+  trajectory ribbons, camera modes, Earth backdrop from `chiefRadiusM`
+  (Decision 23).
+- **Phase 7** — sensors as scenario objects (schema v3) + backend-authoritative
+  modeled attitude (streamed quaternion) + FOV volumes + AOS/LOS events computed
+  from the sampled trajectory (Decision 24).
+- **Phase 8** — Sun/Moon LVLH directions → real lighting + terminator; eclipse,
+  intra-scenario conjunctions, sun-keep-out/approach-corridor constraints
+  (schema v5); catalog conjunction screening (Decision 25).
+- **Phase 9** — rendezvous differential corrector (resolves R16) + arrival×rev ΔV
+  search + phasing/NMC/hold/glideslope/station-keep templates + finite burns +
+  Monte Carlo (the first seeded RNG — determinism held, R21) + link budget
+  (schema v6, Decision 27). Post-9 additive: templates plan against a
+  **measured-ephemeris chief** (`scenario/ChiefStateResolver`).
+- **Phase 10** — OIDC resource-server + RBAC behind `orbit.auth.mode` (**stub**
+  default keeps dev IdP-free), audit-log/version-history UI, §5.2 validation suite,
+  Helm chart + offline bundle (Decision 28).
+- **Phase 11** — exports (PNG / MP4 / CCSDS OEM / events JSON+CSV — SRS §4.2
+  complete), five demo scenarios seeded per user on first login, `?` help overlay +
+  tooltip audit, PerfHud (⏱ / `?perf=1`), OpenAPI polish, user guide + README
+  (Decision 29). Plan stays live: [phase-11-plan.md](docs/phase-11-plan.md).
+- **Measured-data track (slices 1–2)** — TELEOS-2 WOD CSV imports as a scenario
+  whose chief is the measured craft flying its real attitude (schema v4,
+  Decision 26). **Gotcha:** keep `EPHEMERIS_INTERP_POINTS = 2` (Runge overshoot,
+  R19). Slice 3 (measured deputies / OEM-AEM readers / browser upload) is planned:
+  [measured-data-plan.md](docs/measured-data-plan.md).
 
-`gen:api` regenerated (rendezvous-search / phasing / nmc / hold / glideslope / station-keep /
-monte-carlo / set-link-budget / finite-burn fields on the maneuver REST; stream `linkBudgets` stays
-WebSocket-only). Backend **188 tests green**. **Deferred (Decision 27):** optical detector NEP/QE
-link detail; the finite-burn ΔV-glyph burn-window animation. **Phase 10 next** — enterprise hardening
-(roadmap §10).
-
-**Measured-data ingestion — slices 1 & 2 complete (2026-06-22; feature track, not a roadmap
-phase).** Real flight telemetry (TELEOS-2 "Whole-Orbit Data" CSVs: measured GNSS ECI
-pos/vel + ADCS quaternions) imports as a scenario whose chief is the measured craft
-(read-only truth). `io/WodCsvReader` (streaming parse) → immutable content-hashed
-`MeasuredDataset` (`measured_dataset` table, V5; samples OUT of the jsonb body) →
-`InitialState{kind:"ephemeris", datasetId}` (`ScenarioBody` schema **v4**) → served via an
-Orekit tabulated `Ephemeris` in `ScenarioStreamService.prepareEphemerisRole` (the
-sampling/stream pipeline is unchanged — "measured" is a per-ROLE source, not a `Fidelity`).
-Server-path import (`POST /scenarios/import/measured {path,noradId?}`, path constrained to
-`orbit.import.allowed-root`); `update()` merges so editing preserves the ephemeris chief.
-**Slice 2 — measured attitude:** the reader also picks up `EST_ATTD_Q1..Q4_8` as a parallel
-attitude series (codec v2 behind a backward-compatible sentinel); `AttitudeProfile.mode="measured"`
-(set on the chief at import) is **SLERP-streamed through the existing `"fixed"` path** (`bodyAttitude`
-+ shared `prop/QuaternionSamples`), so the craft flies its real orientation. The WOD quaternion
-convention was **resolved empirically + pinned** (scalar-last Q4=w, body→ECI ⇒ identity reorder;
-`prop/MeasuredAttitude` w/ `MeasuredAttitudeTest`; flippable in one place, physical direction confirmed
-visually — R20). Frontend: a toggleable **body-axis triad** (`spacecraftModel.setAxesVisible` + a
-"Body axes" control) makes orientation legible, legend reads "measured". Backend **126 tests green**,
-frontend green; verified end-to-end (570 MB → ~3.2 s; orbit radius holds ~6953 km; chief
-`attitude.mode=measured`, the WS frame carries the chief's varying measured `att`). **Gotcha:** keep
-`EPHEMERIS_INTERP_POINTS = 2` — higher overshoots between nodes (Runge → 1e11 km orbit). **Slice 3 next:**
-measured deputies (real RPO pair — needs a 2nd dataset, R19) / numerical handoff / OEM-AEM readers /
-browser upload. See [measured-data-plan.md](docs/measured-data-plan.md), Decision 26.
-
-Per-phase detail lives in `docs/phase-*-plan.md` and the rationale in
-[decisions.md](docs/decisions.md); this is just the map of what exists:
-
-- **Phase 1** — dual-container dev env (Spring Boot + Postgres + Flyway + frontend),
-  OpenAPI-generated client, Spring Security pipeline (stub).
-- **Phase 2** — Orekit 13.1.5 SGP4 core + `FrameService` (ECI/ECEF/geodetic);
-  **catalog mode**: one shared SGP4 pass over ~15.5k sats broadcast as gzip CZML on
-  `/stream/catalog`; globe consumes it (click-inspect, double-click focus, filters,
-  search). [phase-2-plan.md](docs/phase-2-plan.md).
-- **Phase 3** — 3A: scenario CRUD + immutable versioning + audit through one
-  `ScenarioService` (chief + deputies, frozen-TLE jsonb bodies). 3B: numerical
-  propagator (DP8(7), J4+, drag, SRP, third-body) + LVLH/RIC frames + fidelity
-  dispatch (backend-only). [phase-3-plan.md](docs/phase-3-plan.md),
-  [phase-3b-plan.md](docs/phase-3b-plan.md), Decisions 19–20.
-- **Phase 4** — 4A: one authoritative clock (single rAF `clockEngine` writer) +
-  per-scenario `/stream/scenario/{id}` CZML stream (precompute-once); the globe
-  plays a loaded scenario. 4B: three.js proximity view (chief-LVLH) +
-  `scenario-relative` stream; both viewports lockstep on one socket.
-  [phase-4-plan.md](docs/phase-4-plan.md).
-- **Phase 5** — relative readout (distance/range-rate/R-I-C) + backend closest
-  approach + a distance-vs-time graph (`DistanceChart`, Table|Graph tab, no-dep SVG,
-  windowed/filterable — Decision 22); impulsive ΔV maneuvers (`ScenarioBody` schema
-  v2, audited, numerical re-propagation via Orekit `ImpulseManeuver`, glyphs + Σ|ΔV|
-  budget); CW fidelity (`CwPropagation`) + Hohmann/Lambert templates.
-  [phase-5-plan.md](docs/phase-5-plan.md).
-- **Phase 6** — proximity scene: procedural spacecraft models + GLTF-swap seam +
-  fixed-pixel marker LOD (`proximity/spacecraftModel.ts`); derived ram/LVLH
-  orientation (`proximity/orientation.ts`, estimated until Phase 7 attitude);
-  past/predicted `Line2` trajectory ribbons (`proximity/ribbons.ts`); camera modes
-  (`proximity/cameraModes.ts`); Earth backdrop from the additive `chiefRadiusM`
-  field (`proximity/earthBackdrop.ts`). [phase-6-plan.md](docs/phase-6-plan.md),
-  Decision 23.
-- **Phase 7** — sensors & FOV: `Sensor`/`Fov`/`Mount`/`AttitudeProfile` in
-  `ScenarioBody` (schema v3); backend-authoritative modeled attitude
-  (`FrameService.bodyQuaternionInLvlh` LVLH basis, streamed as a quaternion); translucent
-  FOV volumes + sensor-frame camera (`proximity/sensors.ts`, `cameraModes.ts` `sensor`
-  mode, `orientation.ts` `bodyOrientationAt`); acquisition/loss-of-sight detection
-  (`analysis/SensorEventComputer` — in-FOV + range + Earth occlusion, computed from the
-  rendered samples in the LVLH scene, deterministic) streamed in `events` and drawn as
-  timeline AOS/LOS windows; `SensorPanel.tsx` (+ type presets) on the audited path.
-  [phase-7-plan.md](docs/phase-7-plan.md), Decision 24.
-- **Phase 8** — environment & events: Sun/Moon LVLH directions (`FrameService.directionInLvlh`,
-  reusing Orekit Sun/Moon) → real `DirectionalLight` + Earth terminator (resolves R17 flat
-  lighting); conical eclipse (`analysis/EclipseEventComputer`, geocentric `SampledGeocentricCraft`)
-  → timeline bands + craft dimming; intra-scenario conjunctions (`ConjunctionEventComputer`) +
-  sun-keep-out/approach-corridor constraints (`ConstraintChecker`, `ScenarioBody` schema v5 +
-  `missDistanceThresholdM`, audited) → `conjunctions`/`violations` + timeline marks +
-  `EnvironmentPanel.tsx`; catalog conjunction screening (`ScreeningService`,
-  `POST /scenarios/{id}/screening`, two-stage shell-prune + fine refine) → sortable table + CSV.
-  All `scenario-relative` additions are additive (`VERSION="1"`). [phase-8-plan.md](docs/phase-8-plan.md),
-  Decision 25.
+**Open items:** §5.1 PerfHud readings are **recorded** (2026-07-07, RTX 4090; table in
+phase-11-plan.md) — passes at typical loads, with two documented misses: the full ~15.5k
+catalog overlay drops the globe to ~10 fps (R7 — CZML-Entity CPU path; LOD/`PointPrimitive`
+mitigation pre-scoped) and a 10-craft proximity scene sits at ~30 fps (the SRS ceiling; 2–4
+craft hold 60). Still open: the Phase-11 manual browser click-throughs; the live k8s cluster
+install (Phase-10 follow-up); measured-data slice 3; everything deliberately deferred is in
+the registry at the end of `decisions.md`.
 
 Invariants to preserve (see `decisions.md`): one streaming contract, `VERSION="1"`,
 additive only (R12); every state frame-tagged via `FrameService` — relative velocity
@@ -267,7 +135,8 @@ maneuvers) go through the single audited `ScenarioService` path (Decision 16).
 - `docker compose up -d --build` — backend + Postgres + frontend (build on first run). Auth is
   **stub** by default (a dev user; no IdP).
 - **OIDC dev** (Phase 10): `docker compose -f docker-compose.yml -f docker-compose.oidc.yml up --build`
-  adds a Keycloak IdP and flips auth to `oidc` (Keycloak on :8082; sign in as `maya/maya`,
+  adds a Keycloak IdP + an nginx TLS front and flips auth to `oidc` — open
+  **https://<host>:8443/** (single origin, self-signed cert; sign in as `maya/maya`,
   `frank/frank`, `gita/gita`). See [deployment.md](docs/deployment.md) for the issuer-consistency note.
 - `docker compose down` — stop services (preserves db volume).
 - `docker compose down -v` — stop and wipe db.
@@ -301,6 +170,3 @@ maneuvers) go through the single audited `ScenarioService` path (Decision 16).
 - `./gradlew build` — full build incl. tests.
 - `./gradlew build -x test` — build without tests (faster, no DB needed).
 - Set `JAVA_HOME=$HOME/jdk-21.0.11+10` and prepend to `PATH` (already in `~/.bashrc`).
-
-### Stack (TBD — Phase 1)
-- `docker compose up` — full local dev environment (frontend + backend + db).

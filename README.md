@@ -50,6 +50,7 @@ docker compose up -d --build
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.oidc.yml up --build
+# open https://<host>:8443/ (self-signed cert; one origin for app + Keycloak)
 # sign in as maya/maya, frank/frank, or gita/gita
 ```
 
@@ -77,6 +78,8 @@ toggles); offline bundle via [scripts/bundle.sh](scripts/bundle.sh). Runbook:
 | Doc | What |
 |---|---|
 | [docs/user-guide.md](docs/user-guide.md) | How to use the app, end to end |
+| [docs/dev-guide.md](docs/dev-guide.md) | Developer handover guide — module maps, pipelines, recipes, gotchas |
+| [docs/build-history.md](docs/build-history.md) | How it was built, phase by phase (frozen history) |
 | [docs/Software Requirements Specification.md](docs/Software%20Requirements%20Specification.md) | The authoritative WHAT |
 | [docs/architecture-and-roadmap.md](docs/architecture-and-roadmap.md) | HOW it's built + phase roadmap |
 | [docs/decisions.md](docs/decisions.md) | WHY — the decision log |
