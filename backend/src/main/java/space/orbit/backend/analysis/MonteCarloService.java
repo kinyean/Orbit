@@ -31,6 +31,7 @@ import space.orbit.backend.prop.FrameService;
 import space.orbit.backend.prop.Impulse;
 import space.orbit.backend.prop.PropagationService;
 import space.orbit.backend.prop.StateVector;
+import space.orbit.backend.scenario.ChiefStateResolver;
 import space.orbit.backend.scenario.ScenarioBody;
 import space.orbit.backend.scenario.ScenarioService;
 import space.orbit.backend.scenario.ScenarioValidationException;
@@ -41,6 +42,10 @@ import space.orbit.backend.scenario.ScenarioValidationException;
  * magnitude % + pointing σ), propagates each sample against the real engine, expresses it
  * in the chief LVLH frame, and aggregates a trajectory cloud + per-epoch covariance
  * ellipsoids. A request→response analysis (like {@link ScreeningService}), not the stream.
+ *
+ * <p>The chief may be TLE-sourced or a measured ephemeris (resolved via
+ * {@link ChiefStateResolver} — it is only the LVLH reference). Dispersion itself stays
+ * deputy/TLE-only: perturbing measured truth is meaningless.
  *
  * <p><b>Reproducible (SRS §5.4.1, R11) — the crux.</b> This is the codebase's first RNG.
  * Each sample {@code i} derives its own {@link SplittableRandom} purely from {@code (seed,
@@ -67,14 +72,16 @@ public class MonteCarloService {
     private final ScenarioService scenarioService;
     private final PropagationService propagationService;
     private final FrameService frames;
+    private final ChiefStateResolver chiefResolver;
 
     private TimeScale utc;
 
     public MonteCarloService(ScenarioService scenarioService, PropagationService propagationService,
-                             FrameService frames) {
+                             FrameService frames, ChiefStateResolver chiefResolver) {
         this.scenarioService = scenarioService;
         this.propagationService = propagationService;
         this.frames = frames;
+        this.chiefResolver = chiefResolver;
     }
 
     @PostConstruct
@@ -109,11 +116,20 @@ public class MonteCarloService {
         // is not safe for concurrent access); the immutable Transforms are then shared across
         // the parallel samples.
         Frame eci = frames.eci();
-        Propagator chiefProp = propagationService.propagatorFor(rebuildTle(body.chief()), propFidelity);
+        Propagator chiefProp = chiefResolver.resolve(body.chief(), propFidelity).provider();
         Frame lvlh = frames.lvlh(chiefProp);
         Transform[] toLvlh = new Transform[steps + 1];
-        for (int k = 0; k <= steps; k++) {
-            toLvlh[k] = eci.getTransformTo(lvlh, startDate.shiftedBy((double) k * step));
+        try {
+            for (int k = 0; k <= steps; k++) {
+                toLvlh[k] = eci.getTransformTo(lvlh, startDate.shiftedBy((double) k * step));
+            }
+        } catch (OrekitException outsideSpan) {
+            // A measured chief is a tabulated ephemeris that throws outside its data span —
+            // and PUT can set any window. User-fixable input, not a server fault.
+            throw new ScenarioValidationException(
+                    "the chief's state source does not cover the scenario window ("
+                            + body.timeRange().start() + " … " + body.timeRange().end() + "): "
+                            + outsideSpan.getMessage());
         }
 
         // Nominal deputy state at the scenario start — the perturbation reference.
@@ -358,8 +374,8 @@ public class MonteCarloService {
         ScenarioBody.InitialState state = role.initialState();
         if (state == null || state.tle() == null || state.tle().line1() == null || state.tle().line2() == null) {
             throw new ScenarioValidationException(
-                    "Monte Carlo needs TLE-sourced roles; role " + role.role() + " (" + role.noradId()
-                            + ") is not TLE (measured-ephemeris dispersion is a follow-up)");
+                    "Monte Carlo disperses TLE-backed deputies; role " + role.role() + " (" + role.noradId()
+                            + ") is not TLE-backed");
         }
         try {
             return new TLE(state.tle().line1(), state.tle().line2(), utc);

@@ -179,6 +179,53 @@ class OemExportServiceTests {
                 .isGreaterThan(1000.0);
     }
 
+    /** A LEO TLE whose epoch is explicit (so it can sit before the scenario window). */
+    private static TLE leoTleAtEpoch(int norad, double meanAnomalyDeg, String epochIso) {
+        GpRecord r = new GpRecord("SAT-" + norad, "1998-067A", epochIso,
+                15.50125000, 0.0006703, 51.6416, 247.4627, 130.5360, meanAnomalyDeg,
+                norad, 999, 45000, 0.00010270, "U", 0);
+        return TLE_FACTORY.fromGp(r);
+    }
+
+    @Test
+    void burnAtTheWindowStartIsExported() {
+        // A maneuver template fires its first burn AT the scenario start — which is also
+        // the OEM grid's first point. The burn epoch lands on a propagate() boundary, so
+        // this is the case most at risk of an ImpulseManeuver not firing. With a normal
+        // (earlier) deputy seed epoch — as real catalog deputies always have — the burn
+        // IS applied: the forward propagation from the seed crosses it in the interior.
+        // Guards against a regression that would drop a t0 burn from the handoff file.
+        TLE depTle = leoTleAtEpoch(33591, 0.05, "2024-06-01T11:00:00.000"); // seed 1 h before the window
+        ScenarioBody.Maneuver burn = new ScenarioBody.Maneuver(
+                "m1", "delta-v", START, "ric", new ScenarioBody.DeltaV(0.0, 5.0, 0.0), null, null);
+        ScenarioBody body = new ScenarioBody(6, "sgp4", new ScenarioBody.TimeRange(START, END),
+                role("chief", leoTle(25544, 0.0), "ISS", List.of()),
+                List.of(role("deputy", depTle, "TWIN", List.of(burn))));
+        Fixture fx = fixture(body);
+
+        Oem oem = parse(fx.service().export(ID).content());
+        List<TimeStampedPVCoordinates> coords =
+                oem.getSatellites().get("33591").getSegments().get(0).getCoordinates();
+        TimeStampedPVCoordinates late = coords.get(coords.size() - 1);
+
+        AbsoluteDate burnDate = new AbsoluteDate(START, TimeScalesFactory.getUTC());
+        Vector3D maneuvered = fx.prop().propagatorFor(depTle, Fidelity.SGP4,
+                List.of(new Impulse(burnDate, 0.0, 5.0, 0.0, null, null)))
+                .getPVCoordinates(late.getDate(), fx.frames().eci()).getPosition();
+        Vector3D unmaneuvered = fx.prop().propagatorFor(depTle, Fidelity.SGP4)
+                .getPVCoordinates(late.getDate(), fx.frames().eci()).getPosition();
+
+        // The exported late state follows the MANEUVERED track (a ~5 m/s in-track burn
+        // moves it ~80 km over the window), sitting far from the raw SGP4 one — i.e. the
+        // t0 burn was applied, not dropped.
+        double toManeuvered = Vector3D.distance(late.getPosition(), maneuvered);
+        double toUnmaneuvered = Vector3D.distance(late.getPosition(), unmaneuvered);
+        assertThat(toManeuvered).as("exported track follows the maneuvered propagation (m)")
+                .isLessThan(100.0);
+        assertThat(toUnmaneuvered).as("exported track is nowhere near the un-maneuvered orbit (m)")
+                .isGreaterThan(10_000.0);
+    }
+
     @Test
     void recordsTheExportInTheAuditTrail() {
         Fixture fx = fixture(body(List.of()));

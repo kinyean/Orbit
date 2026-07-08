@@ -29,7 +29,7 @@ rationale.
 ## Project status
 
 **All eleven roadmap phases are complete** (Phase 11 shipped 2026-07-06). Backend
-**217 tests green**; frontend type-check + `vite build` green. The per-phase build
+**224 tests green**; frontend type-check + `vite build` green. The per-phase build
 narrative is curated in [build-history.md](docs/build-history.md); the WHY per phase
 is `decisions.md` (Decisions 19–29); done-state is `acceptance-criteria.md`. Current
 shapes: `ScenarioBody` schema **v6**; streaming contract `VERSION = "1"` (all
@@ -73,7 +73,16 @@ additions ever made were additive). One-line map of what exists:
   whose chief is the measured craft flying its real attitude (schema v4,
   Decision 26). **Gotcha:** keep `EPHEMERIS_INTERP_POINTS = 2` (Runge overshoot,
   R19). Slice 3 (measured deputies / OEM-AEM readers / browser upload) is planned:
-  [measured-data-plan.md](docs/measured-data-plan.md).
+  [measured-data-plan.md](docs/measured-data-plan.md). A **presenter demo suite** — six
+  TELEOS-2 scenarios owned by a `demo` account, built re-runnably by
+  [scripts/seed-teleos-demos.sh](scripts/seed-teleos-demos.sh) — is walked in
+  [measured-demos.md](docs/measured-demos.md). Two backend changes landed with it:
+  Monte Carlo now resolves the chief through `ChiefStateResolver` (so it runs against a
+  measured-ephemeris chief), and `PropagationService.stabilizeForRepeatedSampling`
+  freezes a maneuvered numerical propagator into a bounded ephemeris before
+  `ScenarioStreamService`'s two sampling passes — so the rendered relative view agrees
+  with the CZML view (and the OEM export / audit) at the burn (Decision 24's
+  stateful-`ImpulseManeuver` pathology; deterministic, R11).
 
 **Open items:** §5.1 PerfHud readings are **recorded** (2026-07-07, RTX 4090; table in
 phase-11-plan.md) — passes at typical loads, with two documented misses: the full ~15.5k

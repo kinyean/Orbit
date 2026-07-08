@@ -13,6 +13,8 @@
 #   maya / maya   (mission_planner)
 #   frank / frank (flight_dynamics_engineer, admin)
 #   gita / gita   (flight_dynamics_engineer)
+#   demo / demo   (mission_planner, flight_dynamics_engineer — the measured-data
+#                  demo account; scripts/seed-teleos-demos.sh owns its scenarios)
 #
 # Port 8443 (not 443) is deliberate: this IP/host is shared, so we don't grab the
 # default HTTPS port. Change it by editing the nginx `ports` mapping below and the
@@ -80,6 +82,7 @@ services:
       MAYA_PASSWORD: ${MAYA_PASSWORD:?set MAYA_PASSWORD in .env}
       FRANK_PASSWORD: ${FRANK_PASSWORD:?set FRANK_PASSWORD in .env}
       GITA_PASSWORD: ${GITA_PASSWORD:?set GITA_PASSWORD in .env}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:?set DEMO_PASSWORD in .env}
     entrypoint: ["/bin/bash", "-c"]
     # $$ escapes compose interpolation → literal $ for the shell at runtime.
     command:
@@ -94,6 +97,7 @@ services:
         $$KCADM set-password -r orbit --username maya  --new-password "$$MAYA_PASSWORD"
         $$KCADM set-password -r orbit --username frank --new-password "$$FRANK_PASSWORD"
         $$KCADM set-password -r orbit --username gita  --new-password "$$GITA_PASSWORD"
+        $$KCADM set-password -r orbit --username demo  --new-password "$$DEMO_PASSWORD"
         echo "keycloak-init: seed user passwords set."
 
   nginx:

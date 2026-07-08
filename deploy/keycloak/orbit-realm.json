@@ -45,6 +45,14 @@
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "http://localhost:5174/*##http://localhost:5173/*##https://localhost/*##http://174.75.16.25:5174/*##https://174.75.16.25:8443/*"
       }
+    },
+    {
+      "clientId": "orbit-cli",
+      "name": "Orbit seed/ops CLI (dev realm only — password grant for scripts)",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true
     }
   ],
   "users": [
@@ -79,6 +87,18 @@
       "firstName": "Gita",
       "lastName": "Sensors",
       "realmRoles": [
+        "flight_dynamics_engineer"
+      ]
+    },
+    {
+      "username": "demo",
+      "enabled": true,
+      "email": "demo@orbit.local",
+      "emailVerified": true,
+      "firstName": "Demo",
+      "lastName": "Presenter",
+      "realmRoles": [
+        "mission_planner",
         "flight_dynamics_engineer"
       ]
     }

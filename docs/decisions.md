@@ -1371,6 +1371,43 @@ attitude was effectively invisible without it) and a "measured" legend label. Ve
 stack (re-import → chief `attitude.mode=measured`; the relative frame carries the chief's varying
 measured `att`).
 
+**Addendum (presenter demo suite + two backend fixes, 2026-07-08).** A re-runnable
+[scripts/seed-teleos-demos.sh](../scripts/seed-teleos-demos.sh) builds **six** TELEOS-2
+scenarios owned by a dedicated `demo` account (walkthrough:
+[measured-demos.md](./measured-demos.md)) — flown week; co-launch neighbourhood
+(real LUMELITE-4/POEM-2 TLEs); and four **synthetic co-planar inspector** scenarios
+(rendezvous / close-range / sensor+link-budget / Monte Carlo). Synthetic chasers because
+back-propagated current TLEs are cross-plane by Jan 2026 (R19) — an inspector *in the
+chief's plane* is what a real RPO mission flies; the same frozen-TLE pattern as the five
+seeded `Demo — *` scenarios. Config: a `demo` user + a dev-only `orbit-cli` password-grant
+client in the Keycloak realm (`DEMO_PASSWORD` in `.env`). Two backend changes were needed,
+both landed here (backend **217 → 224 tests**, six new):
+
+- **Monte Carlo on a measured chief.** `MonteCarloService` resolved the chief through a
+  private `rebuildTle` (TLE-only); it now uses `ChiefStateResolver` (the same resolver the
+  templates use since 2026-06-29), so the dispersion runs with a measured-ephemeris chief as
+  the LVLH reference. Dispersion itself stays deputy/TLE-only (perturbing measured truth is
+  meaningless — a measured deputy is a clear 422). A window past the dataset span now surfaces
+  as `ScenarioValidationException` (422 "does not cover the scenario window"), not a 500.
+- **Stream vs OEM/corrector maneuver-realization divergence — FIXED.** The rendered relative
+  view (table/graph/3-D) once disagreed with the CZML view and the OEM export / audit by
+  hundreds of metres at a rendezvous arrival (~0.4–0.7 km on-screen vs ~0.1–0.2 m in the audit).
+  Root cause: `ScenarioStreamService.loadAndEncode` samples each role's provider in **two
+  passes** (CZML, then relative-state + the chief LVLH frame), and a maneuvered deputy's
+  `NumericalPropagator` is **stateful** across its `ImpulseManeuver` (Decision 24) — the second
+  pass jumps back to the grid start and re-integrates *backward* across the burn, realizing it
+  at a slightly different state. Fix: `PropagationService.stabilizeForRepeatedSampling` freezes
+  each numerical provider into an order-independent **bounded (tabulated) ephemeris** over the
+  sampled span before the passes run (analytical / CW / tabulated providers pass through
+  untouched; falls back to the raw propagator if capture fails, e.g. decay). Deterministic
+  (R11) and faster (no re-integration). Guarded by `PropagationServiceTests`
+  (scrambled-order re-sample identical to 1e-6 m; matches the forward sweep) and
+  `ScenarioStreamServiceTests.maneuveredRelativeRangeMatchesCzmlAbsoluteRange` (the two views
+  agree per step to CZML's whole-metre rounding). Also characterized-but-not-a-defect: a burn on
+  the OEM grid boundary still exports (real deputies seed before the window), guarded by
+  `OemExportServiceTests.burnAtTheWindowStartIsExported`; the script's 47 s window-start trim is
+  a cosmetic sub-metre nicety, not a workaround.
+
 ---
 
 ## 27. Advanced maneuvers & analysis: corrector, CW templates, Monte Carlo, link budget (Phase 9)

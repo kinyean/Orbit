@@ -9,6 +9,8 @@ import org.orekit.forces.maneuvers.Control3DVectorCostType;
 import org.orekit.forces.maneuvers.ImpulseManeuver;
 import org.orekit.forces.maneuvers.ImpulseProvider;
 import org.orekit.frames.LOFType;
+import org.orekit.propagation.BoundedPropagator;
+import org.orekit.propagation.EphemerisGenerator;
 import org.orekit.propagation.Propagator;
 import org.orekit.propagation.analytical.tle.TLE;
 import org.orekit.propagation.analytical.tle.TLEPropagator;
@@ -16,6 +18,7 @@ import org.orekit.propagation.events.DateDetector;
 import org.orekit.propagation.numerical.NumericalPropagator;
 import org.orekit.time.AbsoluteDate;
 import org.orekit.utils.PVCoordinates;
+import org.orekit.utils.PVCoordinatesProvider;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Service;
 
@@ -181,5 +184,49 @@ public class PropagationService {
     public StateVector sample(Propagator propagator, AbsoluteDate date) {
         PVCoordinates pv = propagator.getPVCoordinates(date, frames.eci());
         return new StateVector(pv.getPosition(), pv.getVelocity(), date, frames.eci());
+    }
+
+    /**
+     * Capture a {@link NumericalPropagator}'s trajectory over {@code [from, to]} as an
+     * order-independent bounded (tabulated) ephemeris. Non-numerical providers
+     * (analytical SGP4, closed-form CW, a measured tabulated {@link
+     * org.orekit.propagation.analytical.Ephemeris}) are already safe to sample in any
+     * order and are returned unchanged.
+     *
+     * <p><b>Why this exists.</b> A numerical propagator carrying an {@link ImpulseManeuver}
+     * event detector is <em>stateful</em>: sweeping it forward across the burn, then
+     * jumping back to an earlier date and sweeping again, re-integrates across the
+     * detector in the reverse direction and realizes the impulse at a slightly different
+     * effective state — so a second sampling pass over the same instance disagrees with
+     * the first by tens-to-hundreds of metres downstream of the burn. {@link
+     * space.orbit.backend.stream.ScenarioStreamService#loadAndEncode} samples each role
+     * twice (the CZML pass, then the relative-state pass); before this, the relative view
+     * (table / graph / 3-D) saw the corrupted second sweep while the CZML view saw the
+     * correct first one. A {@link BoundedPropagator} is a tabulated ephemeris — safe to
+     * sample in any order, any number of times, so both passes agree. It is also faster
+     * (no re-integration) and deterministic (R11): a pure function of the propagator + span.
+     *
+     * <p>If capture fails (e.g. the propagator leaves its valid domain — decay — before
+     * reaching {@code to}), the original propagator is returned unchanged; the caller's
+     * per-sample HOLD already degrades that case gracefully, and decay does not co-occur
+     * with the sub-metre arrival precision this protects.
+     */
+    public PVCoordinatesProvider stabilizeForRepeatedSampling(
+            PVCoordinatesProvider provider, AbsoluteDate from, AbsoluteDate to) {
+        if (!(provider instanceof NumericalPropagator numerical)) {
+            return provider; // analytical / tabulated / closed-form providers are already order-independent
+        }
+        try {
+            EphemerisGenerator generator = numerical.getEphemerisGenerator();
+            numerical.propagate(from, to);
+            BoundedPropagator ephemeris = generator.getGeneratedEphemeris();
+            // Touch the bounds so a generator that captured nothing usable fails HERE
+            // (→ fall back) rather than later mid-encode.
+            ephemeris.getMinDate();
+            ephemeris.getMaxDate();
+            return ephemeris;
+        } catch (RuntimeException couldNotCapture) {
+            return provider;
+        }
     }
 }

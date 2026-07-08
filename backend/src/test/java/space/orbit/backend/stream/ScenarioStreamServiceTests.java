@@ -215,6 +215,51 @@ class ScenarioStreamServiceTests {
     }
 
     @Test
+    void maneuveredRelativeRangeMatchesCzmlAbsoluteRange() throws Exception {
+        // Regression: loadAndEncode samples each role's provider twice — the CZML pass,
+        // then the relative-state pass. A maneuvered deputy is a stateful numerical
+        // propagator, so the second sweep (which jumps back to the grid start, re-
+        // integrating backward across the ImpulseManeuver) once realized the burn
+        // differently — the LVLH range (table/graph/3-D) disagreed with the CZML
+        // absolute range by tens+ of metres downstream of the burn. Both views must
+        // now agree: |chief−deputy| (CZML, frame-invariant norm) == |R,I,C| (relative).
+        ScenarioStreamProperties props = new ScenarioStreamProperties(30, 5000, true, true);
+        EncodedScenario e = service(props,
+                mockBody(bodyWithManeuver("2024-06-01T12:00:00Z", "2024-06-01T12:15:00Z", 40.0)))
+                .loadAndEncode(ID, EMAIL);
+
+        JsonNode czml = MAPPER.readTree(e.czml());
+        JsonNode chiefCart = czml.get("czml").get(1).get("position").get("cartesian");
+        JsonNode depCart = czml.get("czml").get(2).get("position").get("cartesian");
+        JsonNode rel = MAPPER.readTree(e.relative());
+        int stride = rel.get("stride").asInt();
+        JsonNode samples = rel.get("deputies").get(0).get("samples");
+
+        int n = Math.min(chiefCart.size() / 4, samples.size() / stride);
+        assertThat(n).isGreaterThan(10);
+        double maxDiff = 0.0;
+        double maxRange = 0.0;
+        for (int k = 0; k < n; k++) {
+            double dx = chiefCart.get(4 * k + 1).asDouble() - depCart.get(4 * k + 1).asDouble();
+            double dy = chiefCart.get(4 * k + 2).asDouble() - depCart.get(4 * k + 2).asDouble();
+            double dz = chiefCart.get(4 * k + 3).asDouble() - depCart.get(4 * k + 3).asDouble();
+            double czmlRange = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            double r = samples.get(stride * k + 1).asDouble();
+            double i = samples.get(stride * k + 2).asDouble();
+            double c = samples.get(stride * k + 3).asDouble();
+            double relNorm = Math.sqrt(r * r + i * i + c * c);
+            maxDiff = Math.max(maxDiff, Math.abs(czmlRange - relNorm));
+            maxRange = Math.max(maxRange, czmlRange);
+        }
+        assertThat(maxRange).as("real trajectory data (m)").isGreaterThan(100_000.0);
+        // CZML cartesian is rounded to whole metres (CzmlEncoder), so differencing two
+        // positions has a ~1.7 m quantization floor — well under the tens-to-hundreds of
+        // metres the two-pass reuse bug produced downstream of the burn.
+        assertThat(maxDiff).as("CZML absolute range vs LVLH relative norm, per step (m)")
+                .isLessThan(5.0);
+    }
+
+    @Test
     void maneuveredScenarioIsBitIdenticalOnRerun() {
         // R11 holds with maneuvers: the impulse is a frozen input, event location is
         // pinned, ordering is stable — both runs produce byte-identical payloads.

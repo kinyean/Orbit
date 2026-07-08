@@ -8,6 +8,15 @@ and CCSDS AEM measured attitude (Decision 24 / R17).
 
 > **Status: Slices 1 & 2 complete & verified end-to-end (2026-06-22).** Slice 3
 > planned. Backend 126 tests green; frontend type-check + build green.
+>
+> A **presenter demo suite** (six TELEOS-2 scenarios for a `demo` account, built
+> re-runnably by [scripts/seed-teleos-demos.sh](../scripts/seed-teleos-demos.sh)) rides
+> this track — walkthrough in [measured-demos.md](./measured-demos.md). Building it landed
+> two backend changes (2026-07-08, backend → 224 tests): Monte Carlo now resolves the chief
+> through `ChiefStateResolver` (runs against a measured chief), and
+> `PropagationService.stabilizeForRepeatedSampling` makes a maneuvered numerical propagator
+> order-independent across `ScenarioStreamService`'s two sampling passes (see the Decision-26
+> demo-suite addendum).
 
 ## What it adds
 

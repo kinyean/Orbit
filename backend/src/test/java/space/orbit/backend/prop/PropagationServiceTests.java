@@ -3,6 +3,7 @@ package space.orbit.backend.prop;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import org.hipparchus.geometry.euclidean.threed.Vector3D;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.orekit.propagation.Propagator;
@@ -125,6 +126,55 @@ class PropagationServiceTests {
         double achievedDv = ve * Math.log(mass / (mass - mdot * duration));
         assertThat(achievedDv).as("ΔV achieved over the computed burn duration (m/s)")
                 .isCloseTo(dv, org.assertj.core.data.Offset.offset(1.0e-6));
+    }
+
+    @Test
+    void stabilizedManeuveredProviderIsOrderIndependentAcrossTheBurn() {
+        // A raw maneuvered NumericalPropagator is stateful across its ImpulseManeuver:
+        // sweep it forward past the burn, then jump BACK to an earlier date, and the
+        // re-integration realizes the impulse differently — so a second sampling pass
+        // (as ScenarioStreamService does: CZML pass, then relative pass) disagrees with
+        // the first by tens+ of metres downstream of the burn. stabilizeForRepeatedSampling
+        // freezes it into a bounded ephemeris that samples identically in any order.
+        Fixture f = fixture();
+        AbsoluteDate epoch = f.tle().getDate();
+        AbsoluteDate burn = epoch.shiftedBy(1800.0);
+        AbsoluteDate from = epoch.shiftedBy(60.0);
+        AbsoluteDate to = epoch.shiftedBy(5400.0);
+        var imps = java.util.List.of(new Impulse(burn, 8.0, -2.0, 4.0));
+        AbsoluteDate probe = to; // downstream of the burn, where divergence accumulates
+
+        // The correct answer: a fresh propagator swept forward once (what pass 1 sees).
+        Vector3D reference = f.service().sample(
+                f.service().propagatorFor(f.tle(), Fidelity.NUMERICAL, imps), probe).position();
+
+        var stable = f.service().stabilizeForRepeatedSampling(
+                f.service().propagatorFor(f.tle(), Fidelity.NUMERICAL, imps), from, to);
+
+        // Sample the stabilized provider in a SCRAMBLED order (end, start, mid, end),
+        // mimicking two passes that each jump back to the grid start. It must return the
+        // same state each time and match the forward reference.
+        Vector3D first = stable.getPVCoordinates(probe, f.frames().eci()).getPosition();
+        stable.getPVCoordinates(from, f.frames().eci());
+        stable.getPVCoordinates(epoch.shiftedBy(2700.0), f.frames().eci());
+        Vector3D again = stable.getPVCoordinates(probe, f.frames().eci()).getPosition();
+
+        assertThat(first.distance(again)).as("re-sampled in scrambled order, same result (m)")
+                .isLessThan(1.0e-6);
+        // A bounded ephemeris interpolates, so it differs from the raw integrator by
+        // cm — far below the tens-to-hundreds of metres the reuse bug produced.
+        assertThat(first.distance(reference)).as("stabilized provider matches the forward sweep (m)")
+                .isLessThan(1.0);
+    }
+
+    @Test
+    void stabilizeLeavesAnalyticalProvidersUnchanged() {
+        // SGP4 (and CW / tabulated) providers are already order-independent — the helper
+        // must return them untouched (no needless bounded-ephemeris wrap).
+        Fixture f = fixture();
+        Propagator sgp4 = f.service().propagatorFor(f.tle(), Fidelity.SGP4);
+        assertThat(f.service().stabilizeForRepeatedSampling(
+                sgp4, f.tle().getDate(), f.tle().getDate().shiftedBy(3600.0))).isSameAs(sgp4);
     }
 
     @Test

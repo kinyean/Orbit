@@ -158,6 +158,24 @@ public class ScenarioStreamService {
             int steps = (int) (spanSec / effectiveStep);
             double firstT = -marginSec; // seconds relative to the scenario start (the CZML epoch)
 
+            // Each role's provider is sampled by MORE THAN ONE pass below (the CZML
+            // pass, then the relative-state pass, plus the LVLH frame the relative pass
+            // builds from the chief). A maneuvered role's numerical propagator is
+            // stateful across an ImpulseManeuver, so a second sweep from the grid start
+            // would re-realize the burn and disagree with the first (the LVLH view once
+            // read a wrong closest approach while the CZML view read the right one).
+            // Freeze each numerical provider into an order-independent bounded ephemeris
+            // over the sampled span so every pass agrees (no-op for analytical/tabulated
+            // providers; deterministic — R11).
+            AbsoluteDate gridStart = startDate.shiftedBy(firstT);
+            AbsoluteDate gridEnd = startDate.shiftedBy(firstT + (double) steps * effectiveStep);
+            for (int i = 0; i < roles.size(); i++) {
+                roles.set(i, roles.get(i).withProvider(
+                        propagationService.stabilizeForRepeatedSampling(
+                                roles.get(i).provider(), gridStart, gridEnd)));
+            }
+            chief = roles.get(0);
+
             List<ScenarioSatelliteSamples> samples = new ArrayList<>();
             for (PreparedRole role : roles) {
                 samples.add(sampleRole(role, startDate, firstT, effectiveStep, steps));
@@ -651,6 +669,12 @@ public class ScenarioStreamService {
         private PreparedRole(ScenarioBody.Role role, PVCoordinatesProvider provider,
                              double periodSeconds, double eccentricity, double inclinationDeg) {
             this(role, provider, periodSeconds, eccentricity, inclinationDeg, null);
+        }
+
+        /** Same role with its state provider swapped (see stabilizeForRepeatedSampling). */
+        private PreparedRole withProvider(PVCoordinatesProvider newProvider) {
+            return new PreparedRole(role, newProvider, periodSeconds, eccentricity,
+                    inclinationDeg, measuredAttXyzw);
         }
     }
 
