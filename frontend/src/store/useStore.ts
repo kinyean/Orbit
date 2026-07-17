@@ -14,6 +14,10 @@ export type ConjunctionResult = components['schemas']['ConjunctionResult'];
 /** Rendezvous arrival×rev ΔV search (Phase 9A, US-MAN-03). */
 export type RendezvousSearchResult = components['schemas']['RendezvousSearchResult'];
 export type DvCell = components['schemas']['DvCell'];
+/** Collision-avoidance-maneuver preview (US-MAN-12): the avoidance ΔV + achieved miss. */
+export type CamPlanResult = components['schemas']['CamPlanResult'];
+/** Avoidance burn axis: cross-track (altitude-neutral, default), radial, or in-track. */
+export type CamAxis = 'crosstrack' | 'radial' | 'intrack';
 /** Monte Carlo dispersion result (Phase 9C, UC-6, US-MC-01/02). */
 export type MonteCarloResult = components['schemas']['MonteCarloResult'];
 export type EllipsoidSample = components['schemas']['EllipsoidSample'];
@@ -242,6 +246,17 @@ export interface State {
   applyStationKeep: (
     deputyNoradId: number, axis: 'vbar' | 'rbar',
     distanceM: number, intervalSec: number, corrections: number,
+  ) => Promise<string | null>;
+  // Collision avoidance (US-MAN-12): the inverse of rendezvous. previewCam computes the avoidance
+  // ΔV that raises the miss from `deputyNoradId` to `threatNoradId` at `tcaEpoch` up to `targetMissM`
+  // (read-only, no reload — like searchRendezvous). applyCam inserts that burn (audited + reload).
+  previewCam: (
+    deputyNoradId: number, threatNoradId: number, tcaEpoch: string,
+    axis: CamAxis, targetMissM: number, burnEpoch?: string,
+  ) => Promise<CamPlanResult | string>;
+  applyCam: (
+    deputyNoradId: number, threatNoradId: number, tcaEpoch: string,
+    axis: CamAxis, targetMissM: number, burnEpoch?: string,
   ) => Promise<string | null>;
 
   // Sensors & attitude (Phase 7, US-SENSE-01 / US-PROX-01). Edit → new version +
@@ -748,6 +763,29 @@ export const useStore = create<State>((set, get) => ({
     const { error } = await api.POST('/scenarios/{id}/maneuvers/station-keep', {
       params: { path: { id } },
       body: { deputyNoradId, axis, distanceM, intervalSec, corrections },
+    });
+    if (error) return errorMessage(error);
+    await get().loadScenario(id);
+    return null;
+  },
+
+  previewCam: async (deputyNoradId, threatNoradId, tcaEpoch, axis, targetMissM, burnEpoch) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { data, error } = await api.POST('/scenarios/{id}/maneuvers/collision-avoidance/preview', {
+      params: { path: { id } },
+      body: { deputyNoradId, threatNoradId, tcaEpoch, axis, targetMissM, burnEpoch },
+    });
+    if (error || !data) return errorMessage(error);
+    return data; // does NOT reload — a read-only preview of the avoidance ΔV
+  },
+
+  applyCam: async (deputyNoradId, threatNoradId, tcaEpoch, axis, targetMissM, burnEpoch) => {
+    const id = get().loadedScenario?.id;
+    if (!id) return 'No scenario loaded';
+    const { error } = await api.POST('/scenarios/{id}/maneuvers/collision-avoidance', {
+      params: { path: { id } },
+      body: { deputyNoradId, threatNoradId, tcaEpoch, axis, targetMissM, burnEpoch },
     });
     if (error) return errorMessage(error);
     await get().loadScenario(id);

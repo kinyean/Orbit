@@ -25,6 +25,11 @@ import space.orbit.backend.security.DevUserAuthenticationFilter;
  * rendezvous, a sensor/link-budget inspection, an eclipse pass, and a V-bar
  * station point (the hold/glideslope starting position).
  *
+ * <p>These five are the <em>per-user onboarding</em> set (SRS §5.6.1). Newer
+ * feature demos (e.g. the collision-avoidance conjunction, US-MAN-12) live in the
+ * curated <b>demo account</b> instead — see {@code scripts/seed-teleos-demos.sh}
+ * and the "Demos" note in {@code CLAUDE.md}.
+ *
  * <p><b>Who gets seeded (Phase 11):</b> the dev user at startup (stub mode), and
  * every newly provisioned user via {@link UserProvisionedEvent} — fired once per
  * user, {@code AFTER_COMMIT} of the provisioning transaction, so real OIDC users

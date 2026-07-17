@@ -29,7 +29,8 @@ rationale.
 ## Project status
 
 **All eleven roadmap phases are complete** (Phase 11 shipped 2026-07-06). Backend
-**224 tests green**; frontend type-check + `vite build` green. The per-phase build
+**230 tests green** (224 + the collision-avoidance maneuver, US-MAN-12/Decision 30);
+frontend type-check + `vite build` green. The per-phase build
 narrative is curated in [build-history.md](docs/build-history.md); the WHY per phase
 is `decisions.md` (Decisions 19–29); done-state is `acceptance-criteria.md`. Current
 shapes: `ScenarioBody` schema **v6**; streaming contract `VERSION = "1"` (all
@@ -61,7 +62,11 @@ additions ever made were additive). One-line map of what exists:
   search + phasing/NMC/hold/glideslope/station-keep templates + finite burns +
   Monte Carlo (the first seeded RNG — determinism held, R21) + link budget
   (schema v6, Decision 27). Post-9 additive: templates plan against a
-  **measured-ephemeris chief** (`scenario/ChiefStateResolver`).
+  **measured-ephemeris chief** (`scenario/ChiefStateResolver`); a
+  **collision-avoidance maneuver** — the inverse of rendezvous
+  (`scenario/CollisionAvoidancePlanner`, US-MAN-12/Decision 30): one ΔV that raises a
+  predicted conjunction's miss, cross-track by default (altitude-neutral), solved against
+  the real propagators; never worsens the miss.
 - **Phase 10** — OIDC resource-server + RBAC behind `orbit.auth.mode` (**stub**
   default keeps dev IdP-free), audit-log/version-history UI, §5.2 validation suite,
   Helm chart + offline bundle (Decision 28).
@@ -74,9 +79,12 @@ additions ever made were additive). One-line map of what exists:
   Decision 26). **Gotcha:** keep `EPHEMERIS_INTERP_POINTS = 2` (Runge overshoot,
   R19). Slice 3 (measured deputies / OEM-AEM readers / browser upload) is planned:
   [measured-data-plan.md](docs/measured-data-plan.md). A **presenter demo suite** — six
-  TELEOS-2 scenarios owned by a `demo` account, built re-runnably by
+  TELEOS-2 scenarios (plus a synthetic collision-avoidance conjunction, US-MAN-12) owned by
+  the `demo` account, built re-runnably by
   [scripts/seed-teleos-demos.sh](scripts/seed-teleos-demos.sh) — is walked in
-  [measured-demos.md](docs/measured-demos.md). Two backend changes landed with it:
+  [measured-demos.md](docs/measured-demos.md). **Demo convention (see Conventions):** curated
+  feature demos live in the `demo` account via this script, NOT the per-user onboarding seeder.
+  Two backend changes landed with the suite:
   Monte Carlo now resolves the chief through `ChiefStateResolver` (so it runs against a
   measured-ephemeris chief), and `PropagationService.stabilizeForRepeatedSampling`
   freezes a maneuvered numerical propagator into a bounded ephemeris before
@@ -137,6 +145,12 @@ maneuvers) go through the single audited `ScenarioService` path (Decision 16).
 - Commit only when the user explicitly asks — never auto-commit.
 - Tag frame in code wherever state vectors live (names, types, comments):
   `ECI` / `ECEF` / `LVLH` / `RIC` / `body`.
+- **Demos → the `demo` account.** New/curated demo scenarios go into the `demo` account
+  via [scripts/seed-teleos-demos.sh](scripts/seed-teleos-demos.sh) (owned by `demo@orbit.local`;
+  add a builder + call it from `main`; synthetic scenarios insert via SQL since the public API
+  resolves roles from the catalog). Do **not** add them to `SampleScenarioSeeder` — that is the
+  fixed five-scenario *per-user onboarding* set only (SRS §5.6.1). Walkthrough:
+  [measured-demos.md](docs/measured-demos.md).
 
 ## Build commands
 

@@ -482,6 +482,32 @@ propagation, so sample counts trade against latency; default 100, cap 500.)
 
 ---
 
+## R22 — Collision-avoidance maneuver: geometric miss, not Pc; recurring approaches (Low–Medium impact, Low likelihood — mitigated, US-MAN-12)
+
+**Description.** The CAM (Decision 30) targets a **geometric** miss distance, not a collision
+probability `Pc` (no combined-covariance / B-plane model) — a real operational CAM would size the
+burn against `Pc`. Two further foot-guns: (1) **cross-track is constraint-optimal, not ΔV-optimal**
+— it keeps the altitude (the user's "not too high or low") but costs far more ΔV than an in-track
+burn, so a user could over-spend if they don't notice the preview's ΔV; (2) a **recurring** approach
+(a closed relative orbit / constant-separation formation, e.g. the NMC demo) cannot be dodged by a
+single burn — pumping cross-track can even *deepen* a flanking minimum.
+
+**Mitigation.**
+- The planner solves against the **windowed-minimum** separation (not the fixed TCA), which
+  discounts the re-timing component and privileges the B-plane (⊥ relative-velocity) displacement —
+  the same component `Pc` cares about most.
+- It **never returns a worsening burn**: it tracks the best windowed-min across magnitudes and
+  refuses (→ 422, with a note pointing at in-track / a different axis / a single-pass framing) when
+  no burn beats the un-maneuvered miss. Guarded by `CollisionAvoidancePlannerTests`.
+- The Preview surfaces the ΔV and the baseline→achieved miss before the user commits, and the
+  in-track axis is explicitly labeled as altitude-changing.
+
+**Trigger.** A CAM that reports an achieved miss ≤ the baseline; a cross-track ΔV in the hundreds of
+m/s (a recurring or badly-phased approach — reconsider the axis/epoch); reliance on the geometric
+miss where a `Pc` analysis is actually required (validate separately at high fidelity — Frank).
+
+---
+
 ## Watch list (not yet risks)
 
 Things to keep an eye on; promote to a numbered risk if they grow:

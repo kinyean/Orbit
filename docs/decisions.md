@@ -52,6 +52,7 @@ considered**, **Consequences**.
 
 **Maneuvers & analysis**
 27. [Advanced maneuvers & analysis: corrector, CW templates, Monte Carlo, link budget (Phase 9)](#27-advanced-maneuvers--analysis-corrector-cw-templates-monte-carlo-link-budget-phase-9)
+30. [Collision-avoidance maneuver: the inverse of rendezvous (US-MAN-12)](#30-collision-avoidance-maneuver-the-inverse-of-rendezvous-us-man-12)
 
 **Cross-cutting / enterprise**
 16. [Enterprise posture: professional-grade from the start](#16-enterprise-posture-professional-grade-from-the-start)
@@ -1704,6 +1705,86 @@ auth mode; R7's FPS-counter caveat is closed by the PerfHud. **Deferred:** WebM/
 MediaRecorder fallback; link-budget series export; OEM/AEM *import* + upload (measured
 track slice 3); bundle code-splitting; the live cluster install (Phase-10 follow-up).
 **The roadmap's eleven phases are complete.**
+
+---
+
+## 30. Collision-avoidance maneuver: the inverse of rendezvous (US-MAN-12)
+
+**Context.** The templates could bring a deputy *to* the chief (rendezvous, closed-loop via
+`RendezvousCorrector`, Decision 27). A user asked for the opposite: given a predicted
+conjunction, generate a small ΔV that *avoids* it — "180° away from the rendezvous", staying
+near the orbit ("not too high or low"). This is a Collision-Avoidance Maneuver (CAM), a
+standard flight-dynamics operation, and the natural mirror of the rendezvous corrector.
+
+**Decision.** A new `scenario/CollisionAvoidancePlanner` (sibling to `RendezvousCorrector`),
+orchestrated by two `ManeuverTemplateService` methods (`collisionAvoidancePreview` read-only,
+`collisionAvoidance` insert) behind `POST /scenarios/{id}/maneuvers/collision-avoidance[/preview]`.
+Scoped (with the user):
+- **In-scenario threats only** — the threat is a scenario craft (the chief or another deputy),
+  resolved to a provider at the fidelity the stream flies (measured chief → its ephemeris). The
+  maneuvering craft is always a **deputy** (the chief is the immovable LVLH reference → 422).
+  Catalog-debris avoidance is deliberately out of scope (the planner takes any
+  `PVCoordinatesProvider`, so it is additive later).
+- **Axis choice, cross-track default.** The burn is one impulse along a chosen deputy-RIC axis:
+  **cross-track** (out-of-plane — tilts the plane, leaves semi-major axis / altitude unchanged;
+  the honest realization of "not too high or low"; the default), **radial**, or **in-track**
+  (cheapest ΔV via secular drift, but *does* change altitude — offered and labeled). The **sign**
+  is chosen automatically to push away from the threat.
+- **1-D solve against the real propagators** (mirrors the corrector's honesty posture, not a
+  two-body formula): baseline miss vector `d0` at the TCA; finite-difference sensitivity
+  `S = ∂p(TCA)/∂ΔV` with a **1 m/s** probe (matching `RendezvousCorrector.FD_STEP_MS` — a smaller
+  probe is swamped by integrator step noise); a quadratic seed for the magnitude; then verify +
+  secant-refine against the **windowed-minimum separation** (re-search the closest approach over
+  the remaining window — *not* the fixed original TCA, because the burn shifts the TCA and a
+  displacement component along the relative velocity only re-times the encounter; the windowed min
+  discounts it and catches a *new* conjunction a drifting deputy could create).
+- **Per-axis default burn epoch** (overridable): in-track = scenario start (secular drift ∝ lead
+  time); cross-track ≈ a quarter-orbit before TCA (its displacement is a bounded sinusoid peaking
+  there); radial ≈ a half-orbit before.
+- **Never returns a worsening burn.** The refine tracks the *best* windowed-min across all
+  evaluated magnitudes (the m=0 baseline is the floor) and, if the target isn't reached, probes the
+  ΔV cap to report the best the axis can do (g(m) is non-monotonic for a *recurring* approach —
+  a closed relative orbit / constant-separation pair — so a local secant can otherwise land on a
+  magnitude that makes the miss worse). If no magnitude beats the baseline, it refuses with a note
+  (→ 422) rather than insert a harmful burn.
+
+**Why.** The rendezvous corrector already proved the pattern (FD sensitivity + damped solve +
+caps + deterministic fallback, all against the real propagators); a CAM is the same machinery with
+a **1-D** free variable (magnitude along a fixed axis) and a "separation ≥ target" objective
+instead of "miss → 0". Cross-track is the only axis that leaves the orbital energy (altitude)
+unchanged, so it is the honest default for the user's constraint — at the cost of more ΔV than an
+in-track burn, which the preview surfaces. Solving against the windowed minimum (not a fixed TCA)
+is the difference between an honest achieved-miss and a number inflated by a re-timing component.
+
+**Alternatives considered.** *A closed-form CW two-impulse "anti-rendezvous"* (rejected — same
+R16 model-mismatch dishonesty the corrector exists to avoid; the FD-against-real-propagators solve
+is the right call, CW only as intuition). *A single fixed axis (cross-track only)* (rejected — the
+axis choice lets a user trade the altitude-neutral cross-track against the cheaper in-track with
+eyes open). *Targeting collision probability `Pc` / a B-plane covariance model* (deferred — the v1
+targets geometric miss; the windowed-min already privileges the B-plane component ⊥ the relative
+velocity; a documented simplification). *Catalog-debris threats now* (deferred — the planner is
+threat-agnostic; wiring a catalog provider + UI is additive). *Multi-burn / composable CAM
+sequences* (deferred, alongside the existing composable-templates item below).
+
+**Consequences.** New `scenario/CollisionAvoidancePlanner` + `scenario/CamPlanResult`;
+`ManeuverTemplateService` gains `collisionAvoidancePreview`/`collisionAvoidance` (+ threat
+resolution, per-axis default epoch, a `toImpulses` helper); `ScenarioController` gains the two
+endpoints + `CamRequest` (`gen:api` regenerated → `CamPlanResult`/`CamRequest`). Frontend:
+`previewCam`/`applyCam` store actions + a "Collision avoidance" block in `ManeuverPanel`, driven by
+the detected intra-scenario conjunctions already in the stream buffer, with a Preview/Insert flow
+(mirroring rendezvous Find/Insert); after Insert the scenario re-streams and the conjunction miss
+visibly opens up. A **"Demo — collision avoidance (conjunction)"** scenario ships in the curated
+**demo account** (`scripts/seed-teleos-demos.sh`, owned by `demo@orbit.local`, not the per-user
+onboarding seeder) — a synthetic intruder ~1.6 km beneath the chief with a 3 km alert threshold, so
+the feature is one click from the demo login (cross-track clears the alert at ~3 m/s). Additive only:
+streaming contract untouched (`VERSION="1"`, R12); all edits through the single audited
+`ScenarioService` path (reusing `MANEUVER_TEMPLATE`); **deterministic** — byte-identical reruns
+(R11), no RNG/wall-clock in the result (the runtime fuse only returns best-so-far). Backend tests
+**224 → 230** (`CollisionAvoidancePlannerTests` proves a fast crossing
+converges to target, cross-track keeps SMA while in-track changes it, byte-identical reruns, and an
+unreachable target falls back; `ManeuverTemplateServiceTests` covers the orchestration + 422s).
+Verified end-to-end on the dev stack (preview/insert/audit; per-axis ΔV ordering; determinism;
+never-worsen guard on the recurring NMC demo).
 
 ---
 

@@ -75,7 +75,8 @@ class ManeuverTemplateServiceTests {
                 prop, frames, Mockito.mock(MeasuredDatasetRepository.class));
         chiefResolver.init();
         ManeuverTemplateService svc = new ManeuverTemplateService(
-                scenarioService, prop, frames, new RendezvousCorrector(prop, frames), chiefResolver);
+                scenarioService, prop, frames, new RendezvousCorrector(prop, frames), chiefResolver,
+                new CollisionAvoidancePlanner(prop, frames));
         svc.init();
         return svc;
     }
@@ -280,6 +281,79 @@ class ManeuverTemplateServiceTests {
         assertThatThrownBy(() -> service(scenarioService).stationKeep(ID, 25545, "vbar", 800.0, 3600.0, 4))
                 .isInstanceOf(ScenarioValidationException.class)
                 .hasMessageContaining("no corrections fit");
+        org.mockito.Mockito.verify(scenarioService, org.mockito.Mockito.never())
+                .addManeuvers(any(), any(), any());
+    }
+
+    // --- collision avoidance (US-MAN-12) -------------------------------------
+
+    private static TLE leoTle(int norad, String name, double meanMotionRevPerDay, double meanAnomalyDeg) {
+        TleFactory factory = new TleFactory();
+        factory.init();
+        // TLE epoch = the window start, so the drift-by begins fresh at t0 (no pre-window drift).
+        GpRecord r = new GpRecord(
+                name, "1998-067A", "2024-06-01T12:00:00.000",
+                meanMotionRevPerDay, 0.0006703, 51.6416, 247.4627, 130.5360, meanAnomalyDeg,
+                norad, 999, 45000, 0.00010270, "U", 0);
+        return factory.fromGp(r);
+    }
+
+    /** Chief on the reference orbit + a deputy a bit lower/faster and behind → a single in-window
+     *  close pass (a genuine, dodgeable conjunction — unlike a constant-separation formation). */
+    private static ScenarioBody camBody(String start, String end) {
+        ScenarioBody.Role chief = role("chief", leoTle(25544, "CHIEF", 15.50125000, 0.0), "CHIEF");
+        ScenarioBody.Role deputy = role("deputy", leoTle(25545, "DEPUTY", 15.55000000, -0.35), "DEPUTY");
+        return new ScenarioBody(2, "sgp4", new ScenarioBody.TimeRange(start, end), chief, List.of(deputy));
+    }
+
+    @Test
+    void collisionAvoidanceInsertsOneRicBurnAndAudits() {
+        ScenarioService scenarioService = mock(ScenarioService.class);
+        // A single-pass drift-by so a burn genuinely opens the miss (the physics per-axis is proven in
+        // CollisionAvoidancePlannerTests); this checks the orchestration: one audited RIC draft with a
+        // clear summary. In-track de-phases the pass reliably for a co-planar drift-by.
+        ScenarioBody b = camBody("2024-06-01T12:00:00Z", "2024-06-01T13:00:00Z");
+        when(scenarioService.get(any())).thenReturn(
+                new ScenarioResponse(ID.toString(), "S", "o", "2024-06-01T00:00:00Z", 1, 1, b));
+        when(scenarioService.addManeuvers(eq(ID), any(), any())).thenReturn(
+                new ScenarioResponse(ID.toString(), "S", "o", "2024-06-01T00:00:00Z", 2, 2, b));
+
+        service(scenarioService).collisionAvoidance(
+                ID, 25545, 25544, "2024-06-01T12:30:00Z", "intrack", 60_000.0, null);
+
+        ArgumentCaptor<List<ManeuverDraft>> cap = captureDrafts(scenarioService);
+        ArgumentCaptor<String> summary = ArgumentCaptor.forClass(String.class);
+        org.mockito.Mockito.verify(scenarioService).addManeuvers(eq(ID), cap.capture(), summary.capture());
+        List<ManeuverDraft> drafts = cap.getValue();
+        assertThat(drafts).hasSize(1);
+        assertThat(drafts.get(0).frame()).isEqualTo("ric");
+        // An in-track avoidance burn is purely the I axis, within the ΔV cap.
+        assertThat(drafts.get(0).r()).isZero();
+        assertThat(drafts.get(0).c()).isZero();
+        assertThat(Math.abs(drafts.get(0).i())).isBetween(1.0e-6, CollisionAvoidancePlanner.MAX_DV_MS);
+        assertThat(summary.getValue()).contains("Collision avoidance");
+    }
+
+    @Test
+    void collisionAvoidanceRejectsBadInputs() {
+        ScenarioService scenarioService = mock(ScenarioService.class);
+        ScenarioBody b = camBody("2024-06-01T12:00:00Z", "2024-06-01T13:00:00Z");
+        when(scenarioService.get(any())).thenReturn(
+                new ScenarioResponse(ID.toString(), "S", "o", "2024-06-01T00:00:00Z", 1, 1, b));
+
+        ManeuverTemplateService svc = service(scenarioService);
+        // Threat == the maneuvering deputy.
+        assertThatThrownBy(() -> svc.collisionAvoidance(ID, 25545, 25545, "2024-06-01T12:30:00Z", "crosstrack", 5_000.0, null))
+                .isInstanceOf(ScenarioValidationException.class);
+        // Maneuvering the chief (it is the immovable LVLH reference).
+        assertThatThrownBy(() -> svc.collisionAvoidance(ID, 25544, 25545, "2024-06-01T12:30:00Z", "crosstrack", 5_000.0, null))
+                .isInstanceOf(ScenarioValidationException.class);
+        // Non-positive target miss.
+        assertThatThrownBy(() -> svc.collisionAvoidance(ID, 25545, 25544, "2024-06-01T12:30:00Z", "crosstrack", 0.0, null))
+                .isInstanceOf(ScenarioValidationException.class);
+        // TCA outside the scenario window.
+        assertThatThrownBy(() -> svc.collisionAvoidance(ID, 25545, 25544, "2024-06-01T15:30:00Z", "crosstrack", 5_000.0, null))
+                .isInstanceOf(ScenarioValidationException.class);
         org.mockito.Mockito.verify(scenarioService, org.mockito.Mockito.never())
                 .addManeuvers(any(), any(), any());
     }

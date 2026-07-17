@@ -1,5 +1,7 @@
 import { useState, useSyncExternalStore, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { useStore, type RendezvousSearchResult, type DvCell } from '../store/useStore';
+import {
+  useStore, type RendezvousSearchResult, type DvCell, type CamAxis, type CamPlanResult,
+} from '../store/useStore';
 import { getRelativeData, getRelativeVersion, subscribeRelative } from '../stream/relativeBuffer';
 import { usePanelSize, usePanelPosition } from '../lib/usePanelChrome';
 
@@ -61,7 +63,9 @@ export default function ManeuverPanel() {
   const applyHold = useStore((s) => s.applyHold);
   const applyGlideslope = useStore((s) => s.applyGlideslope);
   const applyStationKeep = useStore((s) => s.applyStationKeep);
-  // React to relative-buffer changes (carries the CW validity hint).
+  const previewCam = useStore((s) => s.previewCam);
+  const applyCam = useStore((s) => s.applyCam);
+  // React to relative-buffer changes (carries the CW validity hint + detected conjunctions).
   useSyncExternalStore(subscribeRelative, getRelativeVersion);
 
   const [deputyId, setDeputyId] = useState<number | null>(null);
@@ -87,6 +91,13 @@ export default function ManeuverPanel() {
   const [skDist, setSkDist] = useState('500');
   const [skInterval, setSkInterval] = useState('600');
   const [skCorrections, setSkCorrections] = useState('6');
+  // Collision avoidance (US-MAN-12): pick a detected conjunction, choose an axis + target miss.
+  const [camConjIdx, setCamConjIdx] = useState('');
+  const [camSwap, setCamSwap] = useState(false); // when both craft are deputies, which one burns
+  const [camAxis, setCamAxis] = useState<CamAxis>('crosstrack');
+  const [camTargetKm, setCamTargetKm] = useState('');
+  const [camPlan, setCamPlan] = useState<CamPlanResult | null>(null);
+  const [camBusy, setCamBusy] = useState(false);
   const [searchResult, setSearchResult] = useState<RendezvousSearchResult | null>(null);
   const [selectedCell, setSelectedCell] = useState<DvCell | null>(null);
   const [searching, setSearching] = useState(false);
@@ -138,6 +149,60 @@ export default function ManeuverPanel() {
             : `chief eccentricity ${rel.chiefEccentricity.toFixed(3)} is not near-circular`
         }; results are approximate.`
       : null;
+
+  // --- collision avoidance (US-MAN-12) ---
+  const chiefNorad = loaded.body.chief?.noradId ?? null;
+  const conjunctions = rel?.conjunctions ?? [];
+  const chosenConj = camConjIdx !== '' ? conjunctions[Number(camConjIdx)] : undefined;
+
+  function craftName(norad: number): string {
+    if (chiefNorad === norad) return loaded!.body.chief?.name ?? `#${norad}`;
+    return deputies.find((d) => d.noradId === norad)?.name ?? `#${norad}`;
+  }
+
+  // Split a conjunction pair into the maneuvering deputy (never the chief) and the threat.
+  function camSides(conj: { aNoradId: number; bNoradId: number }): { deputy: number; threat: number } {
+    const { aNoradId: a, bNoradId: b } = conj;
+    if (a === chiefNorad) return { deputy: b, threat: a };
+    if (b === chiefNorad) return { deputy: a, threat: b };
+    // Both are deputies — either can burn; the swap toggle picks which.
+    return camSwap ? { deputy: b, threat: a } : { deputy: a, threat: b };
+  }
+
+  const bothDeputies = chosenConj != null && chosenConj.aNoradId !== chiefNorad
+    && chosenConj.bNoradId !== chiefNorad;
+  const defaultTargetKm = loaded.body.missDistanceThresholdM
+    ? loaded.body.missDistanceThresholdM / 1000 : 1;
+
+  async function runCam(insert: boolean) {
+    if (chosenConj == null) { setMsg('Pick a detected conjunction to avoid.'); return; }
+    const { deputy, threat } = camSides(chosenConj);
+    const targetM = (Number(camTargetKm) || defaultTargetKm) * 1000;
+    const tca = new Date(chosenConj.tcaEpochMs).toISOString();
+    setCamBusy(true);
+    setMsg(insert ? 'Inserting avoidance burn…' : 'Computing avoidance ΔV…');
+    try {
+      if (insert) {
+        const err = await applyCam(deputy, threat, tca, camAxis, targetM);
+        setMsg(err ?? `Avoidance burn inserted — ${craftName(deputy)} steps clear of ${craftName(threat)}`);
+        if (!err) setCamPlan(null);
+      } else {
+        const res = await previewCam(deputy, threat, tca, camAxis, targetM);
+        if (typeof res === 'string') { setCamPlan(null); setMsg(res); return; }
+        setCamPlan(res);
+        const dv = res.dvMagnitudeMps ?? 0;
+        const base = (res.baselineMissM ?? 0) / 1000;
+        const got = (res.achievedMissM ?? 0) / 1000;
+        setMsg(res.converged
+          ? `Avoidance ΔV ${fmtDv(dv)} — miss ${base.toFixed(2)} → ${got.toFixed(2)} km`
+          : `Best-effort ΔV ${fmtDv(dv)} — miss → ${got.toFixed(2)} km (${res.note ?? 'target not fully reached'})`);
+      }
+    } catch (e) {
+      setMsg(`Avoidance ${insert ? 'insert' : 'preview'} failed: ${msgOf(e)}`);
+    } finally {
+      setCamBusy(false);
+    }
+  }
 
   async function onAdd(e: FormEvent) {
     e.preventDefault();
@@ -610,6 +675,104 @@ export default function ManeuverPanel() {
             Insert
           </button>
         </div>
+
+        <div className="mvr-add-title" style={{ marginTop: 6 }}>Collision avoidance (avoid a conjunction)</div>
+        {conjunctions.length === 0 ? (
+          <div className="mvr-note">
+            No conjunctions detected in the window — a collision-avoidance maneuver defends against a
+            predicted close approach. Lower the miss-distance threshold (Environment panel) or adjust
+            the scenario until a conjunction appears here.
+          </div>
+        ) : (
+          <>
+            <div className="mvr-template-row">
+              <label style={{ flex: 1 }}>
+                Avoid → conjunction
+                <select
+                  value={camConjIdx}
+                  aria-label="Conjunction to avoid"
+                  title="A detected close approach to avoid"
+                  onChange={(e) => { setCamConjIdx(e.target.value); setCamSwap(false); setCamPlan(null); }}
+                >
+                  <option value="">Pick a close approach…</option>
+                  {conjunctions.map((cj, idx) => (
+                    <option key={`${cj.aNoradId}-${cj.bNoradId}-${cj.tcaEpochMs}`} value={String(idx)}>
+                      {craftName(cj.aNoradId)} ↔ {craftName(cj.bNoradId)} — {(cj.missDistanceM / 1000).toFixed(2)} km @ {new Date(cj.tcaEpochMs).toISOString().slice(11, 16)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {chosenConj && (
+              <div className="mvr-template-row" style={{ alignItems: 'center' }}>
+                <span style={{ fontSize: 11, opacity: 0.8 }}>
+                  Burn: <strong>{craftName(camSides(chosenConj).deputy)}</strong> · avoid {craftName(camSides(chosenConj).threat)}
+                </span>
+                {bothDeputies && (
+                  <button
+                    type="button"
+                    title="Swap which deputy performs the avoidance burn"
+                    onClick={() => { setCamSwap((s) => !s); setCamPlan(null); }}
+                  >
+                    Swap
+                  </button>
+                )}
+              </div>
+            )}
+            <div className="mvr-template-row">
+              <label>
+                axis
+                <select
+                  value={camAxis}
+                  aria-label="Avoidance burn axis"
+                  title="Cross-track keeps altitude (recommended); in-track is cheapest but changes altitude"
+                  onChange={(e) => { setCamAxis(e.target.value as CamAxis); setCamPlan(null); }}
+                >
+                  <option value="crosstrack">Cross-track (keeps altitude)</option>
+                  <option value="radial">Radial</option>
+                  <option value="intrack">In-track (cheapest Δv — changes altitude)</option>
+                </select>
+              </label>
+              <label>
+                target miss (km)
+                <input
+                  title="Miss distance to open up to, km"
+                  type="number"
+                  step="any"
+                  min="0"
+                  placeholder={defaultTargetKm.toFixed(1)}
+                  value={camTargetKm}
+                  onChange={(e) => { setCamTargetKm(e.target.value); }}
+                />
+              </label>
+            </div>
+            <div className="mvr-template-row">
+              <button
+                type="button"
+                disabled={camBusy || !chosenConj}
+                title="Preview the avoidance ΔV and the miss it achieves (does not insert)"
+                onClick={() => void runCam(false)}
+              >
+                {camBusy ? '…' : 'Preview'}
+              </button>
+              <button
+                type="button"
+                disabled={camBusy || !chosenConj}
+                title="Insert the avoidance burn (re-propagates; the conjunction miss opens up)"
+                onClick={() => void runCam(true)}
+              >
+                Insert
+              </button>
+            </div>
+            {camPlan && (
+              <div className="mvr-note">
+                {camPlan.axis} Δv <strong>{fmtDv(camPlan.dvMagnitudeMps ?? 0)}</strong> · miss{' '}
+                {((camPlan.baselineMissM ?? 0) / 1000).toFixed(2)} → {((camPlan.achievedMissM ?? 0) / 1000).toFixed(2)} km
+                {camPlan.note ? ` · ${camPlan.note}` : ''}
+              </div>
+            )}
+          </>
+        )}
 
         <div className="mvr-note">
           Altitude is absolute (height above the surface, not a change). Rendezvous departs

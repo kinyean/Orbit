@@ -20,6 +20,7 @@ import org.orekit.time.TimeScalesFactory;
 import org.orekit.utils.AbsolutePVCoordinates;
 import org.orekit.utils.Constants;
 import org.orekit.utils.PVCoordinates;
+import org.orekit.utils.PVCoordinatesProvider;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Service;
 import space.orbit.backend.prop.CwTargeting;
@@ -49,6 +50,7 @@ public class ManeuverTemplateService {
     private final FrameService frames;
     private final RendezvousCorrector corrector;
     private final ChiefStateResolver chiefResolver;
+    private final CollisionAvoidancePlanner camPlanner;
 
     /** Below this the orbit is deep in the atmosphere and re-enters within hours — a
      *  Hohmann target there just deorbits the deputy. Guards the common "I meant to
@@ -61,12 +63,14 @@ public class ManeuverTemplateService {
                                    PropagationService propagationService,
                                    FrameService frames,
                                    RendezvousCorrector corrector,
-                                   ChiefStateResolver chiefResolver) {
+                                   ChiefStateResolver chiefResolver,
+                                   CollisionAvoidancePlanner camPlanner) {
         this.scenarioService = scenarioService;
         this.propagationService = propagationService;
         this.frames = frames;
         this.corrector = corrector;
         this.chiefResolver = chiefResolver;
+        this.camPlanner = camPlanner;
     }
 
     @PostConstruct
@@ -573,6 +577,159 @@ public class ManeuverTemplateService {
         return scenarioService.addManeuvers(id, drafts, String.format(
                 "%s station-keep @ %.0f m (%d corrections every %.0f s, Δv total %.2f m/s)",
                 axisNorm.toUpperCase(), distanceM, drafts.size(), intervalSec, total));
+    }
+
+    /**
+     * Collision-avoidance maneuver (US-MAN-12): the inverse of {@link #rendezvous}. Preview only —
+     * compute the single ΔV that raises the miss distance from the maneuvering {@code deputyNoradId}
+     * to the {@code threatNoradId} (the chief or another deputy) at the predicted conjunction
+     * {@code tcaEpoch}, up to {@code targetMissM}, along a chosen {@code axis}
+     * ({@code crosstrack}/{@code radial}/{@code intrack}), WITHOUT inserting it. See
+     * {@link CollisionAvoidancePlanner}.
+     *
+     * @param burnEpochOrNull when to burn (ISO-8601 UTC); {@code null}/blank → a per-axis default
+     *                        (earliest for in-track; ~quarter-orbit before TCA for cross-track).
+     */
+    public CamPlanResult collisionAvoidancePreview(
+            UUID id, int deputyNoradId, int threatNoradId, String tcaEpoch,
+            String axis, double targetMissM, String burnEpochOrNull) {
+        CamResult r = computeCam(scenarioService.get(id).body(),
+                deputyNoradId, threatNoradId, tcaEpoch, axis, targetMissM, burnEpochOrNull);
+        CollisionAvoidancePlanner.CamPlan p = r.plan();
+        Impulse b = p.burn();
+        return new CamPlanResult(deputyNoradId, threatNoradId, p.axis().name().toLowerCase(),
+                r.burnInstant().toString(), iso(p.tcaEpoch()), iso(p.achievedTcaEpoch()),
+                b.r(), b.i(), b.c(), p.dvMagnitudeMps(), p.baselineMissM(), p.achievedMissM(),
+                p.converged(), p.note());
+    }
+
+    private String iso(AbsoluteDate d) {
+        return d.toDate(utc).toInstant().toString();
+    }
+
+    /**
+     * Collision-avoidance maneuver (US-MAN-12): compute the avoidance ΔV (as {@link #collisionAvoidancePreview})
+     * and insert it as one audited RIC impulse through {@link ScenarioService#addManeuvers}. A
+     * partial (converged=false) plan still inserts its best-effort burn with the reason in the audit
+     * summary; a burn that is not needed / cannot be produced is a 422.
+     */
+    public ScenarioResponse collisionAvoidance(
+            UUID id, int deputyNoradId, int threatNoradId, String tcaEpoch,
+            String axis, double targetMissM, String burnEpochOrNull) {
+        CamResult r = computeCam(scenarioService.get(id).body(),
+                deputyNoradId, threatNoradId, tcaEpoch, axis, targetMissM, burnEpochOrNull);
+        CollisionAvoidancePlanner.CamPlan plan = r.plan();
+        if (plan.dvMagnitudeMps() <= 0.0) {
+            throw new ScenarioValidationException(plan.note() != null ? plan.note()
+                    : "no avoidance burn was produced — the deputy already clears the target miss");
+        }
+        Impulse b = plan.burn();
+        List<ManeuverDraft> drafts = List.of(
+                new ManeuverDraft(deputyNoradId, r.burnInstant().toString(), "ric", b.r(), b.i(), b.c()));
+        String summary = String.format(
+                "Collision avoidance vs %d — %s Δv %.2f m/s, miss %.0f→%.0f m%s",
+                threatNoradId, plan.axis().name().toLowerCase(), plan.dvMagnitudeMps(),
+                plan.baselineMissM(), plan.achievedMissM(),
+                plan.note() == null ? "" : " (" + plan.note() + ")");
+        return scenarioService.addManeuvers(id, drafts, summary);
+    }
+
+    /** A computed CAM plan plus the burn epoch (kept as an {@link Instant} so insertion uses the
+     *  exact epoch rather than round-tripping the plan's {@link AbsoluteDate}). */
+    private record CamResult(CollisionAvoidancePlanner.CamPlan plan, Instant burnInstant) {
+    }
+
+    private CamResult computeCam(ScenarioBody body, int deputyNoradId, int threatNoradId,
+                                 String tcaEpoch, String axisName, double targetMissM,
+                                 String burnEpochOrNull) {
+        if (!(targetMissM > 0.0) || !Double.isFinite(targetMissM)) {
+            throw new ScenarioValidationException("target miss distance must be a positive number of metres");
+        }
+        // The maneuvering craft must be a deputy (the chief is the immovable LVLH reference).
+        ScenarioBody.Role deputy = deputyRole(body, deputyNoradId);
+        if (threatNoradId == deputyNoradId) {
+            throw new ScenarioValidationException("the threat must be a different craft than the maneuvering deputy");
+        }
+        CollisionAvoidancePlanner.Axis axis = CollisionAvoidancePlanner.Axis.parse(axisName);
+
+        Instant startInstant = parseInstant(body.timeRange().start());
+        Instant endInstant = parseInstant(body.timeRange().end());
+        Instant tcaInstant = parseInstant(tcaEpoch);
+        if (!tcaInstant.isAfter(startInstant) || tcaInstant.isAfter(endInstant)) {
+            throw new ScenarioValidationException("the conjunction TCA must fall inside the scenario window");
+        }
+
+        TLE depTle = tleOf(deputy);
+        double nDeputy = depTle.getMeanMotion(); // rad/s
+        double periodSec = 2.0 * Math.PI / nDeputy;
+        PVCoordinatesProvider threatProvider = resolveThreatProvider(body, threatNoradId);
+
+        Instant burnInstant = (burnEpochOrNull != null && !burnEpochOrNull.isBlank())
+                ? parseInstant(burnEpochOrNull)
+                : defaultBurnEpoch(axis, tcaInstant, startInstant, periodSec);
+        if (burnInstant.isBefore(startInstant)) {
+            burnInstant = startInstant;
+        }
+        if (!burnInstant.isBefore(tcaInstant)) {
+            throw new ScenarioValidationException("the burn epoch must be before the conjunction TCA");
+        }
+
+        CollisionAvoidancePlanner.CamPlan plan = camPlanner.plan(
+                depTle, toImpulses(deputy.maneuvers()), threatProvider, nDeputy,
+                new AbsoluteDate(tcaInstant, utc), new AbsoluteDate(burnInstant, utc),
+                new AbsoluteDate(endInstant, utc), axis, targetMissM);
+        return new CamResult(plan, burnInstant);
+    }
+
+    /** Per-axis default burn epoch: earliest for in-track (secular drift ∝ lead time); ~quarter-orbit
+     *  before TCA for cross-track (its displacement is a bounded sinusoid peaking there); ~half-orbit
+     *  for radial. Clamped into the window by the caller. */
+    private static Instant defaultBurnEpoch(CollisionAvoidancePlanner.Axis axis, Instant tca,
+                                            Instant start, double periodSec) {
+        return switch (axis) {
+            case INTRACK -> start;
+            case CROSSTRACK -> maxInstant(start, tca.minusMillis(Math.round(periodSec / 4.0 * 1000.0)));
+            case RADIAL -> maxInstant(start, tca.minusMillis(Math.round(periodSec / 2.0 * 1000.0)));
+        };
+    }
+
+    private static Instant maxInstant(Instant a, Instant b) {
+        return a.isAfter(b) ? a : b;
+    }
+
+    /** Resolve the threat's state provider at the fidelity the stream flies (so the previewed
+     *  achieved miss matches the post-insert conjunction): the chief (TLE or measured ephemeris),
+     *  or another deputy (with its own maneuvers). */
+    private PVCoordinatesProvider resolveThreatProvider(ScenarioBody body, int threatNoradId) {
+        Fidelity streamFidelity = chiefStreamFidelity(body.fidelity());
+        if (body.chief() != null && body.chief().noradId() == threatNoradId) {
+            Fidelity f = chiefResolver.isMeasured(body.chief()) ? Fidelity.SGP4 : streamFidelity;
+            return chiefResolver.resolve(body.chief(), f).provider();
+        }
+        ScenarioBody.Role threat = body.deputies().stream()
+                .filter(d -> d.noradId() == threatNoradId)
+                .findFirst()
+                .orElseThrow(() -> new ScenarioValidationException(
+                        "the threat " + threatNoradId + " is not a craft in this scenario"));
+        return propagationService.propagatorFor(
+                tleOf(threat), streamFidelity, toImpulses(threat.maneuvers()));
+    }
+
+    /** Convert a role's persisted maneuvers to prop-layer impulses (mirrors the stream/screening/MC helper). */
+    private List<Impulse> toImpulses(List<ScenarioBody.Maneuver> maneuvers) {
+        if (maneuvers == null || maneuvers.isEmpty()) {
+            return List.of();
+        }
+        List<Impulse> impulses = new ArrayList<>(maneuvers.size());
+        for (ScenarioBody.Maneuver m : maneuvers) {
+            if (m.deltaV() == null || m.epoch() == null) {
+                continue;
+            }
+            AbsoluteDate epoch = new AbsoluteDate(parseInstant(m.epoch()), utc);
+            impulses.add(new Impulse(epoch, m.deltaV().r(), m.deltaV().i(), m.deltaV().c(),
+                    m.thrustN(), m.ispSec()));
+        }
+        return impulses;
     }
 
     /** The fidelity the scenario flies the chief with (CW models the deputy relatively,

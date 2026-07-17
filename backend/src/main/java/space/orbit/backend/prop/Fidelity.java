@@ -7,10 +7,9 @@ package space.orbit.backend.prop;
  * here, so the persistence layer never depends on this enum.
  *
  * <ul>
- *   <li>{@link #SGP4} — analytic, from a TLE (Phase 2 / catalog).</li>
- *   <li>{@link #NUMERICAL} — high-fidelity DP8(7) + perturbations (Phase 3B).</li>
- *   <li>{@link #CW} — Clohessy–Wiltshire relative motion (Phase 5; not yet
- *       implemented).</li>
+ *   <li>{@link #SGP4} — analytic, from a TLE.</li>
+ *   <li>{@link #NUMERICAL} — high-fidelity DP8(7) + perturbations.</li>
+ *   <li>{@link #CW} — Clohessy–Wiltshire relative motion.</li>
  * </ul>
  */
 public enum Fidelity {

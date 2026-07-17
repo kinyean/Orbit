@@ -64,6 +64,13 @@ S4_NAME="TELEOS-2 — close-range ops (V-bar approach)"
 S5_NAME="TELEOS-2 — inspection sensor & link budget (real attitude)"
 S6_NAME="TELEOS-2 — approach dispersion (Monte Carlo)"
 
+# Collision-avoidance demo (US-MAN-12): a SYNTHETIC chief+intruder conjunction (not TELEOS
+# measured data). The public API resolves roles from the catalog, and these NORAD ids aren't
+# in it, so it is inserted directly via SQL (the same frozen-TLE body the per-user seeder builds
+# internally — but owned by demo). This is the home for future curated feature demos too
+# (see CLAUDE.md "Demos"): add a builder here and call it from main.
+CAM_NAME="Demo — collision avoidance (conjunction)"
+
 # Synthetic co-planar inspectors (one per RPO scenario, seeded-demo pattern).
 INSP3=99101  # rendezvous chaser, ~100 km behind
 INSP4=99102  # close-range craft,   ~5 km behind
@@ -156,25 +163,85 @@ ensure_user() {
   note "demo user id: $DEMO_ID"
 }
 
-# The account should hold ONLY the TELEOS suite: archive the five synthetic demos the
-# per-user seeder plants on first login (they stay available under maya/frank/gita/dev).
+# The account holds the TELEOS suite + curated feature demos (e.g. CAM_NAME) — archive the
+# per-user ONBOARDING demos the seeder plants on first login (they stay available under
+# maya/frank/gita/dev), but KEEP the curated demos this script owns here (CAM_NAME).
 archive_synthetic_demos() {
   if [[ $MODE == oidc ]]; then
     api GET /scenarios; expect 200
     local ids id
-    ids=$(printf '%s' "$API_BODY" | python3 -c '
-import json, sys
+    ids=$(printf '%s' "$API_BODY" | KEEP="$CAM_NAME" python3 -c '
+import json, os, sys
+keep = os.environ["KEEP"]
 for s in json.load(sys.stdin):
-    if s["name"].startswith("Demo — "):
+    if s["name"].startswith("Demo — ") and s["name"] != keep:
         print(s["id"])')
     for id in $ids; do
       api DELETE "/scenarios/$id"; expect 200 204
-      note "archived synthetic demo $id"
+      note "archived onboarding demo $id"
     done
   else
     sql "UPDATE scenarios SET deleted_at = now()
-         WHERE owner_id = '$DEMO_ID' AND name LIKE 'Demo — %' AND deleted_at IS NULL;" >/dev/null
+         WHERE owner_id = '$DEMO_ID' AND name LIKE 'Demo — %'
+           AND name <> \$q\$$CAM_NAME\$q\$ AND deleted_at IS NULL;" >/dev/null
   fi
+}
+
+# Build the collision-avoidance demo (US-MAN-12): a synthetic chief (99001) + intruder (99005)
+# on a flagged single close pass (~1.6 km, 3 km alert threshold), owned by demo. Inserted via SQL
+# in BOTH modes (synthetic TLEs can't go through the catalog-resolving public API). Idempotent:
+# skips a live copy unless FORCE=1; hard-deletes any prior copy (live or archived) before a
+# rebuild, since UNIQUE(owner_id, name) is not partial (a soft-deleted row still holds the name).
+build_cam_demo() {
+  local start="2026-06-01T00:00:00Z" end="2026-06-01T03:00:00Z" epoch="2026-06-01T00:00:00.000Z"
+  local existing
+  existing=$(sql "SELECT id FROM scenarios
+                  WHERE owner_id = '$DEMO_ID' AND name = \$q\$$CAM_NAME\$q\$ AND deleted_at IS NULL LIMIT 1;")
+  if [[ -n $existing && $FORCE != 1 ]]; then
+    note "SKIP: '$CAM_NAME' already exists ($existing) — set FORCE=1 to rebuild"
+    return 0
+  fi
+  # Frozen synthetic TLEs (deterministic): chief circular ~518 km LEO; intruder same plane, a hair
+  # lower/faster (15.205 vs 15.20 rev/day) and 0.1° behind → drifts up to a single ~1.6 km pass.
+  local body
+  body=$(EPOCH="$epoch" START="$start" END="$end" python3 -c '
+import json, os
+def role(rolename, norad, name, l1, l2):
+    return {"role": rolename, "noradId": norad, "name": name,
+            "initialState": {"kind": "tle",
+                             "tle": {"line1": l1, "line2": l2, "epoch": os.environ["EPOCH"]},
+                             "datasetId": None},
+            "maneuvers": [], "sensors": [], "attitude": None, "constraints": []}
+print(json.dumps({
+    "schemaVersion": 6, "fidelity": "sgp4",
+    "timeRange": {"start": os.environ["START"], "end": os.environ["END"]},
+    "chief": role("chief", 99001, "DEMO CHIEF",
+                  "1 99001U 26001A   26152.00000000  .00000000  00000-0  00000-0 0  9994",
+                  "2 99001  51.6000   0.0000 0000100   0.0000   0.0000 15.20000000    13"),
+    "deputies": [role("deputy", 99005, "DEMO INTRUDER (conjunction)",
+                  "1 99005U 26004B   26152.00000000  .00000000  00000-0  00000-0 0  9991",
+                  "2 99005  51.6000   0.0000 0000100   0.0000 359.9000 15.20500000    18")],
+    "missDistanceThresholdM": 3000.0}))')
+  # Clear any prior copy (frees the UNIQUE(owner,name) slot), then insert scenario + v1 + audit.
+  # SEPARATE statements with pre-generated UUIDs (not sibling CTEs — data-modifying CTEs share one
+  # snapshot and can't see each other's inserted rows, so a CTE UPDATE of latest_version_id would
+  # match nothing). NULL latest_version_id at insert sidesteps the circular scenarios↔versions FK;
+  # the follow-up UPDATE sets it once the version row exists.
+  local sid vid
+  sid=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  vid=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  sql "BEGIN;
+    DELETE FROM scenarios WHERE owner_id = '$DEMO_ID' AND name = \$q\$$CAM_NAME\$q\$;
+    INSERT INTO scenarios (id, owner_id, name, latest_version_id, created_at)
+      VALUES ('$sid', '$DEMO_ID', \$q\$$CAM_NAME\$q\$, NULL, now());
+    INSERT INTO scenario_versions (id, scenario_id, version_no, author_id, created_at, body)
+      VALUES ('$vid', '$sid', 1, '$DEMO_ID', now(), \$body\$$body\$body\$::jsonb);
+    UPDATE scenarios SET latest_version_id = '$vid' WHERE id = '$sid';
+    INSERT INTO audit_log (id, scenario_id, version_id, actor_id, action, timestamp, diff_summary)
+      VALUES (gen_random_uuid(), '$sid', '$vid', '$DEMO_ID', 'SEED', now(),
+              'Seeded collision-avoidance demo (synthetic conjunction, US-MAN-12)');
+    COMMIT;" >/dev/null
+  note "collision-avoidance demo built (synthetic conjunction, owned by $DEMO_EMAIL, id $sid)"
 }
 
 # ------------------------------------------------------------- scenario plumbing
@@ -785,9 +852,14 @@ fi
 
 [[ $MODE == stub ]] && reassign_to_demo
 
-log "done — the TELEOS-2 demo suite for $DEMO_EMAIL"
+# --- collision-avoidance demo (synthetic conjunction; SQL-owned by demo in both modes)
+log "CAM $CAM_NAME"
+build_cam_demo
+
+log "done — the demo suite for $DEMO_EMAIL"
 printf '  %s\t%s\n' "$S1" "$S1_NAME" "$S2" "$S2_NAME" "$S3" "$S3_NAME" \
-                    "$S4" "$S4_NAME" "$S5" "$S5_NAME" "$S6" "$S6_NAME"
+                    "$S4" "$S4_NAME" "$S5" "$S5_NAME" "$S6" "$S6_NAME" \
+                    "(synthetic)" "$CAM_NAME"
 cat <<EOF
 
 Next (manual, in a browser): sign in at https://174.75.16.25:8443/ as ${DEMO_USERNAME}

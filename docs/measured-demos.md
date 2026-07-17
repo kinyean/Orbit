@@ -2,11 +2,14 @@
 
 Six scenarios that demo the platform's capabilities against **real flown
 telemetry** — the TELEOS-2 WOD dataset (1–7 Jan 2026, 55,744 GNSS/ADCS states) —
-owned by a dedicated **`demo`** account so a presentation starts from a clean
-scenario list. Built (re-runnably) by
-[scripts/seed-teleos-demos.sh](../scripts/seed-teleos-demos.sh); the measured-data
-mechanics are [Decision 26](./decisions.md) /
-[measured-data-plan.md](./measured-data-plan.md).
+**plus a synthetic collision-avoidance conjunction** (#7, US-MAN-12) — all owned by a
+dedicated **`demo`** account so a presentation starts from a clean scenario list. Built
+(re-runnably) by [scripts/seed-teleos-demos.sh](../scripts/seed-teleos-demos.sh); the
+measured-data mechanics are [Decision 26](./decisions.md) /
+[measured-data-plan.md](./measured-data-plan.md), the avoidance maneuver is
+[Decision 30](./decisions.md#30-collision-avoidance-maneuver-the-inverse-of-rendezvous-us-man-12).
+The `demo` account is the home for curated feature demos (per CLAUDE.md "Demos"): add new
+ones to the seed script, not the per-user onboarding seeder.
 
 > **Status: built & verified on the dev OIDC stack (2026-07-08).** Backend 224
 > tests green (two backend changes landed here: Monte Carlo on a measured chief,
@@ -56,8 +59,9 @@ docker compose -f docker-compose.yml -f docker-compose.oidc.yml up -d --build
    user and reassigns ownership via SQL. It also archives the five synthetic
    `Demo — *` scenarios from the demo account so the list holds only this suite.
 4. **Present**: browse `https://174.75.16.25:8443/` (self-signed cert — accept
-   the one-time warning), sign in as **`demo` / `demo`**. Six scenarios, top to
-   bottom = the demo arc.
+   the one-time warning), sign in as **`demo` / `demo`**. Seven scenarios — the six
+   TELEOS-2 measured scenarios (top to bottom = the demo arc) + the synthetic
+   collision-avoidance demo (#7).
 
 ## The suite at a glance
 
@@ -69,6 +73,7 @@ docker compose -f docker-compose.yml -f docker-compose.oidc.yml up -d --build
 | 4 | close-range ops (V-bar approach) | INSPECTOR-2 (synthetic, ~5 km behind) | CW hold/glideslope templates |
 | 5 | inspection sensor & link budget | INSPECTOR-3 (synthetic, ~10 km behind) | FOV on real attitude, AOS/LOS, SNR, sun-keep-out |
 | 6 | approach dispersion (Monte Carlo) | INSPECTOR-4 (synthetic, ~30 km behind) | seeded Monte Carlo + covariance around measured truth |
+| 7 | collision avoidance (conjunction) | DEMO INTRUDER (synthetic, single close pass) | **avoidance maneuver** (US-MAN-12) — cross-track/radial/in-track ΔV to open a flagged miss |
 
 **Why synthetic inspectors?** By Jan 2026 vs today's catalog, near-equatorial
 RAAN drift (~9.5°/day at TELEOS-2's i ≈ 10°) has scattered every real object's
@@ -293,6 +298,23 @@ change: Monte Carlo now resolves the chief through `ChiefStateResolver`.)
 6. Same caution as #3: don't **Insert** templates here — it would stack burns
    on the planned approach.
 
+### 7 — Demo — collision avoidance (conjunction)
+
+The one **synthetic** scenario (not TELEOS measured data): the inverse of rendezvous
+(US-MAN-12, [Decision 30](./decisions.md#30-collision-avoidance-maneuver-the-inverse-of-rendezvous-us-man-12)).
+A `DEMO CHIEF` (99001) with a `DEMO INTRUDER` (99005) that drifts up on the same plane and
+makes a **single ~1.6 km close pass** ~01:17 into the 3 h window; the miss-distance threshold
+is preset to **3 km**, so it loads flagged (conjunction tick ◆ on the timeline).
+
+- **The point:** raise the miss with one small burn while keeping the orbit — "not too high
+  or low." Open the **Maneuver** panel → "Collision avoidance": the detected conjunction is
+  pre-listed. **Preview** with the default *cross-track* axis (altitude-neutral) → ~3 m/s
+  clears the 3 km alert (miss 1.6 → 3.0 km); **Insert** and the timeline tick opens up.
+- **Contrast the axes** (Preview each): *in-track* is cheapest (~0.5 m/s) but changes the
+  altitude; *radial* ~2 m/s; *cross-track* is the altitude-neutral default. The preview shows
+  the ΔV so the trade-off is explicit ([R22](./risks.md)).
+- Sandbox scenario — editing/inserting is fine; the burn re-propagates and the miss visibly grows.
+
 ## Honesty box (what's real, what isn't)
 
 - **Real:** the chief's trajectory and attitude in every scenario (55,744
@@ -378,7 +400,8 @@ suite).**
 
 ## Remaining manual pass
 
-- [ ] Browser click-through of all six as `demo` (list shows exactly six).
+- [ ] Browser click-through of all seven as `demo` (six TELEOS + the synthetic
+      collision-avoidance demo; list shows exactly seven).
 - [ ] #1: *measured* legend + body-axis triad wobble visible.
 - [ ] #2: conjunction ticks + distance chart + live screening round-trip.
 - [ ] #3: ΔV glyphs, budget, distance collapse; OEM download; `EXPORT_OEM`

@@ -31,6 +31,7 @@ import space.orbit.backend.analysis.ScreeningService;
 import space.orbit.backend.io.OemExportService;
 import space.orbit.backend.scenario.AttitudeDraft;
 import space.orbit.backend.scenario.AuditEntryResponse;
+import space.orbit.backend.scenario.CamPlanResult;
 import space.orbit.backend.scenario.ConstraintDraft;
 import space.orbit.backend.scenario.LinkBudgetDraft;
 import space.orbit.backend.scenario.ManeuverDraft;
@@ -277,6 +278,32 @@ public class ScenarioController {
                 req.distanceM(), req.intervalSec(), req.corrections());
     }
 
+    // --- collision avoidance (US-MAN-12; the inverse of rendezvous) ----------
+
+    /**
+     * Preview a collision-avoidance maneuver (US-MAN-12): compute the single ΔV that raises the
+     * miss distance from the maneuvering deputy to a threat (the chief or another deputy) at a
+     * predicted conjunction, without inserting it. Read-only (like the rendezvous ΔV search) so the
+     * UI can show the ΔV + achieved miss before committing.
+     */
+    @Tag(name = "Analysis")
+    @Operation(summary = "Preview a collision-avoidance ΔV (does not insert it)")
+    @PostMapping("/{id}/maneuvers/collision-avoidance/preview")
+    public CamPlanResult camPreview(@PathVariable UUID id, @Valid @RequestBody CamRequest req) {
+        return templates.collisionAvoidancePreview(id, req.deputyNoradId(), req.threatNoradId(),
+                req.tcaEpoch(), req.axis(), req.targetMissM(), req.burnEpoch());
+    }
+
+    /** Insert a collision-avoidance maneuver (US-MAN-12): compute (as the preview) and add the ΔV
+     *  as one audited RIC impulse; the scenario re-propagates and the conjunction miss increases. */
+    @Tag(name = "Maneuvers")
+    @Operation(summary = "Insert a collision-avoidance maneuver (template)")
+    @PostMapping("/{id}/maneuvers/collision-avoidance")
+    public ScenarioResponse cam(@PathVariable UUID id, @Valid @RequestBody CamRequest req) {
+        return templates.collisionAvoidance(id, req.deputyNoradId(), req.threatNoradId(),
+                req.tcaEpoch(), req.axis(), req.targetMissM(), req.burnEpoch());
+    }
+
     // --- sensors & attitude (Phase 7, US-SENSE-01 / US-PROX-01) --------------
 
     @Tag(name = "Sensors & attitude")
@@ -505,6 +532,22 @@ public class ScenarioController {
             double distanceM,
             @Positive double intervalSec,
             @Positive int corrections) {
+    }
+
+    /**
+     * Collision-avoidance payload (US-MAN-12): {@code deputyNoradId} is the craft that burns;
+     * {@code threatNoradId} is the craft to avoid (the chief or another deputy); {@code tcaEpoch}
+     * is the predicted time of closest approach (ISO-8601 UTC, from a detected conjunction);
+     * {@code targetMissM} is the miss distance to reach (m). {@code axis} ∈ {crosstrack (default),
+     * radial, intrack}; {@code burnEpoch} (optional) overrides the per-axis default burn time.
+     */
+    public record CamRequest(
+            @Positive int deputyNoradId,
+            @Positive int threatNoradId,
+            @NotBlank String tcaEpoch,
+            String axis,
+            @Positive double targetMissM,
+            String burnEpoch) {
     }
 
     /**

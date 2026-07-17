@@ -296,6 +296,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/scenarios/{id}/maneuvers/collision-avoidance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Insert a collision-avoidance maneuver (template) */
+        post: operations["cam"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scenarios/{id}/maneuvers/collision-avoidance/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview a collision-avoidance ΔV (does not insert it) */
+        post: operations["camPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/scenarios/{id}/constraints": {
         parameters: {
             query?: never;
@@ -836,6 +870,41 @@ export interface components {
             closingRateMps?: number;
             /** Format: int32 */
             segments?: number;
+        };
+        CamRequest: {
+            /** Format: int32 */
+            deputyNoradId?: number;
+            /** Format: int32 */
+            threatNoradId?: number;
+            tcaEpoch: string;
+            axis?: string;
+            /** Format: double */
+            targetMissM?: number;
+            burnEpoch?: string;
+        };
+        CamPlanResult: {
+            /** Format: int32 */
+            deputyNoradId?: number;
+            /** Format: int32 */
+            threatNoradId?: number;
+            axis?: string;
+            burnEpoch?: string;
+            tcaEpoch?: string;
+            achievedTcaEpoch?: string;
+            /** Format: double */
+            dvR?: number;
+            /** Format: double */
+            dvI?: number;
+            /** Format: double */
+            dvC?: number;
+            /** Format: double */
+            dvMagnitudeMps?: number;
+            /** Format: double */
+            baselineMissM?: number;
+            /** Format: double */
+            achievedMissM?: number;
+            converged?: boolean;
+            note?: string;
         };
         ConstraintRequest: {
             /** Format: int32 */
@@ -1411,6 +1480,58 @@ export interface operations {
                 };
                 content: {
                     "*/*": components["schemas"]["ScenarioResponse"];
+                };
+            };
+        };
+    };
+    cam: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CamRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ScenarioResponse"];
+                };
+            };
+        };
+    };
+    camPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CamRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["CamPlanResult"];
                 };
             };
         };

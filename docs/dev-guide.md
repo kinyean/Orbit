@@ -104,7 +104,7 @@ Base package `space.orbit.backend` under
 |---|---|---|
 | `prop/` | 14 | The propagation engine — thin Orekit wrappers. `PropagationService` (fidelity dispatch + maneuver attachment), `SatellitePropagator` (SGP4), `NumericalPropagation` (DP8(7) + J4+ + drag + SRP + third-body), `CwPropagation`/`CwTargeting` (Clohessy-Wiltshire), **`FrameService`** (the one canonical frame utility — ECI/ECEF/LVLH/RIC/body, quaternion conventions), `StateVector` (frame-tagged), `Fidelity`, `Impulse`, `MeasuredAttitude`, `QuaternionSamples`, `PropagationSettings` (pinned constants), `OrekitConfig` (data bootstrap). |
 | `catalog/` | 4 | The live ~15.5k-satellite catalog: `CatalogService` (seed + refresh + the scheduled SGP4 broadcast pass), `TrackedSatellite`, `TleSnapshot`, `CatalogProperties`. |
-| `scenario/` | 37 | The domain core: JPA entities (`Scenario`, `ScenarioVersion`, `User`, `AuditLog`, `MeasuredDataset`), **`ScenarioService`** (the single audited mutation path — every edit writes one version + one audit row), `ScenarioBody` (the versioned jsonb body, schema v6), `ManeuverTemplateService` (Hohmann/rendezvous/phasing/NMC/hold/glideslope/station-keep), `RendezvousCorrector`, `ChiefStateResolver`, `MeasuredEphemerisFactory`, `SampleScenarioSeeder` + `UserProvisioner`, request/response DTOs. |
+| `scenario/` | 39 | The domain core: JPA entities (`Scenario`, `ScenarioVersion`, `User`, `AuditLog`, `MeasuredDataset`), **`ScenarioService`** (the single audited mutation path — every edit writes one version + one audit row), `ScenarioBody` (the versioned jsonb body, schema v6), `ManeuverTemplateService` (Hohmann/rendezvous/phasing/NMC/hold/glideslope/station-keep + **collision-avoidance**, US-MAN-12), `RendezvousCorrector` + **`CollisionAvoidancePlanner`** (its inverse — raise a conjunction's miss with one ΔV; returns `CamPlanResult`), `ChiefStateResolver`, `MeasuredEphemerisFactory`, `SampleScenarioSeeder` (the 5 per-user *onboarding* demos only — curated feature demos go in `scripts/seed-teleos-demos.sh`, the `demo` account) + `UserProvisioner`, request/response DTOs. |
 | `stream/` | 15 | WebSocket streaming: `CatalogStreamHandler` (broadcast + seek/snapshot/orbit), `ScenarioStreamHandler` + `ScenarioHandshakeInterceptor` (identity captured at handshake), **`ScenarioStreamService`** (`loadAndEncode` — the precompute-once heart), `CzmlEncoder`, `RelativeStateEncoder`, `StreamContract` (`VERSION = "1"`), `StreamGzip`, `WebSocketConfig`, `ScenarioStreamProperties`. |
 | `analysis/` | 21 | Sampled-trajectory computers (they read the already-sampled arrays, never re-propagate — see §6): `SensorEventComputer`, `EclipseEventComputer`, `ConjunctionEventComputer`, `ConstraintChecker`, `LinkBudgetComputer`, `MonteCarloService`, `RendezvousSearchService`, `ScreeningService` + result/event records. |
 | `io/` | 5 | File I/O: `GpCatalogParser` (TLE/OMM seed), `WodCsvReader` + `MeasuredEphemeris` (measured telemetry import), `OemExportService` (CCSDS OEM export). |
@@ -299,11 +299,33 @@ REST contract changed, regenerate the client inside the frontend container:
 edits need nothing — the bind mount + HMR pick them up. Frontend *dependency*
 changes need the §8 anon-volume dance.
 
+### 7.7 Add a demo scenario
+
+Curated/feature demos live in the **`demo` account**, built by
+`scripts/seed-teleos-demos.sh` (owned by `demo@orbit.local`) — **not** in
+`SampleScenarioSeeder`, which is the fixed 5-scenario *per-user onboarding* set only
+(SRS §5.6.1). Add a builder function to the script and call it from `main`. A **synthetic**
+scenario (craft not in the live catalog) inserts via **SQL** — the public API resolves roles
+from the catalog, so it can't create synthetic-TLE craft: build the frozen-TLE `ScenarioBody`
+JSON, then INSERT scenario + v1 + audit as **separate statements with pre-generated UUIDs**
+(data-modifying CTEs share one snapshot and can't see each other's inserts; and
+`UNIQUE(owner_id, name)` is *not* partial, so hard-delete any prior copy first to free the
+name). See `build_cam_demo` (the collision-avoidance demo) for the exact pattern.
+
 ## 8. Gotchas
 
 The "something is weird" lookup page.
 
 **Environment / dev loop**
+- **Rebuilding the backend flips auth to `stub` — and the `demo` account "vanishes".**
+  `docker compose up -d --build backend` uses the *base* compose (`orbit.auth.mode` unset →
+  stub). If the OIDC overlay stack is up (Keycloak + nginx on :8443), that recreated backend now
+  ignores bearer tokens and serves the **dev** user — so every `demo`-owned scenario disappears
+  from the UI (nothing is deleted; it's a mode mismatch). When the OIDC stack is running, always
+  rebuild/restart *with* the overlay:
+  `docker compose -f docker-compose.yml -f docker-compose.oidc.yml up -d --build backend`.
+  (Confirm the mode with `curl -s -o /dev/null -w '%{http_code}' localhost:8081/scenarios` →
+  `401` = oidc, `200` = stub.)
 - **Frontend deps changed but the container doesn't see them** — anonymous
   volumes persist across recreation: `docker compose build frontend` →
   `docker compose rm -v -s -f frontend` → `docker compose up -d frontend`.

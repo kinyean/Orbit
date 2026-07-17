@@ -514,6 +514,23 @@ given distance + arrival epoch, with zero arrival velocity (`ManeuverTemplateSer
 ### US-MAN-11 — As Maya, I want finite-burn maneuvers (thrust, Isp), so my ΔV plan reflects burns that take real time (and real propellant). ✅ (9B)
 *Acceptance:* a maneuver carries optional `thrustN` (N) + `ispSec` (s) (v6-additive on `Maneuver`/`Impulse`; null → impulsive). `PropagationService.buildManeuvered` realises a finite burn as an Orekit `ConstantThrustManeuver` of the Tsiolkovsky duration that achieves the intended ΔV, centred on the epoch (collapses to the impulse as thrust→∞; mass depleted via the rocket equation). `PropagationServiceTests` (finite ≈ equivalent impulse but ≫ the un-maneuvered track; duration achieves the target ΔV); thrust+Isp required together + positive, else 422. `ManeuverPanel` finite toggle. *Maps to:* SRS §3.5.2. *(Burn-window glyph animation deferred — the glyph sits at the centred midpoint.)*
 
+### US-MAN-12 — As Frank/Maya, I want a collision-avoidance maneuver (the inverse of rendezvous), so a deputy dodges a predicted conjunction while staying near its orbit. ✅ (Decision 30)
+*Acceptance:* `POST /scenarios/{id}/maneuvers/collision-avoidance` inserts one audited RIC impulse that
+raises the miss distance from the maneuvering deputy to a threat (the chief or another deputy) at a
+predicted conjunction TCA up to a target, along a chosen axis — **cross-track** (out-of-plane, keeps
+altitude; the default), **radial**, or **in-track** (cheapest ΔV but changes altitude, labeled); the
+sign is auto-chosen to push away from the threat. A read-only `.../preview` returns the ΔV + achieved
+miss first (like the rendezvous ΔV search). Solved against the **real** propagators (FD sensitivity +
+quadratic seed + secant refine on the **windowed-minimum** separation — not the fixed TCA), with a
+per-axis default burn epoch. **Never returns a burn that worsens the miss** (tracks the best across
+magnitudes; refuses with a note for a recurring approach that one burn can't dodge → 422).
+Byte-identical reruns (R11); the maneuvering craft must be a deputy (chief → 422).
+`CollisionAvoidancePlannerTests` (fast crossing converges to target; cross-track keeps SMA while
+in-track changes it; determinism; unreachable target falls back) + `ManeuverTemplateServiceTests`
+(orchestration + 422s). Frontend: `ManeuverPanel` "Collision avoidance" block driven by the detected
+conjunctions, Preview/Insert. *Maps to:* SRS §3.5.3, §3.12.1; the inverse of [UC-1](./use-cases.md); Frank/Maya.
+*(Deferred: catalog-debris threats; multi-burn/composable CAM; a collision-probability `Pc` model.)*
+
 ### US-MC-01 — As Frank, I want Monte Carlo dispersion on initial state + maneuver execution error, so I can quantify trajectory uncertainty. ✅ (9C)
 *Acceptance:* `POST /scenarios/{id}/monte-carlo` perturbs the deputy ECI seed (Gaussian pos/vel) +
 maneuver ΔV (magnitude + pointing tilt) over a seeded sample set (default 100, cap 500), returns the

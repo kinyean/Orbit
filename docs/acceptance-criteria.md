@@ -701,6 +701,40 @@ cone); Sun occlusion / sun-keep-out (Phase 8); GPU-depth occlusion of the drawn 
 
 ---
 
+## Collision-avoidance maneuver *(post-Phase-11 additive — US-MAN-12, Decision 30)*
+
+> Backend **224 → 230 tests green** + frontend type-check/build green; verified end-to-end on the
+> dev stack. The inverse of the rendezvous template: raise a predicted conjunction's miss distance
+> with one small ΔV, keeping the deputy near its orbit.
+
+- [x] `scenario/CollisionAvoidancePlanner` — 1-D solve (ΔV magnitude along a chosen deputy-RIC axis)
+      against the **real** propagators: FD sensitivity (1 m/s probe) + quadratic seed + secant refine
+      on the **windowed-minimum** separation (re-searched over the remaining window, not the fixed
+      TCA). Per-axis default burn epoch (in-track earliest; cross-track ~quarter-orbit before TCA;
+      radial ~half). Sign auto-chosen to push away from the threat. Caps + wall-clock fuse + fallback.
+- [x] **Cross-track keeps altitude, in-track doesn't** — `CollisionAvoidancePlannerTests`: a fast
+      crossing converges to target with a bounded ΔV; a 5 m/s cross-track burn changes SMA < 100 m
+      while a 5 m/s in-track burn changes it > 2 km; byte-identical reruns (R11); an unreachable
+      target falls back with a note.
+- [x] **Never worsens the miss** — the refine tracks the best windowed-min across magnitudes (m=0
+      baseline is the floor) + probes the ΔV cap; if no burn beats the baseline (a recurring approach,
+      e.g. a closed relative orbit) it refuses with a note (→ 422), rather than insert a harmful burn.
+- [x] `ManeuverTemplateService.collisionAvoidance`/`collisionAvoidancePreview` orchestrate (resolve
+      the deputy + threat at the stream fidelity; insert one audited RIC impulse via `addManeuvers`).
+      Maneuvering craft must be a deputy; threat ≠ deputy; target > 0; TCA in-window — else 422
+      (`ManeuverTemplateServiceTests`).
+- [x] REST `POST /scenarios/{id}/maneuvers/collision-avoidance[/preview]` + `CamRequest`/`CamPlanResult`
+      (`gen:api` regenerated). Frontend `previewCam`/`applyCam` + a `ManeuverPanel` "Collision
+      avoidance" block driven by the detected conjunctions (Preview/Insert). Streaming contract
+      untouched (`VERSION="1"`, R12); after Insert the scenario re-streams and the miss opens up.
+- [x] **Demo scenario in the curated demo account** "Demo — collision avoidance (conjunction)"
+      (`scripts/seed-teleos-demos.sh`, owned by `demo@orbit.local` — not the per-user onboarding
+      seeder): a synthetic chief (99001) + intruder (99005) on a flagged single close pass (~1.6 km,
+      3 km alert threshold) so the feature works one click from the demo login — cross-track clears
+      the alert at ~3 m/s. (Future feature demos go here too — see CLAUDE.md "Demos".)
+
+---
+
 ## Phase 10 — Enterprise hardening
 
 > Sliced **10A / 10B / 10C** (see [build-history.md](./build-history.md), Decision 28).
